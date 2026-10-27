@@ -1,0 +1,19 @@
+{
+ "doctype": "DocType",
+ "name": "Import Batch",
+ "module": "Internal Ledger",
+ "autoname": "hash",
+ "engine": "InnoDB",
+ "field_order": ["source", "file_hash", "company", "base_currency"],
+ "fields": [
+  {"fieldname": "source", "label": "Source", "fieldtype": "Data", "reqd": 1},
+  {"fieldname": "file_hash", "label": "File Hash", "fieldtype": "Data", "reqd": 1},
+  {"fieldname": "company", "label": "Company", "fieldtype": "Link", "options": "Company", "reqd": 1},
+  {"fieldname": "base_currency", "label": "Base Currency", "fieldtype": "Link", "options": "Currency", "reqd": 1}
+ ],
+ "permissions": [
+  {"role": "System Manager", "read": 1, "write": 1, "create": 1},
+  {"role": "账套管理员", "read": 1, "write": 1, "create": 1},
+  {"role": "账务查看者", "read": 1}
+ ]
+}

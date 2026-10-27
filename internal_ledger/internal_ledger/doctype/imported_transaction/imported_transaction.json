@@ -1,0 +1,31 @@
+{
+ "doctype": "DocType",
+ "name": "Imported Transaction",
+ "module": "Internal Ledger",
+ "autoname": "hash",
+ "engine": "InnoDB",
+ "field_order": [
+  "import_batch", "source", "source_id", "occurred_at", "amount", "direction",
+  "counterparty", "summary", "payment_account", "raw_row", "status", "dedupe_key", "duplicate_of"
+ ],
+ "fields": [
+  {"fieldname": "import_batch", "label": "Import Batch", "fieldtype": "Link", "options": "Import Batch", "reqd": 1},
+  {"fieldname": "source", "label": "Source", "fieldtype": "Data", "reqd": 1},
+  {"fieldname": "source_id", "label": "Source ID", "fieldtype": "Data"},
+  {"fieldname": "occurred_at", "label": "Occurred At", "fieldtype": "Datetime", "reqd": 1},
+  {"fieldname": "amount", "label": "Amount", "fieldtype": "Currency", "options": "import_batch.base_currency", "precision": "9", "reqd": 1},
+  {"fieldname": "direction", "label": "Direction", "fieldtype": "Select", "options": "income\nexpense", "reqd": 1},
+  {"fieldname": "counterparty", "label": "Counterparty", "fieldtype": "Data"},
+  {"fieldname": "summary", "label": "Summary", "fieldtype": "Small Text"},
+  {"fieldname": "payment_account", "label": "Payment Account", "fieldtype": "Data", "reqd": 1},
+  {"fieldname": "raw_row", "label": "Raw Row", "fieldtype": "Int", "reqd": 1},
+  {"fieldname": "status", "label": "Status", "fieldtype": "Select", "options": "Imported\nDuplicate", "default": "Imported", "reqd": 1, "read_only": 1},
+  {"fieldname": "dedupe_key", "label": "Dedupe Key", "fieldtype": "Data", "unique": 1, "read_only": 1},
+  {"fieldname": "duplicate_of", "label": "Duplicate Of", "fieldtype": "Link", "options": "Imported Transaction", "read_only": 1}
+ ],
+ "permissions": [
+  {"role": "System Manager", "read": 1, "write": 1, "create": 1},
+  {"role": "账套管理员", "read": 1, "write": 1, "create": 1},
+  {"role": "账务查看者", "read": 1}
+ ]
+}

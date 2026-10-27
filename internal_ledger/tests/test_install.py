@@ -8,7 +8,7 @@ from internal_ledger.install import ensure_roles, install_chart, load_chart_fixt
 def test_install_creates_roles_and_balanced_root_groups():
     for role in ("账套管理员", "账务查看者"):
         if frappe.db.exists("Role", role):
-            frappe.delete_doc("Role", role)
+            frappe.delete_doc("Role", role, force=True)
     ensure_roles()
     assert frappe.db.exists("Role", "账套管理员")
     assert frappe.db.exists("Role", "账务查看者")
