@@ -1,0 +1,268 @@
+{
+  "资产": [
+    {
+      "account_number": "1001",
+      "account_name": "库存现金",
+      "root_type": "Asset",
+      "report_type": "Balance Sheet"
+    },
+    {
+      "account_number": "1002",
+      "account_name": "银行存款",
+      "root_type": "Asset",
+      "report_type": "Balance Sheet",
+      "is_group": 1
+    },
+    {
+      "account_number": "100201",
+      "account_name": "基本存款账户",
+      "root_type": "Asset",
+      "report_type": "Balance Sheet",
+      "parent_account_number": "1002"
+    },
+    {
+      "account_number": "1122",
+      "account_name": "应收账款",
+      "root_type": "Asset",
+      "report_type": "Balance Sheet"
+    },
+    {
+      "account_number": "1123",
+      "account_name": "预付账款",
+      "root_type": "Asset",
+      "report_type": "Balance Sheet"
+    },
+    {
+      "account_number": "1221",
+      "account_name": "其他应收款",
+      "root_type": "Asset",
+      "report_type": "Balance Sheet"
+    },
+    {
+      "account_number": "1403",
+      "account_name": "原材料",
+      "root_type": "Asset",
+      "report_type": "Balance Sheet"
+    },
+    {
+      "account_number": "1405",
+      "account_name": "库存商品",
+      "root_type": "Asset",
+      "report_type": "Balance Sheet"
+    },
+    {
+      "account_number": "1601",
+      "account_name": "固定资产",
+      "root_type": "Asset",
+      "report_type": "Balance Sheet"
+    },
+    {
+      "account_number": "1602",
+      "account_name": "累计折旧",
+      "root_type": "Asset",
+      "report_type": "Balance Sheet"
+    },
+    {
+      "account_number": "1801",
+      "account_name": "长期待摊费用",
+      "root_type": "Asset",
+      "report_type": "Balance Sheet"
+    }
+  ],
+  "负债": [
+    {
+      "account_number": "2001",
+      "account_name": "短期借款",
+      "root_type": "Liability",
+      "report_type": "Balance Sheet"
+    },
+    {
+      "account_number": "2202",
+      "account_name": "应付账款",
+      "root_type": "Liability",
+      "report_type": "Balance Sheet"
+    },
+    {
+      "account_number": "2203",
+      "account_name": "预收账款",
+      "root_type": "Liability",
+      "report_type": "Balance Sheet"
+    },
+    {
+      "account_number": "2211",
+      "account_name": "应付职工薪酬",
+      "root_type": "Liability",
+      "report_type": "Balance Sheet"
+    },
+    {
+      "account_number": "2221",
+      "account_name": "应交税费",
+      "root_type": "Liability",
+      "report_type": "Balance Sheet",
+      "is_group": 1
+    },
+    {
+      "account_number": "222101",
+      "account_name": "应交增值税",
+      "root_type": "Liability",
+      "report_type": "Balance Sheet",
+      "parent_account_number": "2221"
+    },
+    {
+      "account_number": "222102",
+      "account_name": "应交企业所得税",
+      "root_type": "Liability",
+      "report_type": "Balance Sheet",
+      "parent_account_number": "2221"
+    },
+    {
+      "account_number": "2241",
+      "account_name": "其他应付款",
+      "root_type": "Liability",
+      "report_type": "Balance Sheet"
+    },
+    {
+      "account_number": "2501",
+      "account_name": "长期借款",
+      "root_type": "Liability",
+      "report_type": "Balance Sheet"
+    }
+  ],
+  "所有者权益": [
+    {
+      "account_number": "3001",
+      "account_name": "实收资本",
+      "root_type": "Equity",
+      "report_type": "Balance Sheet"
+    },
+    {
+      "account_number": "3002",
+      "account_name": "资本公积",
+      "root_type": "Equity",
+      "report_type": "Balance Sheet"
+    },
+    {
+      "account_number": "3101",
+      "account_name": "盈余公积",
+      "root_type": "Equity",
+      "report_type": "Balance Sheet"
+    },
+    {
+      "account_number": "3103",
+      "account_name": "本年利润",
+      "root_type": "Equity",
+      "report_type": "Balance Sheet"
+    },
+    {
+      "account_number": "3104",
+      "account_name": "利润分配",
+      "root_type": "Equity",
+      "report_type": "Balance Sheet",
+      "is_group": 1
+    },
+    {
+      "account_number": "310401",
+      "account_name": "未分配利润",
+      "root_type": "Equity",
+      "report_type": "Balance Sheet",
+      "parent_account_number": "3104"
+    }
+  ],
+  "成本": [
+    {
+      "account_number": "4001",
+      "account_name": "生产成本",
+      "root_type": "Expense",
+      "report_type": "Profit and Loss"
+    },
+    {
+      "account_number": "4101",
+      "account_name": "制造费用",
+      "root_type": "Expense",
+      "report_type": "Profit and Loss"
+    }
+  ],
+  "损益": [
+    {
+      "account_number": "5001",
+      "account_name": "主营业务收入",
+      "root_type": "Income",
+      "report_type": "Profit and Loss"
+    },
+    {
+      "account_number": "5051",
+      "account_name": "其他业务收入",
+      "root_type": "Income",
+      "report_type": "Profit and Loss"
+    },
+    {
+      "account_number": "5301",
+      "account_name": "营业外收入",
+      "root_type": "Income",
+      "report_type": "Profit and Loss"
+    },
+    {
+      "account_number": "5401",
+      "account_name": "主营业务成本",
+      "root_type": "Expense",
+      "report_type": "Profit and Loss"
+    },
+    {
+      "account_number": "5402",
+      "account_name": "其他业务成本",
+      "root_type": "Expense",
+      "report_type": "Profit and Loss"
+    },
+    {
+      "account_number": "5403",
+      "account_name": "营业税金及附加",
+      "root_type": "Expense",
+      "report_type": "Profit and Loss"
+    },
+    {
+      "account_number": "5601",
+      "account_name": "销售费用",
+      "root_type": "Expense",
+      "report_type": "Profit and Loss"
+    },
+    {
+      "account_number": "5602",
+      "account_name": "管理费用",
+      "root_type": "Expense",
+      "report_type": "Profit and Loss",
+      "is_group": 1
+    },
+    {
+      "account_number": "560201",
+      "account_name": "办公费",
+      "root_type": "Expense",
+      "report_type": "Profit and Loss",
+      "parent_account_number": "5602"
+    },
+    {
+      "account_number": "560202",
+      "account_name": "差旅费",
+      "root_type": "Expense",
+      "report_type": "Profit and Loss",
+      "parent_account_number": "5602"
+    },
+    {
+      "account_number": "5603",
+      "account_name": "财务费用",
+      "root_type": "Expense",
+      "report_type": "Profit and Loss"
+    },
+    {
+      "account_number": "5711",
+      "account_name": "营业外支出",
+      "root_type": "Expense",
+      "report_type": "Profit and Loss"
+    },
+    {
+      "account_number": "5801",
+      "account_name": "所得税费用",
+      "root_type": "Expense",
+      "report_type": "Profit and Loss"
+    }
+  ]
+}
