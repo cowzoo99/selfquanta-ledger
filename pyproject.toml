@@ -2,7 +2,7 @@
 name = "internal_ledger"
 description = "Internal ledger for a single company."
 authors = [{ name = "Internal Ledger", email = "internal-ledger@example.com" }]
-license = "AGPL-3.0-only"
+license = { text = "AGPL-3.0-only" }
 requires-python = ">=3.14"
 dynamic = ["version"]
 
