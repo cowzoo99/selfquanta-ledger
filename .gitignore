@@ -6,5 +6,7 @@ __pycache__/
 .ruff_cache/
 node_modules/
 dist/
+build/
+*.egg-info/
 .env
 *.log
