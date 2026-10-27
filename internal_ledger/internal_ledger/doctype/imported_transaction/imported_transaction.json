@@ -13,7 +13,7 @@
   {"fieldname": "source", "label": "Source", "fieldtype": "Data", "reqd": 1},
   {"fieldname": "source_id", "label": "Source ID", "fieldtype": "Data"},
   {"fieldname": "occurred_at", "label": "Occurred At", "fieldtype": "Datetime", "reqd": 1},
-  {"fieldname": "amount", "label": "Amount", "fieldtype": "Currency", "options": "import_batch.base_currency", "precision": "9", "reqd": 1},
+  {"fieldname": "amount", "label": "Amount", "fieldtype": "Currency", "options": "Import Batch:import_batch:base_currency", "precision": "9", "reqd": 1},
   {"fieldname": "direction", "label": "Direction", "fieldtype": "Select", "options": "income\nexpense", "reqd": 1},
   {"fieldname": "counterparty", "label": "Counterparty", "fieldtype": "Data"},
   {"fieldname": "summary", "label": "Summary", "fieldtype": "Small Text"},

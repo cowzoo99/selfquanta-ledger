@@ -4,6 +4,7 @@ from datetime import datetime
 from decimal import Decimal
 from threading import Barrier
 import unittest
+from unittest.mock import patch
 from uuid import uuid4
 
 import frappe
@@ -77,6 +78,52 @@ def test_duplicates_are_retained_with_one_canonical_across_batches():
     assert {row.raw_row for row in rows} == {2, 3, 4, 5}
     assert all(not row.dedupe_key and row.duplicate_of == canonical[0].name for row in duplicates)
     assert frappe.db.count("Journal Entry") == frappe.flags.ledger_journal_count
+
+
+def test_amount_resolves_currency_from_import_batch():
+    from frappe.model.meta import get_field_currency
+
+    batch = save_batch("wechat", "currency-file", [tx()])
+    saved = frappe.get_doc("Imported Transaction", {"import_batch": batch})
+    assert get_field_currency(saved.meta.get_field("amount"), saved) == "CNY"
+
+
+def assert_deadlock_is_preserved(target):
+    from internal_ledger.internal_ledger.doctype.import_batch.import_batch import ImportBatch
+    from internal_ledger.internal_ledger.doctype.imported_transaction.imported_transaction import ImportedTransaction
+
+    controller = ImportBatch if target == "batch" else ImportedTransaction
+    original_insert = controller.db_insert
+    deadlock = frappe.QueryDeadlockError("Simulated InnoDB transaction rollback")
+
+    def insert_or_deadlock(doc, *args, **kwargs):
+        if target == "batch" or doc.status == target:
+            # InnoDB rolls back the entire transaction, invalidating all savepoints.
+            frappe.db.rollback()
+            raise deadlock
+        return original_insert(doc, *args, **kwargs)
+
+    with patch.object(controller, "db_insert", insert_or_deadlock):
+        try:
+            save_batch("wechat", "deadlock-file", [tx(), tx(raw_row=3)])
+        except Exception as actual:
+            assert actual is deadlock, f"Original deadlock was replaced by {actual!r}"
+        else:
+            raise AssertionError("The original deadlock must propagate to the caller")
+    assert not frappe.db.exists("Import Batch", {"file_hash": "deadlock-file"})
+    assert not frappe.db.exists("Imported Transaction", {"dedupe_key": "wechat:WX-1"})
+
+
+def test_batch_deadlock_preserves_original_exception():
+    assert_deadlock_is_preserved("batch")
+
+
+def test_canonical_insert_deadlock_preserves_original_exception():
+    assert_deadlock_is_preserved("Imported")
+
+
+def test_duplicate_insert_deadlock_preserves_original_exception():
+    assert_deadlock_is_preserved("Duplicate")
 
 
 def test_invalid_later_row_rolls_back_entire_batch_only():
@@ -186,6 +233,10 @@ def load_tests(loader, tests, pattern):
             test_fallback_uses_transaction_fields_but_not_file_row,
             test_save_batch_preserves_normalized_rows_and_settings,
             test_duplicates_are_retained_with_one_canonical_across_batches,
+            test_amount_resolves_currency_from_import_batch,
+            test_batch_deadlock_preserves_original_exception,
+            test_canonical_insert_deadlock_preserves_original_exception,
+            test_duplicate_insert_deadlock_preserves_original_exception,
             test_invalid_later_row_rolls_back_entire_batch_only,
             test_database_unique_index_rejects_direct_duplicate_insert,
             test_database_unique_index_arbitrates_concurrent_connections,

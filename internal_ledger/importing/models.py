@@ -55,11 +55,13 @@ def save_batch(source: str, file_hash: str, rows: list[NormalizedTransaction]) -
                     raise
                 values.update(status="Duplicate", dedupe_key=None, duplicate_of=canonical)
                 frappe.get_doc(values).insert()
-            finally:
-                frappe.db.release_savepoint(row_point)
-        return batch.name
+            frappe.db.release_savepoint(row_point)
+    except frappe.QueryDeadlockError:
+        # InnoDB already rolled back the transaction and invalidated its savepoints.
+        raise
     except Exception:
         frappe.db.rollback(save_point=batch_point)
-        raise
-    finally:
         frappe.db.release_savepoint(batch_point)
+        raise
+    frappe.db.release_savepoint(batch_point)
+    return batch.name
