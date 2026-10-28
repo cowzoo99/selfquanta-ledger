@@ -3,10 +3,12 @@ import {ref, onMounted} from 'vue';
 import Dashboard from './pages/Dashboard.vue';
 import ImportPreview from './pages/ImportPreview.vue';
 import ReviewCenter from './pages/ReviewCenter.vue';
+import EnterpriseMembers from './pages/EnterpriseMembers.vue';
 import {call, errorMessage} from './api';
 const page = ref('dashboard'), month = ref(frappe.datetime.get_today().slice(0, 7));
 const counts = ref(null), items = ref([]), loading = ref(false), error = ref('');
 const canWrite = frappe.session.user === 'Administrator' || frappe.user_roles.includes('账套管理员');
+const navigation = [['dashboard', '工作台'], ['import', '导入预览'], ['review', '审核中心'], ...(canWrite ? [['members', '企业成员']] : [])];
 async function refresh() {
   loading.value = true; error.value = '';
   try {
@@ -21,7 +23,7 @@ onMounted(refresh);
 <template>
   <div class="ledger-app">
     <nav aria-label="内账工作台导航"><h2>协同内账</h2>
-      <button v-for="entry in [['dashboard', '工作台'], ['import', '导入预览'], ['review', '审核中心']]" :key="entry[0]" :aria-current="page === entry[0] ? 'page' : undefined" @click="page = entry[0]">{{ entry[1] }}</button>
+      <button v-for="entry in navigation" :key="entry[0]" :aria-current="page === entry[0] ? 'page' : undefined" @click="page = entry[0]">{{ entry[1] }}</button>
       <a v-if="canWrite" href="/app/classification-rule">维护分类规则</a>
     </nav>
     <main>
@@ -29,8 +31,9 @@ onMounted(refresh);
         <dl v-if="counts" class="ledger-counts"><div><dt>收入</dt><dd>{{ counts.income }}</dd></div><div><dt>支出</dt><dd>{{ counts.expense }}</dd></div><div><dt>待分类</dt><dd>{{ counts.pending_classification }}</dd></div><div><dt>待审核</dt><dd>{{ counts.pending_review }}</dd></div><div><dt>已过账</dt><dd>{{ counts.posted }}</dd></div></dl>
       </header>
       <p v-if="error" role="alert">{{ error }}</p>
-      <Dashboard v-if="page === 'dashboard'" :items="items" :loading="loading" @navigate="page = $event" />
+      <Dashboard v-if="page === 'dashboard' || (page === 'members' && !canWrite)" :items="items" :loading="loading" @navigate="page = $event" />
       <ImportPreview v-else-if="page === 'import'" :can-write="canWrite" @imported="refresh" />
+      <EnterpriseMembers v-else-if="page === 'members' && canWrite" :active="page === 'members'" />
       <ReviewCenter v-else :items="items" :loading="loading" :can-write="canWrite" @refresh="refresh" />
     </main>
   </div>

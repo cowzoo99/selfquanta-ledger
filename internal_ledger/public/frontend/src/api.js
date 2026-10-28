@@ -3,6 +3,12 @@ export async function call(method, args = {}) {
   return response.message;
 }
 
+export async function memberCall(method, args = {}) {
+  const response = await frappe.call({method: `internal_ledger.api.member_api.${method}`, args,
+    type: method === 'list_enterprise_members' ? 'GET' : 'POST'});
+  return response.message;
+}
+
 export function errorMessage(error) {
   try {
     const messages = JSON.parse(error._server_messages || error.responseJSON?._server_messages || '[]');
