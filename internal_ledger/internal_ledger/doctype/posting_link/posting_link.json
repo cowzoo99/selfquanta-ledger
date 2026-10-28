@@ -1,0 +1,20 @@
+{
+ "doctype": "DocType",
+ "name": "Posting Link",
+ "module": "Internal Ledger",
+ "autoname": "hash",
+ "engine": "InnoDB",
+ "field_order": ["voucher_draft", "journal_entry", "status", "reversal_journal_entry", "reversal_reason"],
+ "fields": [
+  {"fieldname": "voucher_draft", "label": "Voucher Draft", "fieldtype": "Link", "options": "Voucher Draft", "reqd": 1, "unique": 1, "read_only": 1},
+  {"fieldname": "journal_entry", "label": "Journal Entry", "fieldtype": "Link", "options": "Journal Entry", "reqd": 1, "unique": 1, "read_only": 1},
+  {"fieldname": "status", "label": "Status", "fieldtype": "Select", "options": "Posted\nReversed", "default": "Posted", "reqd": 1, "read_only": 1},
+  {"fieldname": "reversal_journal_entry", "label": "Reversal Journal Entry", "fieldtype": "Link", "options": "Journal Entry", "unique": 1, "read_only": 1},
+  {"fieldname": "reversal_reason", "label": "Reversal Reason", "fieldtype": "Small Text", "read_only": 1}
+ ],
+ "permissions": [
+  {"role": "System Manager", "read": 1},
+  {"role": "账套管理员", "read": 1, "write": 1, "create": 1},
+  {"role": "账务查看者", "read": 1}
+ ]
+}

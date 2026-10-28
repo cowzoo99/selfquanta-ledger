@@ -34,14 +34,16 @@ class VoucherDraft(Document):
         previous = self.get_doc_before_save()
         if not previous and not self.is_new():
             previous = frappe.get_doc("Voucher Draft", self.name)
-        if self.docstatus != 0 or self.status not in {"Draft", "Approved", "Rejected"}:
+        posting = (self.flags.posting_transition and previous and previous.status == "Approved"
+                   and self.status == "Posted")
+        if self.docstatus != 0 or (self.status not in {"Draft", "Approved", "Rejected"} and not posting):
             frappe.throw("当前状态不可保存；过账须使用专用服务")
         if not previous and (self.status != "Draft" or self.is_manual_override or self.manual_override_by):
             frappe.throw("自动草稿只能处于 Draft 状态，不得伪造人工覆盖")
         if previous and self.imported_transaction != previous.imported_transaction:
             frappe.throw("草稿原流水不可更换")
         if previous and self.status != previous.status:
-            if self.flags.review_transition != self.status:
+            if self.flags.review_transition != self.status and not posting:
                 frappe.throw("状态只能由审核服务变更")
             assert_transition(previous.status, self.status)
         if previous and not self.flags.review_edit:

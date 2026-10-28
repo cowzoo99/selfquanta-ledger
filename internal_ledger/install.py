@@ -14,6 +14,11 @@ def ensure_roles() -> None:
     for role in ROLE_PERMISSIONS:
         if not frappe.db.exists("Role", role):
             frappe.get_doc({"doctype": "Role", "role_name": role}).insert()
+    from frappe.permissions import add_permission, update_permission_property
+
+    add_permission("Journal Entry", "账套管理员", ptype="read")
+    for action in ("read", "write", "create", "submit"):
+        update_permission_property("Journal Entry", "账套管理员", 0, action, 1)
 
 
 def load_chart_fixture() -> dict:
