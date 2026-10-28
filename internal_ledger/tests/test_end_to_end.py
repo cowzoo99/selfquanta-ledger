@@ -3,11 +3,14 @@ from decimal import Decimal
 import hashlib
 from pathlib import Path
 import unittest
+from unittest.mock import Mock, patch
+from uuid import uuid4
 
 import frappe
 
 from internal_ledger.tests.test_classifier import account, add_rule
 from internal_ledger.tests.test_importers import fixture
+from internal_ledger.tests.test_member_api import PasswordSafeFunctionTestCase
 from internal_ledger.tests.test_permissions import user, tear_down
 from internal_ledger.tests.test_review_api import set_up
 
@@ -25,7 +28,27 @@ def test_real_three_source_workflow_balances_audit_and_source_trace():
     add_rule(value="测试客户乙", direction="income", transaction_type="income",
              debit_account=None, credit_account=account("5001"))
     admin = user("账套管理员")
-    viewer = user("账务查看者")
+    from frappe.core.doctype.user.user import update_password
+    from internal_ledger.api.member_api import (create_enterprise_member, reset_enterprise_member_password,
+                                                set_enterprise_member_enabled)
+
+    frappe.set_user(admin)
+    temporary, replacement, final = (uuid4().hex + "!aB7" for _ in range(3))
+    viewer = create_enterprise_member("Workflow viewer", f"workflow-{uuid4().hex}@example.invalid",
+                                      temporary, temporary)["email"]
+    set_enterprise_member_enabled(viewer, 0)
+    set_enterprise_member_enabled(viewer, 1)
+    reset_enterprise_member_password(viewer, replacement, replacement)
+    events = frappe.get_all("Internal Ledger Audit Event", filters={"reference_name": viewer}, fields=["*"])
+    assert {event.action for event in events} == {"create_enterprise_member", "disable_enterprise_member",
+                                                  "enable_enterprise_member", "reset_enterprise_member_password"}
+    assert all(secret not in frappe.as_json(events) for secret in (temporary, replacement, final))
+    url = frappe.get_doc("User", viewer)._reset_password(send_email=False)
+    frappe.local.form_dict = frappe._dict(cmd="frappe.core.doctype.user.user.update_password")
+    with patch("frappe.core.doctype.user.user.test_password_strength", return_value={}), \
+            patch.object(frappe.local, "login_manager", unittest.mock.Mock(login_as=Mock()), create=True):
+        update_password(final, key=url.split("key=", 1)[1])
+    assert frappe.db.get_value("User", viewer, "internal_ledger_must_change_password") == 0
     payment = account("1001")
     before = Decimal(str(get_balance_on(account=payment, date="2026-10-31",
                                         company=frappe.flags.classification_company)))
@@ -104,5 +127,5 @@ def test_real_three_source_workflow_balances_audit_and_source_trace():
 
 
 def load_tests(loader, tests, pattern):
-    return unittest.TestSuite(unittest.FunctionTestCase(test, setUp=set_up, tearDown=tear_down)
+    return unittest.TestSuite(PasswordSafeFunctionTestCase(test, setUp=set_up, tearDown=tear_down)
                               for name, test in sorted(globals().items()) if name.startswith("test_"))

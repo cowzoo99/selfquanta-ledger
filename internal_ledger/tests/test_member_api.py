@@ -453,6 +453,74 @@ def test_member_concurrent_duplicate_uses_independent_database_connections():
         frappe.db.commit()
 
 
+
+def test_member_five_viewers_and_admin_preview_capacity_smoke():
+    import base64
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+    from time import monotonic
+
+    from internal_ledger.api.import_api import preview_import
+    from internal_ledger.api.review_api import get_dashboard_counts
+    from internal_ledger.tests.test_importers import fixture
+
+    site, sites_path = frappe.local.site, frappe.local.sites_path
+    frappe.db.rollback()
+    frappe.clear_cache()
+    original_company = frappe.db.get_single_value("Internal Ledger Settings", "company")
+    company = member_company_reference()
+    frappe.db.set_single_value("Internal Ledger Settings", "company", company)
+    viewers = []
+    try:
+        for _ in range(5):
+            email = create_member()["email"]
+            viewers.append(email)
+            frappe.db.set_value("User", email, "internal_ledger_must_change_password", 0)
+        frappe.db.commit()
+        baseline = frappe.db.count("Import Batch")
+        encoded = base64.b64encode(fixture("bank")).decode()
+        barrier = Barrier(6, timeout=30)
+
+        def worker(actor):
+            frappe.init(site=site, sites_path=sites_path)
+            frappe.connect()
+            try:
+                frappe.flags.in_test = True
+                frappe.set_user(actor)
+                connection = frappe.db.sql("select connection_id()")[0][0]
+                frappe.db.sql("set session innodb_lock_wait_timeout = 20")
+                barrier.wait()
+                result = (preview_import("bank", encoded, "test payment account") if actor == "Administrator"
+                          else get_dashboard_counts("2026-10"))
+                return connection, result
+            finally:
+                frappe.destroy()
+
+        started = monotonic()
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            futures = [pool.submit(worker, actor) for actor in viewers + ["Administrator"]]
+            results = [future.result(timeout=30) for future in futures]
+        assert monotonic() - started < 30
+        assert len({connection for connection, _ in results}) == 6
+        counts = [result for _, result in results[:5]]
+        assert all(row == counts[0] for row in counts)
+        assert counts[0] == {"month": "2026-10", "income": "0", "expense": "0",
+                             "pending_classification": 0, "pending_review": 0, "posted": 0}
+        assert len(results[-1][1]["rows"]) == 3 and not results[-1][1]["errors"]
+        frappe.db.rollback()
+        assert frappe.db.count("Import Batch") == baseline
+    finally:
+        frappe.set_user("Administrator")
+        for email in viewers:
+            frappe.db.delete("Internal Ledger Audit Event", {"reference_doctype": "User", "reference_name": email})
+            frappe.db.delete("User Permission", {"user": email})
+            frappe.delete_doc("User", email, force=True, ignore_permissions=True, ignore_missing=True)
+        frappe.db.set_single_value("Internal Ledger Settings", "company", original_company)
+        frappe.db.delete("Company", {"name": company})
+        frappe.db.commit()
+        frappe.clear_cache()
+
+
 def member_sessions(email):
     sessions = [uuid4().hex, uuid4().hex]
     frappe.flags.member_test_sessions = frappe.flags.get("member_test_sessions", []) + sessions
