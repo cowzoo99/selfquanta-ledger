@@ -14,7 +14,7 @@ The build follows the official layered image interface: images/layered/Container
 
 ## Build the immutable image
 
-Clone both repositories to a data disk. Do not put credentials in either remote URL when a credential helper or SSH key can be used.
+Clone both repositories to a data disk. The application build requires a credential-free HTTPS origin; do not put credentials in either remote URL.
 
     git clone https://github.com/frappe/frappe_docker /srv/frappe_docker
     git -C /srv/frappe_docker checkout v4.1.1
