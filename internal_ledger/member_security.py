@@ -14,6 +14,8 @@ ALLOWED_RESET_PATHS = {"/update-password"}
 
 
 def validate_temporary_password(password: str, confirm_password: str, user_data: tuple | None = None) -> None:
+    if not isinstance(password, str) or not password:
+        frappe.throw("请输入临时密码")
     if password != confirm_password:
         frappe.throw("两次密码不一致")
     result = test_password_strength(password, user_data=user_data)

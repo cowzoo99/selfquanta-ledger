@@ -4,7 +4,7 @@ import frappe
 from frappe.model.document import Document
 from frappe.utils import validate_email_address
 
-from internal_ledger.member_security import validate_temporary_password
+from internal_ledger.member_security import revoke_sessions, validate_temporary_password
 from internal_ledger.permissions import record_member_audit, require_ledger_admin
 
 
@@ -75,3 +75,48 @@ def create_enterprise_member(first_name: str, email: str, temporary_password: st
         raise
     return {"email": user.name, "full_name": user.full_name, "enabled": int(user.enabled),
             "must_change_password": int(user.internal_ledger_must_change_password)}
+
+
+@frappe.whitelist(methods=["POST"])
+def set_enterprise_member_enabled(user: str, enabled: int) -> dict:
+    require_ledger_admin()
+    company = _company(for_update=True)
+    if not isinstance(enabled, (int, bool)) or enabled not in (0, 1):
+        frappe.throw("成员启用状态必须为 0 或 1")
+    member = _managed_member(user, company, for_update=True)
+    enabled = int(enabled)
+    savepoint = "member_enabled_" + uuid4().hex
+    frappe.db.savepoint(savepoint)
+    try:
+        frappe.db.set_value("User", member.name, "enabled", enabled)
+        if not enabled:
+            revoke_sessions(member.name)
+        record_member_audit("enable_enterprise_member" if enabled else "disable_enterprise_member",
+                            member.name, company)
+    except Exception:
+        frappe.db.rollback(save_point=savepoint)
+        raise
+    return {"email": member.name, "enabled": enabled}
+
+
+@frappe.whitelist(methods=["POST"])
+def reset_enterprise_member_password(user: str, temporary_password: str, confirm_password: str) -> dict:
+    require_ledger_admin()
+    company = _company(for_update=True)
+    member = _managed_member(user, company, for_update=True)
+    validate_temporary_password(temporary_password, confirm_password,
+                                (member.first_name, member.middle_name, member.last_name, member.email, member.birth_date))
+    # This lower-level helper avoids email and the committing core session-clear helper.
+    from frappe.utils.password import update_password
+
+    savepoint = "member_password_" + uuid4().hex
+    frappe.db.savepoint(savepoint)
+    try:
+        update_password(member.name, temporary_password, logout_all_sessions=False)
+        frappe.db.set_value("User", member.name, "internal_ledger_must_change_password", 1)
+        revoke_sessions(member.name)
+        record_member_audit("reset_enterprise_member_password", member.name, company)
+    except Exception:
+        frappe.db.rollback(save_point=savepoint)
+        raise
+    return {"email": member.name, "must_change_password": 1}

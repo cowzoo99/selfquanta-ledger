@@ -453,6 +453,222 @@ def test_member_concurrent_duplicate_uses_independent_database_connections():
         frappe.db.commit()
 
 
+def member_sessions(email):
+    sessions = [uuid4().hex, uuid4().hex]
+    frappe.flags.member_test_sessions = frappe.flags.get("member_test_sessions", []) + sessions
+    for sid in sessions:
+        frappe.db.sql("insert into tabSessions (user, sid) values (%s, %s)", (email, sid))
+        frappe.cache.hset("session", sid, {"user": email})
+    return sessions
+
+
+def member_audits(email):
+    return frappe.get_all("Internal Ledger Audit Event", filters={"reference_name": email},
+                          fields=["*"], order_by="creation asc")
+
+
+def test_member_enable_disable_preserves_membership_and_revokes_sessions():
+    from internal_ledger.api.member_api import set_enterprise_member_enabled
+
+    email = create_member()["email"]
+    sessions = member_sessions(email)
+    roles = frappe.get_all("Has Role", filters={"parent": email}, fields=["name", "role"])
+    permissions = frappe.get_all("User Permission", filters={"user": email}, fields=["name", "for_value"])
+    with patch.object(frappe.db, "commit", side_effect=AssertionError("Unexpected commit")):
+        assert set_enterprise_member_enabled(email, 0) == {"email": email, "enabled": 0}
+        assert frappe.db.get_value("User", email, "enabled") == 0
+        assert frappe.db.count("Sessions", {"user": email}) == 0
+        assert all(not frappe.cache.hget("session", sid) for sid in sessions)
+        assert set_enterprise_member_enabled(email, 1) == {"email": email, "enabled": 1}
+    assert frappe.db.get_value("User", email, "enabled") == 1
+    assert frappe.get_all("Has Role", filters={"parent": email}, fields=["name", "role"]) == roles
+    assert frappe.get_all("User Permission", filters={"user": email}, fields=["name", "for_value"]) == permissions
+    assert [event.action for event in member_audits(email)] == [
+        "create_enterprise_member", "disable_enterprise_member", "enable_enterprise_member"]
+    # Enabling an already enabled member must not log out an active session.
+    member_sessions(email)
+    assert set_enterprise_member_enabled(email, True)["enabled"] == 1
+    assert frappe.db.count("Sessions", {"user": email}) == 2
+    assert frappe.allowed_http_methods_for_whitelisted_func[set_enterprise_member_enabled] == ["POST"]
+
+
+def test_member_reset_replaces_password_without_email_commit_or_secret_output():
+    from frappe.utils.password import check_password
+    from internal_ledger.api.member_api import reset_enterprise_member_password
+
+    email = create_member()["email"]
+    frappe.db.set_value("User", email, "internal_ledger_must_change_password", 0)
+    sessions = member_sessions(email)
+    password = uuid4().hex + "!aB7"
+    with patch.object(frappe.db, "commit", side_effect=AssertionError("Unexpected commit")), \
+            patch("frappe.sendmail", side_effect=AssertionError("Unexpected email")):
+        result = reset_enterprise_member_password(email, password, password)
+    assert result == {"email": email, "must_change_password": 1}
+    assert check_password(email, password) == email
+    with unittest.TestCase().assertRaises(frappe.AuthenticationError):
+        check_password(email, MEMBER_PASSWORD)
+    assert frappe.db.get_value("User", email, "internal_ledger_must_change_password") == 1
+    assert not frappe.db.count("Sessions", {"user": email})
+    assert all(not frappe.cache.hget("session", sid) for sid in sessions)
+    audits = member_audits(email)
+    assert audits[-1].action == "reset_enterprise_member_password"
+    assert audits[-1].actor == "Administrator" and audits[-1].company == frappe.flags.classification_company
+    assert password not in frappe.as_json({"response": result, "audit": audits})
+    assert MEMBER_PASSWORD not in frappe.as_json({"response": result, "audit": audits})
+    assert frappe.allowed_http_methods_for_whitelisted_func[reset_enterprise_member_password] == ["POST"]
+
+
+def test_member_lifecycle_denies_unauthorized_actors_and_nonmembers():
+    from internal_ledger.api.member_api import reset_enterprise_member_password, set_enterprise_member_enabled
+    from internal_ledger.tests.test_permissions import user
+
+    email = create_member()["email"]
+    company = frappe.flags.classification_company
+    role_only, foreign, company_only = user("账务查看者"), user("账务查看者"), user("System Manager")
+    company_permission(foreign, member_company_reference())
+    company_permission(company_only, company)
+    password = uuid4().hex + "!aB7"
+    operations = (lambda target: set_enterprise_member_enabled(target, 0),
+                  lambda target: reset_enterprise_member_password(target, password, password))
+    for actor in (email, company_only, "Guest"):
+        frappe.set_user(actor)
+        for operation in operations:
+            with unittest.TestCase().assertRaises(frappe.PermissionError):
+                operation(email)
+    frappe.set_user("Administrator")
+    for target in ("Administrator", "Guest", role_only, foreign, company_only, "missing@example.invalid"):
+        for operation in operations:
+            with unittest.TestCase().assertRaises(frappe.PermissionError):
+                operation(target)
+    assert frappe.db.get_value("User", email, "enabled") == 1
+    assert len(member_audits(email)) == 1
+    admin = user("账套管理员")
+    frappe.set_user(admin)
+    assert set_enterprise_member_enabled(email, 0)["enabled"] == 0
+    assert reset_enterprise_member_password(email, password, password)["must_change_password"] == 1
+    frappe.set_user("Administrator")
+    frappe.db.set_single_value("Internal Ledger Settings", "company", None)
+    for operation in operations:
+        with unittest.TestCase().assertRaises(frappe.ValidationError):
+            operation(email)
+
+
+def test_member_lifecycle_validates_inputs_before_mutation():
+    from frappe.utils.password import check_password
+    from internal_ledger.api.member_api import reset_enterprise_member_password, set_enterprise_member_enabled
+
+    email = create_member()["email"]
+    for value in (-1, 2, "false", "", None, [], {}, 0.5):
+        with unittest.TestCase().assertRaises((frappe.ValidationError, TypeError)):
+            set_enterprise_member_enabled(email, value)
+    password = uuid4().hex + "!aB7"
+    for temporary, confirmation in (("", ""), (password, "different"), (None, None)):
+        with unittest.TestCase().assertRaises((frappe.ValidationError, TypeError)):
+            reset_enterprise_member_password(email, temporary, confirmation)
+    with patch("internal_ledger.member_security.test_password_strength", return_value={
+        "feedback": {"password_policy_validation_passed": False},
+    }):
+        with unittest.TestCase().assertRaises(frappe.ValidationError):
+            reset_enterprise_member_password(email, password, password)
+    assert frappe.db.get_value("User", email, "enabled") == 1
+    assert check_password(email, MEMBER_PASSWORD) == email
+    assert len(member_audits(email)) == 1
+    # Frappe normalizes annotated integer arguments before invoking the service.
+    for value, expected in ((False, 0), (0.0, 0), ("0", 0), (True, 1), (1.0, 1), ("1", 1)):
+        assert set_enterprise_member_enabled(email, value) == {"email": email, "enabled": expected}
+
+
+def test_member_lifecycle_failures_roll_back_password_sessions_state_and_audit():
+    from frappe.utils.password import check_password
+    from internal_ledger.api.member_api import reset_enterprise_member_password, set_enterprise_member_enabled
+    from internal_ledger.permissions import record_member_audit
+
+    email = create_member()["email"]
+    frappe.db.set_value("User", email, "internal_ledger_must_change_password", 0)
+    sessions = member_sessions(email)
+    before = member_audits(email)
+    password = uuid4().hex + "!aB7"
+
+    def fail_after_audit(*args, **kwargs):
+        record_member_audit(*args, **kwargs)
+        raise RuntimeError("injected lifecycle failure")
+
+    for operation in (lambda: set_enterprise_member_enabled(email, 0),
+                      lambda: reset_enterprise_member_password(email, password, password)):
+        for failure in (patch.object(frappe.cache, "hdel", side_effect=RuntimeError("injected lifecycle failure")),
+                        patch("internal_ledger.api.member_api.record_member_audit", side_effect=fail_after_audit)):
+            frappe.db.savepoint("lifecycle_failure_test")
+            with failure, patch.object(frappe.db, "commit", side_effect=AssertionError("Unexpected commit")):
+                with unittest.TestCase().assertRaisesRegex(RuntimeError, "injected lifecycle failure"):
+                    operation()
+            # The service itself must restore DB state before the caller's rollback.
+            for rollback in (False, True):
+                if rollback:
+                    frappe.db.rollback(save_point="lifecycle_failure_test")
+                assert frappe.db.get_value("User", email, "enabled") == 1
+                assert frappe.db.get_value("User", email, "internal_ledger_must_change_password") == 0
+                assert check_password(email, MEMBER_PASSWORD) == email
+                with unittest.TestCase().assertRaises(frappe.AuthenticationError):
+                    check_password(email, password)
+                assert frappe.db.count("Sessions", {"user": email}) == 2
+                assert member_audits(email) == before
+    for sid in sessions:
+        frappe.cache.hdel("session", sid)
+
+
+def test_member_temporary_login_requires_core_password_reset_before_viewer_api():
+    from frappe.auth import CookieManager, LoginManager
+    from frappe.core.doctype.user.user import update_password
+    from werkzeug.wrappers import Request
+    from internal_ledger.api.member_api import reset_enterprise_member_password
+    from internal_ledger.api.review_api import get_dashboard_counts
+    from internal_ledger.member_security import block_temporary_password_session
+
+    email = create_member()["email"]
+    password, final_password = uuid4().hex + "!aB7", uuid4().hex + "!aB7"
+    reset_enterprise_member_password(email, password, password)
+    frappe.set_user("Guest")
+    frappe.local.request = Request.from_values(path="/api/method/login", method="POST")
+    frappe.local.request_ip = "127.0.0.1"
+    frappe.local.cookie_manager = CookieManager()
+    frappe.local.form_dict = frappe._dict(cmd="login", usr=email, pwd=password)
+    login_manager = LoginManager.__new__(LoginManager)
+    login_manager.user = login_manager.info = login_manager.full_name = login_manager.user_type = None
+    # Core login/session code commits; keep its actual writes isolated in this test transaction.
+    with patch.object(frappe.db, "commit"), \
+            patch.object(frappe.local, "login_manager", login_manager, create=True), \
+            patch("frappe.sendmail", side_effect=AssertionError("Unexpected email")):
+        login_manager.login()
+        assert frappe.session.user == email
+        redirect = frappe.local.response.get("redirect_to", "")
+        assert "/update-password?key=" in redirect
+        frappe.local.form_dict = frappe._dict(cmd="internal_ledger.api.review_api.get_dashboard_counts")
+        frappe.local.request = Request.from_values(path="/api/method/internal_ledger.api.review_api.get_dashboard_counts")
+        with unittest.TestCase().assertRaises(frappe.AuthenticationError):
+            block_temporary_password_session()
+            get_dashboard_counts("2026-10")
+        frappe.local.form_dict = frappe._dict(cmd=PASSWORD_COMMAND)
+        update_password(final_password, key=redirect.split("key=", 1)[1])
+        assert frappe.db.get_value("User", email, "internal_ledger_must_change_password") == 0
+        frappe.local.form_dict = frappe._dict(cmd="internal_ledger.api.review_api.get_dashboard_counts")
+        block_temporary_password_session()
+        assert get_dashboard_counts("2026-10")["posted"] == 0
+    for sid in frappe.db.sql("select sid from tabSessions where user=%s", (email,), pluck=True):
+        frappe.cache.hdel("session", sid)
+    frappe.local.response.pop("redirect_to", None)
+
+
+class PasswordSafeFunctionTestCase(unittest.FunctionTestCase):
+    def run(self, result=None):
+        self._test_result = result
+        return super().run(result)
+
+    def setUp(self):
+        # Frappe enables traceback locals; security tests must never print credentials or reset keys.
+        self._test_result.tb_locals = False
+        super().setUp()
+
+
 def load_tests(loader, tests, pattern):
     def set_up(test):
         frappe.set_user("Administrator")
@@ -464,11 +680,13 @@ def load_tests(loader, tests, pattern):
 
     def tear_down():
         frappe.set_user("Administrator")
+        for sid in frappe.flags.pop("member_test_sessions", []):
+            frappe.cache.hdel("session", sid)
         # Custom Field updates run schema DDL, which commits and invalidates savepoints.
         frappe.db.rollback()
         frappe.local.form_dict = frappe._dict()
         frappe.local.request = None
         frappe.clear_cache()
 
-    return unittest.TestSuite(unittest.FunctionTestCase(test, setUp=lambda test=test: set_up(test), tearDown=tear_down)
+    return unittest.TestSuite(PasswordSafeFunctionTestCase(test, setUp=lambda test=test: set_up(test), tearDown=tear_down)
                               for name, test in globals().items() if name.startswith("test_"))
