@@ -25,12 +25,14 @@ The script:
 
 - captures database plus public/private files to exact temporary paths inside backend;
 - records tabCompany, tabJournal Entry, and tabFile counts;
-- encrypts before producing the final daily archive;
+- encrypts to a unique temporary file in the daily target directory, validates it, then atomically renames it to the final archive;
 - writes an unencrypted sidecar containing only site, commit, timestamp, and counts;
 - prints only timestamp, archive path, and SHA-256;
 - keeps archives for the newest seven daily dates and the first encrypted monthly copy.
 
 Schedule this command daily with the host service manager. Monitor its exit code and copy the printed checksum to the backup monitoring record. The script rejects a drive root, relative path, project-local destination, missing/short key, invalid site, or invalid Compose project. It never runs a Docker-wide prune.
+
+The count manifest is an operational restore check, not a transaction snapshot: on a busy online site, writes can occur between the count query and database dump. Prefer a maintenance window or otherwise quiescent period for acceptance drills. A count mismatch fails the drill and requires investigation; the script does not add a long database lock.
 
 ## Isolated restore drill
 
@@ -46,6 +48,10 @@ The image named in INTERNAL_LEDGER_IMAGE must already exist locally and must exa
     pwsh -NoProfile -File infra/restore-check.ps1
 
 The restore check creates a unique Compose project and fresh named volumes, binds no public service, restores the database and both file archives, migrates the site, and compares Company, Journal Entry, and File counts to the manifest. On success it writes a durable JSON report and removes only that exact project's containers and volumes. On failure it writes a FAIL report and retains the named project for diagnosis; decrypted host-side temporary files and generated secrets are still removed.
+
+Before creating anything, the script checks containers, networks, and volumes carrying the requested Compose project label. If any already exist, it refuses to reuse or delete them. If INTERNAL_LEDGER_RESTORE_PROJECT is omitted, a high-entropy ledger-restore-* name is generated.
+
+The encrypted archive records the actual Frappe v16 site-config backup filename. During restore, the original encryption_key is merged into the fresh site config through files; the fresh db_name and db_password are preserved. The encryption key is never placed in a process argument or log. A backup without encryption_key fails before the database restore because encrypted Frappe fields would otherwise be unreadable.
 
 After diagnosing a failed drill, an operator may remove only the reported project:
 

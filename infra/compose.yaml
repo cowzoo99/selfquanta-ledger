@@ -69,6 +69,7 @@ services:
     entrypoint: ["bash", "-c"]
     command:
       - >
+        set -euo pipefail;
         ls -1 apps > sites/apps.txt;
         bench set-config -g db_host db;
         bench set-config -gp db_port 3306;
@@ -97,6 +98,7 @@ services:
     entrypoint: ["bash", "-c"]
     command:
       - >
+        set -euo pipefail;
         test -n "$$SITE_NAME";
         test ! -d "sites/$$SITE_NAME";
         bench new-site "$$SITE_NAME"
@@ -126,8 +128,6 @@ services:
       GUNICORN_THREADS: ${GUNICORN_THREADS:-4}
       GUNICORN_WORKERS: ${GUNICORN_WORKERS:-2}
       GUNICORN_TIMEOUT: ${GUNICORN_TIMEOUT:-120}
-    secrets:
-      - db_root_password
     healthcheck:
       test:
         - CMD-SHELL
@@ -136,6 +136,21 @@ services:
       timeout: 7s
       retries: 12
       start_period: 40s
+
+  restore-runner:
+    <<: *app-image
+    profiles: ["restore"]
+    restart: "no"
+    secrets:
+      - db_root_password
+    networks:
+      - internal
+    volumes:
+      - sites:/home/frappe/frappe-bench/sites
+      - logs:/home/frappe/frappe-bench/logs
+    depends_on:
+      configurator:
+        condition: service_completed_successfully
 
   frontend:
     <<: *app-service

@@ -54,8 +54,8 @@ $origin = (& git -C $repo remote get-url origin 2>$null | Out-String).Trim()
 if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($origin)) {
     throw "Git remote 'origin' is required before an image can be built."
 }
-if ($origin -notmatch '^(https://|ssh://|git@)') {
-    throw "Git remote 'origin' must be an HTTP(S) or SSH remote."
+if ($origin -notmatch '^https://') {
+    throw "Git remote 'origin' must be a credential-free HTTPS URL; this build does not mount SSH credentials."
 }
 if ($origin -match '^https?://[^/]*@') {
     throw "Git remote 'origin' must not embed credentials."

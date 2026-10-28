@@ -7,7 +7,7 @@ This is the production path for one company and one site. It uses the exact appl
 - Ubuntu LTS server. Two CPU cores and 4 GB RAM are the minimum trial size; 4 cores and 8 GB are recommended.
 - Docker Engine with Compose v2 and BuildKit secret mounts, Git, PowerShell 7, and OpenSSL.
 - A DNS name, a real TLS certificate/key, and firewall rules exposing only SSH, TCP 80, and TCP 443.
-- A reachable Git origin. The exact application commit must be available through a branch or tag named by INTERNAL_LEDGER_APP_REF.
+- A credential-free HTTPS Git origin reachable from the image builder. The exact application commit must be available through a branch or tag named by INTERNAL_LEDGER_APP_REF. SSH and embedded-credential URLs are rejected because the pinned layered build does not mount SSH credentials.
 - An official frappe_docker checkout at tag v4.1.1, commit d84154ae23ab7ae756dfe942e3f24dcd70d1fbda.
 
 The build follows the official layered image interface: images/layered/Containerfile, FRAPPE_BRANCH, and the BuildKit apps_json secret. See the [official build setup](https://github.com/frappe/frappe_docker/blob/v4.1.1/docs/02-setup/02-build-setup.md) and [layered Containerfile](https://github.com/frappe/frappe_docker/blob/v4.1.1/images/layered/Containerfile).
@@ -21,7 +21,7 @@ Clone both repositories to a data disk. Do not put credentials in either remote 
     git -C /srv/frappe_docker rev-parse HEAD
 
     $env:FRAPPE_DOCKER_DIR = '/srv/frappe_docker'
-    $env:INTERNAL_LEDGER_APP_REF = 'refs/tags/v0.1.0'
+    $env:INTERNAL_LEDGER_APP_REF = 'v0.1.0'
     $env:INTERNAL_LEDGER_BUILD_TEMP = '/srv/internal-ledger-build'
     pwsh -NoProfile -File infra/build_image.ps1
 
@@ -59,6 +59,8 @@ Run the checks before touching production:
     docker compose --env-file infra/versions.env -f infra/compose.yaml ps
 
 The one-shot create-site service refuses to overwrite an existing site. The gateway is the only service with published ports. MariaDB, Redis, backend, workers, scheduler, WebSocket, and the internal Frappe frontend remain on the internal Docker network. HTTP redirects to HTTPS.
+
+The long-running backend never receives the MariaDB root secret. Only MariaDB itself, the one-shot create-site service, and the isolated restore runner can read it.
 
 After first login, set timezone Asia/Shanghai, currency CNY, the accounting year, and strong named user accounts. Disable public registration. Keep SSH key-only where possible and rate-limit login at the host/provider layer.
 

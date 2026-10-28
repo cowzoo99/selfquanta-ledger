@@ -33,6 +33,7 @@ foreach ($name in $required) {
     Assert-True (Test-Path -LiteralPath $path -PathType Leaf) "Missing required file: $name"
 }
 
+$repositoryRoot = (Resolve-Path (Join-Path $InfraRoot '..')).Path
 $versions = Get-Content -Raw -LiteralPath (Join-Path $InfraRoot 'versions.env')
 Assert-True ($versions -match '(?m)^ERPNEXT_VERSION=v16\.52\.1$') 'ERPNext version is not pinned to v16.52.1'
 Assert-True ($versions -match '(?m)^FRAPPE_REF=v16\.52\.0$') 'Frappe ref is not pinned to v16.52.0'
@@ -41,9 +42,17 @@ Assert-True ($versions -match '(?m)^REDIS_IMAGE=redis:8\.2-alpine$') 'Redis imag
 Assert-True ($versions -notmatch '(?im):latest\s*$') 'Mutable latest tag is forbidden'
 
 $compose = Get-Content -Raw -LiteralPath (Join-Path $InfraRoot 'compose.yaml')
-foreach ($internalService in @('db', 'redis-cache', 'redis-queue', 'configurator', 'create-site', 'backend', 'frontend', 'websocket', 'queue-short', 'queue-long', 'scheduler')) {
+foreach ($internalService in @('db', 'redis-cache', 'redis-queue', 'configurator', 'create-site', 'backend', 'restore-runner', 'frontend', 'websocket', 'queue-short', 'queue-long', 'scheduler')) {
     Assert-True ((Get-ServiceBlock -Yaml $compose -Name $internalService) -notmatch '(?m)^\s{4}ports:\s*$') "$internalService must not publish host ports"
 }
+$backend = Get-ServiceBlock -Yaml $compose -Name 'backend'
+Assert-True ($backend -notmatch 'db_root_password') 'Long-running backend must not receive the database root secret'
+$restoreRunner = Get-ServiceBlock -Yaml $compose -Name 'restore-runner'
+Assert-True ($restoreRunner -match 'db_root_password') 'One-shot restore runner must receive the database root secret'
+$configurator = Get-ServiceBlock -Yaml $compose -Name 'configurator'
+$createSite = Get-ServiceBlock -Yaml $compose -Name 'create-site'
+Assert-True ($configurator -match '(?m)^\s+set -euo pipefail;') 'Configurator shell must enable strict failure propagation'
+Assert-True ($createSite -match '(?m)^\s+set -euo pipefail;') 'Create-site shell must enable strict failure propagation'
 $gateway = Get-ServiceBlock -Yaml $compose -Name 'gateway'
 Assert-True ($gateway -match '(?m)^\s{4}ports:\s*$') 'Gateway must publish HTTP/HTTPS ports'
 Assert-True ($gateway -match 'HTTP_PORT:-80}:8080') 'HTTP port 80 must map to the gateway'
@@ -61,12 +70,15 @@ Assert-True ($build -match "'rev-parse', 'HEAD'") 'Build must derive the exact G
 Assert-True ($build -match '--secret=id=apps_json,src=') 'Build must pass apps.json as a BuildKit secret'
 Assert-True ($build -match 'images/layered/Containerfile') 'Build must use the official layered Containerfile'
 Assert-True ($build -notmatch 'APPS_JSON_BASE64') 'apps.json must not be passed as a build argument'
+Assert-True ($build -match "origin -notmatch '\^https://'") 'Build must reject unsupported SSH origins before Docker'
 
 $backup = Get-Content -Raw -LiteralPath (Join-Path $InfraRoot 'backup.ps1')
 Assert-True ($backup -match 'BACKUP_KEY_FILE') 'Backup must require an external key file'
 Assert-True ($backup -match 'openssl') 'Backup must encrypt the archive'
 Assert-True ($backup -match 'Get-FileHash') 'Backup must emit a checksum'
 Assert-True ($backup -notmatch 'Write-(Host|Output).*key') 'Backup must not log key material'
+Assert-True ($backup -match 'encryptedTemp') 'Backup encryption must target a unique temporary file'
+Assert-True ($backup -match '\[IO\.File\]::Move') 'Validated encrypted backup must be atomically renamed into place'
 
 $restore = Get-Content -Raw -LiteralPath (Join-Path $InfraRoot 'restore-check.ps1')
 Assert-True ($restore -match 'INTERNAL_LEDGER_RESTORE_PROJECT') 'Restore must require an isolated project name'
@@ -74,6 +86,12 @@ Assert-True ($restore -notmatch 'docker\s+(system|volume)\s+prune') 'Broad Docke
 Assert-True ($restore -match 'tabCompany') 'Restore must verify Company count'
 Assert-True ($restore -match 'tabJournal Entry') 'Restore must verify Journal Entry count'
 Assert-True ($restore -match 'tabFile') 'Restore must verify attachment count'
+Assert-True ($restore -match "label=com\.docker\.compose\.project=") 'Restore must reject pre-existing project-labelled resources'
+Assert-True ($restore -match 'Merge-SiteConfig') 'Restore must merge the original encryption key into fresh site credentials'
+
+$deployDoc = Get-Content -Raw -LiteralPath (Join-Path $repositoryRoot 'docs/operations/deploy.md')
+Assert-True ($deployDoc -match "INTERNAL_LEDGER_APP_REF = 'v0\.1\.0'") 'Deploy example must use the short app ref accepted by build_image.ps1'
+Assert-True ($deployDoc -notmatch 'refs/tags/v0\.1\.0') 'Deploy example must not use a rejected full ref'
 
 $scripts = @('test-config.ps1', 'build_image.ps1', 'backup.ps1', 'restore-check.ps1')
 foreach ($name in $scripts) {
@@ -99,7 +117,6 @@ function Assert-CommandFailsLike {
     Assert-True ($output -match $Pattern) "$Message failed for an unexpected reason"
 }
 
-$repositoryRoot = (Resolve-Path (Join-Path $InfraRoot '..')).Path
 $scratch = Join-Path $repositoryRoot '.infra-test-scratch'
 $externalScratch = Join-Path (Split-Path $repositoryRoot -Parent) '.internal-ledger-infra-test'
 $oldImage = $env:INTERNAL_LEDGER_IMAGE
@@ -169,6 +186,50 @@ try {
         encrypted_sha256 = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
         counts = [ordered]@{ company = 1; journal_entry = 2; file = 3 }
     } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $manifest
+
+    $backupConfig = Join-Path $externalScratch 'backup-site-config.json'
+    $freshConfig = Join-Path $externalScratch 'fresh-site-config.json'
+    $mergedConfig = Join-Path $externalScratch 'merged-site-config.json'
+    @{ db_name = 'old-db'; db_password = 'old-password'; encryption_key = 'original-encryption-key' } |
+        ConvertTo-Json | Set-Content -LiteralPath $backupConfig
+    @{ db_name = 'fresh-db'; db_password = 'fresh-password'; host_name = 'restore.localhost' } |
+        ConvertTo-Json | Set-Content -LiteralPath $freshConfig
+    & (Join-Path $InfraRoot 'restore-check.ps1') -MergeSiteConfigOnly -BackupSiteConfig $backupConfig -FreshSiteConfig $freshConfig -MergedSiteConfig $mergedConfig
+    if ($LASTEXITCODE -ne 0) { throw 'Site config merge test failed.' }
+    $merged = Get-Content -Raw -LiteralPath $mergedConfig | ConvertFrom-Json
+    Assert-True ($merged.db_name -eq 'fresh-db' -and $merged.db_password -eq 'fresh-password') 'Site config merge overwrote fresh database credentials'
+    Assert-True ($merged.encryption_key -eq 'original-encryption-key') 'Site config merge did not restore encryption_key'
+    @{ db_name = 'old-db'; db_password = 'old-password' } | ConvertTo-Json | Set-Content -LiteralPath $backupConfig
+    Assert-CommandFailsLike {
+        pwsh -NoProfile -File (Join-Path $InfraRoot 'restore-check.ps1') -MergeSiteConfigOnly -BackupSiteConfig $backupConfig -FreshSiteConfig $freshConfig -MergedSiteConfig $mergedConfig
+    } 'missing encryption_key' 'Missing encryption key test'
+
+    $mockDocker = Join-Path $externalScratch 'mock-docker.ps1'
+    @'
+param([Parameter(ValueFromRemainingArguments = $true)][string[]]$DockerArgs)
+$kind = $env:MOCK_DOCKER_RESOURCE
+if (($kind -eq 'container' -and $DockerArgs[0] -eq 'ps') -or
+    ($kind -eq 'network' -and $DockerArgs[0] -eq 'network') -or
+    ($kind -eq 'volume' -and $DockerArgs[0] -eq 'volume')) {
+    Write-Output 'existing-resource-id'
+}
+exit 0
+'@ | Set-Content -LiteralPath $mockDocker
+    foreach ($resourceKind in @('container', 'network', 'volume')) {
+        $env:MOCK_DOCKER_RESOURCE = $resourceKind
+        Assert-CommandFailsLike {
+            pwsh -NoProfile -File (Join-Path $InfraRoot 'restore-check.ps1') -Archive $archive -Manifest $manifest -KeyFile $key -Project ledger-restore-existing -ReportDirectory (Join-Path $externalScratch 'reports') -DockerExecutable $mockDocker -ValidateProjectOnly
+        } "already has $resourceKind resources" "Existing restore $resourceKind test"
+    }
+    $env:MOCK_DOCKER_RESOURCE = ''
+    & (Join-Path $InfraRoot 'restore-check.ps1') -Archive $archive -Manifest $manifest -KeyFile $key -Project ledger-restore-unused-01 -ReportDirectory (Join-Path $externalScratch 'reports') -DockerExecutable $mockDocker -ValidateProjectOnly
+    if ($LASTEXITCODE -ne 0) { throw 'Unused restore project validation failed.' }
+
+    if (Get-Command bash -ErrorAction SilentlyContinue) {
+        $strictOutput = & bash -c 'set -euo pipefail; false; echo unreachable' 2>&1 | Out-String
+        Assert-True ($LASTEXITCODE -ne 0 -and $strictOutput -notmatch 'unreachable') 'Strict shell failure propagation test failed'
+    }
+
     Assert-CommandFailsLike {
         pwsh -NoProfile -File (Join-Path $InfraRoot 'restore-check.ps1') -Archive $archive -Manifest $manifest -KeyFile $key -Project production -ReportDirectory (Join-Path $externalScratch 'reports') -ValidateOnly
     } 'ledger-restore' 'Unsafe restore project name test'

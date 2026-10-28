@@ -5,6 +5,12 @@ param(
     [string]$KeyFile = $env:BACKUP_KEY_FILE,
     [string]$Project = $env:INTERNAL_LEDGER_RESTORE_PROJECT,
     [string]$ReportDirectory = $env:INTERNAL_LEDGER_RESTORE_REPORT_DIR,
+    [string]$DockerExecutable = 'docker',
+    [string]$BackupSiteConfig,
+    [string]$FreshSiteConfig,
+    [string]$MergedSiteConfig,
+    [switch]$MergeSiteConfigOnly,
+    [switch]$ValidateProjectOnly,
     [switch]$ValidateOnly
 )
 
@@ -34,10 +40,70 @@ function Resolve-SafeReportDirectory {
     return $full
 }
 
+function Merge-SiteConfig {
+    param(
+        [string]$BackupPath,
+        [string]$FreshPath,
+        [string]$OutputPath
+    )
+    foreach ($item in @(
+        @{ Path = $BackupPath; Label = 'backup site config' },
+        @{ Path = $FreshPath; Label = 'fresh site config' }
+    )) {
+        if ([string]::IsNullOrWhiteSpace($item.Path) -or -not (Test-Path -LiteralPath $item.Path -PathType Leaf)) {
+            throw "Missing $($item.Label)."
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace($OutputPath) -or -not [IO.Path]::IsPathRooted($OutputPath)) {
+        throw 'Merged site config output must be an explicit absolute path.'
+    }
+
+    $backupConfig = Get-Content -Raw -LiteralPath $BackupPath | ConvertFrom-Json -AsHashtable
+    $freshConfig = Get-Content -Raw -LiteralPath $FreshPath | ConvertFrom-Json -AsHashtable
+    if (-not $backupConfig.ContainsKey('encryption_key') -or [string]::IsNullOrWhiteSpace($backupConfig.encryption_key)) {
+        throw 'Backup site config is missing encryption_key; encrypted fields cannot be restored safely.'
+    }
+    foreach ($credential in @('db_name', 'db_password')) {
+        if (-not $freshConfig.ContainsKey($credential) -or [string]::IsNullOrWhiteSpace($freshConfig[$credential])) {
+            throw "Fresh site config is missing $credential."
+        }
+    }
+    $freshDbName = $freshConfig.db_name
+    $freshDbPassword = $freshConfig.db_password
+    $freshConfig.encryption_key = $backupConfig.encryption_key
+    $freshConfig | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $OutputPath -Encoding utf8NoBOM
+
+    $merged = Get-Content -Raw -LiteralPath $OutputPath | ConvertFrom-Json -AsHashtable
+    if ($merged.db_name -ne $freshDbName -or $merged.db_password -ne $freshDbPassword) {
+        throw 'Site config merge attempted to overwrite fresh database credentials.'
+    }
+}
+
+if ($MergeSiteConfigOnly) {
+    Merge-SiteConfig -BackupPath $BackupSiteConfig -FreshPath $FreshSiteConfig -OutputPath $MergedSiteConfig
+    Write-Host 'Site config merge validated.'
+    exit 0
+}
+
+function Assert-ProjectUnused {
+    param([string]$Name, [string]$Docker)
+    $label = "label=com.docker.compose.project=$Name"
+    foreach ($probe in @(
+        @{ Type = 'container'; Arguments = @('ps', '-aq', '--filter', $label) },
+        @{ Type = 'network'; Arguments = @('network', 'ls', '-q', '--filter', $label) },
+        @{ Type = 'volume'; Arguments = @('volume', 'ls', '-q', '--filter', $label) }
+    )) {
+        [string[]]$arguments = $probe.Arguments
+        $found = (& $Docker @arguments 2>$null | Out-String).Trim()
+        if ($LASTEXITCODE -ne 0) { throw "Unable to inspect existing Docker $($probe.Type) resources." }
+        if ($found) { throw "Restore project already has $($probe.Type) resources; refusing reuse or deletion." }
+    }
+}
+
 function Invoke-Compose {
     param([string[]]$Arguments, [switch]$Quiet)
-    if ($Quiet) { & docker @script:ComposePrefix @Arguments *> $null }
-    else { & docker @script:ComposePrefix @Arguments }
+    if ($Quiet) { & $script:DockerExecutable @script:ComposePrefix @Arguments *> $null }
+    else { & $script:DockerExecutable @script:ComposePrefix @Arguments }
     if ($LASTEXITCODE -ne 0) { throw 'Isolated restore Docker Compose operation failed.' }
 }
 
@@ -46,6 +112,9 @@ $archivePath = Resolve-InputFile -Path $Archive -Label 'INTERNAL_LEDGER_BACKUP_A
 $manifestPath = Resolve-InputFile -Path $Manifest -Label 'INTERNAL_LEDGER_BACKUP_MANIFEST'
 $keyPath = Resolve-InputFile -Path $KeyFile -Label 'BACKUP_KEY_FILE'
 if ((Get-Item -LiteralPath $keyPath).Length -lt 32) { throw 'BACKUP_KEY_FILE must contain at least 32 bytes.' }
+if ([string]::IsNullOrWhiteSpace($Project)) {
+    $Project = "ledger-restore-$([Guid]::NewGuid().ToString('N'))"
+}
 if ($Project -notmatch '^ledger-restore-[a-z0-9][a-z0-9-]{7,}$') {
     throw 'INTERNAL_LEDGER_RESTORE_PROJECT must be a unique ledger-restore-* name.'
 }
@@ -71,7 +140,13 @@ if ($ValidateOnly) {
     Write-Host 'Restore inputs validated.'
     exit 0
 }
-if (-not (Get-Command docker -ErrorAction SilentlyContinue)) { throw 'Docker is required.' }
+$script:DockerExecutable = $DockerExecutable
+if (-not (Get-Command $script:DockerExecutable -ErrorAction SilentlyContinue)) { throw 'Docker is required.' }
+Assert-ProjectUnused -Name $Project -Docker $script:DockerExecutable
+if ($ValidateProjectOnly) {
+    Write-Host 'Restore project name is unused.'
+    exit 0
+}
 
 [void](New-Item -ItemType Directory -Path $reportRoot -Force)
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
@@ -79,10 +154,11 @@ $work = Join-Path $reportRoot ".$Project-$stamp"
 $plainArchive = Join-Path $work 'backup.zip'
 $payloadRoot = Join-Path $work 'extracted'
 $reportPath = Join-Path $reportRoot "$Project-$stamp.json"
-$containerDir = "/tmp/$Project-$stamp"
+$containerDir = "/home/frappe/frappe-bench/sites/.restore/$Project-$stamp"
 $restoreSite = 'restore.localhost'
 $success = $false
 $started = $false
+$projectWasUnused = $true
 
 try {
     if (Test-Path -LiteralPath $work) { throw 'Restore work directory already exists.' }
@@ -92,10 +168,17 @@ try {
     Expand-Archive -LiteralPath $plainArchive -DestinationPath $payloadRoot
 
     $payload = Join-Path $payloadRoot 'payload'
-    foreach ($name in @('database.sql.gz', 'public-files.tgz', 'private-files.tgz', 'site-config.json')) {
+    if ($expected.site_config_file -notmatch '^[A-Za-z0-9._-]+$') {
+        throw 'Backup manifest site_config_file is invalid.'
+    }
+    foreach ($name in @('database.sql.gz', 'public-files.tgz', 'private-files.tgz')) {
         if (-not (Test-Path -LiteralPath (Join-Path $payload $name) -PathType Leaf)) {
             throw "Backup payload is missing $name."
         }
+    }
+    $backupSiteConfig = Join-Path $payload $expected.site_config_file
+    if (-not (Test-Path -LiteralPath $backupSiteConfig -PathType Leaf)) {
+        throw "Backup payload is missing $($expected.site_config_file)."
     }
 
     $secretRoot = Join-Path $work 'secrets'
@@ -123,21 +206,40 @@ try {
         '-f', (Join-Path $PSScriptRoot 'compose.yaml'),
         '--project-name', $Project
     )
-    Invoke-Compose -Quiet -Arguments @('up', '-d', 'db', 'redis-cache', 'redis-queue', 'configurator', 'backend')
     $started = $true
+    Invoke-Compose -Quiet -Arguments @('up', '-d', 'db', 'redis-cache', 'redis-queue', 'configurator', 'backend')
     Invoke-Compose -Quiet -Arguments @('--profile', 'init', 'run', '--rm', 'create-site')
+
+    $freshSiteConfig = Join-Path $work 'fresh-site-config.json'
+    $mergedSiteConfig = Join-Path $work 'merged-site-config.json'
+    Invoke-Compose -Quiet -Arguments @(
+        'cp',
+        "backend:/home/frappe/frappe-bench/sites/$restoreSite/site_config.json",
+        $freshSiteConfig
+    )
+    Merge-SiteConfig -BackupPath $backupSiteConfig -FreshPath $freshSiteConfig -OutputPath $mergedSiteConfig
+    Invoke-Compose -Quiet -Arguments @(
+        'cp',
+        $mergedSiteConfig,
+        "backend:/home/frappe/frappe-bench/sites/$restoreSite/site_config.json"
+    )
+    Invoke-Compose -Quiet -Arguments @(
+        'exec', '-T', '--user', 'root', 'backend', 'bash', '-c',
+        "set -euo pipefail; chown frappe:frappe 'sites/$restoreSite/site_config.json'; chmod 600 'sites/$restoreSite/site_config.json'"
+    )
+
     Invoke-Compose -Quiet -Arguments @('exec', '-T', 'backend', 'mkdir', '-p', $containerDir)
     Invoke-Compose -Quiet -Arguments @('cp', "$payload/.", "backend:$containerDir")
 
+    $restoreShell = "set -euo pipefail; bench --site '$restoreSite' restore --force --db-root-password `"`$(cat /run/secrets/db_root_password)`" --with-public-files '$containerDir/public-files.tgz' --with-private-files '$containerDir/private-files.tgz' '$containerDir/database.sql.gz'; bench --site '$restoreSite' migrate"
     $restoreCommand = @(
-        'exec', '-T', 'backend', 'bash', '-c',
-        "bench --site '$restoreSite' restore --force --db-root-password `"`$(cat /run/secrets/db_root_password)`" --with-public-files '$containerDir/public-files.tgz' --with-private-files '$containerDir/private-files.tgz' '$containerDir/database.sql.gz'"
+        '--profile', 'restore', 'run', '--rm', '--entrypoint', 'bash',
+        'restore-runner', '-c', $restoreShell
     )
     Invoke-Compose -Quiet -Arguments $restoreCommand
-    Invoke-Compose -Quiet -Arguments @('exec', '-T', 'backend', 'bench', '--site', $restoreSite, 'migrate')
 
     $sql = 'SELECT (SELECT COUNT(*) FROM `tabCompany`),(SELECT COUNT(*) FROM `tabJournal Entry`),(SELECT COUNT(*) FROM `tabFile`);'
-    $countsText = & docker @script:ComposePrefix exec -T backend bench --site $restoreSite mariadb --skip-column-names --batch -e $sql 2>$null
+    $countsText = & $script:DockerExecutable @script:ComposePrefix exec -T backend bench --site $restoreSite mariadb --skip-column-names --batch -e $sql 2>$null
     if ($LASTEXITCODE -ne 0) { throw 'Unable to read restored verification counts.' }
     $actualValues = (($countsText | Out-String).Trim() -split '\s+')
     if ($actualValues.Count -ne 3 -or ($actualValues | Where-Object { $_ -notmatch '^\d+$' })) {
@@ -180,7 +282,7 @@ finally {
     if ($started) {
         try { Invoke-Compose -Quiet -Arguments @('exec', '-T', 'backend', 'rm', '-rf', '--', $containerDir) } catch {}
     }
-    if ($success) {
+    if ($success -and $projectWasUnused) {
         Invoke-Compose -Quiet -Arguments @('down', '--volumes', '--remove-orphans')
     }
     if (Test-Path -LiteralPath $work) { Remove-Item -LiteralPath $work -Recurse -Force }

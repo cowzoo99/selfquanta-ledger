@@ -75,6 +75,7 @@ $baseName = "internal-ledger-$safeSite-$stamp"
 $staging = Join-Path $destinationRoot ".$baseName-staging"
 $plainArchive = Join-Path $destinationRoot ".$baseName.zip"
 $encrypted = Join-Path $daily "$baseName.zip.enc"
+$encryptedTemp = Join-Path $daily ".$baseName-$([Guid]::NewGuid().ToString('N')).tmp"
 $manifestPath = Join-Path $daily "$baseName.manifest.json"
 $containerDir = "/tmp/$baseName"
 $script:ComposePrefix = @(
@@ -112,6 +113,7 @@ try {
         created_utc = [DateTime]::UtcNow.ToString('o')
         site = $Site
         git_sha = $imageSha
+        site_config_file = 'site-config.json'
         counts = [ordered]@{
             company = [int64]$counts[0]
             journal_entry = [int64]$counts[1]
@@ -121,9 +123,12 @@ try {
     $manifest | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $staging 'manifest.json') -Encoding utf8NoBOM
     Compress-Archive -Path (Join-Path $staging '*') -DestinationPath $plainArchive -CompressionLevel Optimal
 
-    & openssl enc -aes-256-cbc -pbkdf2 -salt -in $plainArchive -out $encrypted -pass "file:$keyPath" 2>$null
+    if (Test-Path -LiteralPath $encrypted) { throw 'Final backup archive already exists.' }
+    & openssl enc -aes-256-cbc -pbkdf2 -salt -in $plainArchive -out $encryptedTemp -pass "file:$keyPath" 2>$null
     if ($LASTEXITCODE -ne 0) { throw 'Backup encryption failed.' }
-    $hash = (Get-FileHash -LiteralPath $encrypted -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ((Get-Item -LiteralPath $encryptedTemp).Length -le 16) { throw 'Encrypted backup validation failed.' }
+    $hash = (Get-FileHash -LiteralPath $encryptedTemp -Algorithm SHA256).Hash.ToLowerInvariant()
+    [IO.File]::Move($encryptedTemp, $encrypted)
     $manifest['encrypted_sha256'] = $hash
     $manifest | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $manifestPath -Encoding utf8NoBOM
 
@@ -156,5 +161,6 @@ finally {
         try { Invoke-Compose -Quiet -Arguments @('exec', '-T', 'backend', 'rm', '-rf', '--', $containerDir) } catch {}
     }
     if (Test-Path -LiteralPath $plainArchive) { Remove-Item -LiteralPath $plainArchive -Force }
+    if (Test-Path -LiteralPath $encryptedTemp) { Remove-Item -LiteralPath $encryptedTemp -Force }
     if (Test-Path -LiteralPath $staging) { Remove-Item -LiteralPath $staging -Recurse -Force }
 }
