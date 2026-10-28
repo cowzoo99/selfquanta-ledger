@@ -2,7 +2,7 @@ import unittest
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from decimal import Decimal
-from threading import Barrier
+from threading import Barrier, Event
 from unittest.mock import patch
 from uuid import uuid4
 
@@ -398,8 +398,127 @@ def test_two_connections_post_once_and_reverse_once():
     print("CONCURRENCY EVIDENCE", names, results, "one link; two JE including reversal")
 
 
+def test_two_connections_interleave_post_and_reverse_without_deadlock():
+    from internal_ledger.accounting import posting, reversal
+    from internal_ledger.accounting.classifier import classify
+    from internal_ledger.accounting.drafts import create_draft
+    from internal_ledger.api.review_api import approve_draft
+    from internal_ledger.install import install_chart
+    from internal_ledger.tests.test_classifier import add_rule
+    from internal_ledger.tests.test_dedupe import tx
+    from internal_ledger.tests.test_install import make_company
+
+    site, sites_path = frappe.local.site, frappe.local.sites_path
+    frappe.db.rollback()
+    reverse_has_company, post_requests_company = Event(), Event()
+    real_validate_period = posting.validate_period
+
+    def connected(action):
+        frappe.init(site=site, sites_path=sites_path)
+        frappe.connect()
+        frappe.set_user("Administrator")
+        try:
+            return action()
+        finally:
+            frappe.db.rollback()
+            frappe.destroy()
+
+    def prepare():
+        company = make_company()
+        install_chart(company)
+        frappe.flags.classification_company = company
+        rule = add_rule()
+        created_year = not frappe.db.exists("Fiscal Year", "2026")
+        if created_year:
+            frappe.get_doc({"doctype": "Fiscal Year", "year": "2026", "year_start_date": "2026-01-01",
+                            "year_end_date": "2026-12-31"}).insert()
+        batch = frappe.get_doc({"doctype": "Import Batch", "source": "wechat", "file_hash": uuid4().hex,
+                                "company": company, "base_currency": "CNY"}).insert()
+        imported, drafts = [], []
+        for _ in range(2):
+            row = tx(source_id=uuid4().hex, payment_account=account("1001"))
+            item = frappe.get_doc({"doctype": "Imported Transaction", **asdict(row),
+                                   "import_batch": batch.name, "status": "Imported",
+                                   "dedupe_key": "wechat:" + row.source_id}).insert()
+            imported.append(item.name)
+            name = create_draft(item.name, classify(item.name))
+            approve_draft(name)
+            drafts.append(name)
+        original = posting.post_draft(drafts[0])
+        link = link_for(drafts[0])
+        frappe.db.commit()
+        return company, rule.name, batch.name, imported, drafts, original, link, created_year
+
+    def interleave_period(company, posting_date):
+        if frappe.flags.lock_order_action == "reverse":
+            result = real_validate_period(company, posting_date)
+            reverse_has_company.set()
+            assert post_requests_company.wait(timeout=20), "post did not reach Company lock"
+            return result
+        assert reverse_has_company.wait(timeout=20), "reverse did not acquire Company lock"
+        # Old code reaches here holding Account; fixed code holds no Account yet.
+        post_requests_company.set()
+        return real_validate_period(company, posting_date)
+
+    def post_new():
+        frappe.flags.lock_order_action = "post"
+        assert reverse_has_company.wait(timeout=20)
+        name = posting.post_draft(fixture[4][1])
+        frappe.db.commit()
+        return name
+
+    def reverse_existing():
+        frappe.flags.lock_order_action = "reverse"
+        name = reversal.reverse_posting(fixture[6], "共享资金科目交错锁测试")
+        frappe.db.commit()
+        return name
+
+    def verify_and_clean():
+        links = frappe.get_all("Posting Link", filters={"voucher_draft": ["in", fixture[4]]}, fields=["*"])
+        journals = frappe.get_all("Journal Entry", filters={"company": fixture[0]}, fields=["name", "docstatus", "reversal_of"])
+        statuses = [frappe.db.get_value("Voucher Draft", name, "status") for name in fixture[4]]
+        for journal in journals:
+            frappe.db.delete("GL Entry", {"voucher_no": journal.name, "voucher_type": "Journal Entry"})
+            frappe.db.delete("Journal Entry Account", {"parent": journal.name})
+            frappe.db.delete("Journal Entry", {"name": journal.name})
+        frappe.db.delete("Posting Link", {"voucher_draft": ["in", fixture[4]]})
+        for name in fixture[4]:
+            frappe.db.delete("Voucher Draft Line", {"parent": name})
+            frappe.db.delete("Voucher Draft", {"name": name})
+        for name in fixture[3]:
+            frappe.delete_doc("Imported Transaction", name, force=True)
+        for doctype, name in (("Classification Rule", fixture[1]), ("Import Batch", fixture[2]), ("Company", fixture[0])):
+            frappe.delete_doc(doctype, name, force=True)
+        if fixture[7]:
+            frappe.delete_doc("Fiscal Year", "2026", force=True)
+        frappe.db.commit()
+        return links, journals, statuses
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        fixture = pool.submit(connected, prepare).result(timeout=60)
+        try:
+            with patch.object(posting, "validate_period", interleave_period), patch.object(reversal, "validate_period", interleave_period):
+                reverse_future = pool.submit(connected, reverse_existing)
+                post_future = pool.submit(connected, post_new)
+                # Inspect both outcomes; do not hide either connection's exception.
+                results = [future.exception(timeout=60) for future in (post_future, reverse_future)]
+                assert results == [None, None], results
+                posted, reversed_name = post_future.result(), reverse_future.result()
+        finally:
+            links, journals, statuses = pool.submit(connected, verify_and_clean).result(timeout=60)
+    assert statuses == ["Posted", "Posted"]
+    assert len(links) == 2 and len(journals) == 3
+    assert all(row.docstatus == 1 for row in journals)
+    assert len([row for row in journals if row.reversal_of == fixture[5]]) == 1
+    assert {row.voucher_draft: row.journal_entry for row in links} == {
+        fixture[4][0]: fixture[5], fixture[4][1]: posted}
+    old_link = next(row for row in links if row.name == fixture[6])
+    assert old_link.status == "Reversed" and old_link.reversal_journal_entry == reversed_name
+    print("MIXED LOCK EVIDENCE", posted, reversed_name, "no deadlock; 2 unique links; 3 submitted JE")
+
+
 def load_tests(loader, tests, pattern):
     return unittest.TestSuite(unittest.FunctionTestCase(
-        test, setUp=None if name == "test_two_connections_post_once_and_reverse_once" else set_up,
-        tearDown=None if name == "test_two_connections_post_once_and_reverse_once" else tear_down)
+        test, setUp=None if name.startswith("test_two_connections_") else set_up,
+        tearDown=None if name.startswith("test_two_connections_") else tear_down)
         for name, test in sorted(globals().items()) if name.startswith("test_"))

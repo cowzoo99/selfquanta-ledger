@@ -49,9 +49,10 @@ def post_draft(draft_name: str) -> str:
         return link.journal_entry
     if draft.status != "Approved":
         frappe.throw("仅 Approved 草稿可过账")
+    # Match reversal's Company -> Account order before draft.validate locks accounts.
+    company = validate_period(draft.company, draft.posting_date)
     draft.validate()
     validate_unfrozen_accounts(draft.lines)
-    company = validate_period(draft.company, draft.posting_date)
     if company.default_currency != draft.base_currency:
         frappe.throw("草稿本位币必须与公司币种一致")
     journal = frappe.get_doc({
