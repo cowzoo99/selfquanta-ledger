@@ -271,6 +271,37 @@ def test_update_draft_new_children_are_inserted_under_current_parent():
                                     ["parent", "parenttype", "parentfield"]) == (doc.name, "Voucher Draft", "lines")
 
 
+def assert_duplicate_child_rejected(state):
+    from internal_ledger.api.review_api import approve_draft, update_draft
+
+    doc = draft()
+    if state == "Approved":
+        approve_draft(doc.name)
+    elif state == "Manual":
+        update_draft(doc.name, [row.as_dict() for row in doc.lines], "人工确认", str(doc.posting_date))
+    doc.reload()
+    before = doc.as_dict()
+    for local in (0, 1):
+        doc.reload()
+        doc.lines[1].name = doc.lines[0].name
+        doc.lines[1].set("__islocal", local)
+        with unittest.TestCase().assertRaisesRegex(frappe.ValidationError, "分录行身份重复"):
+            doc.save()
+        assert frappe.get_doc("Voucher Draft", doc.name).as_dict() == before
+
+
+def test_draft_rejects_duplicate_child_names():
+    assert_duplicate_child_rejected("Draft")
+
+
+def test_approved_rejects_duplicate_child_names():
+    assert_duplicate_child_rejected("Approved")
+
+
+def test_manual_override_rejects_duplicate_child_names():
+    assert_duplicate_child_rejected("Manual")
+
+
 def load_tests(loader, tests, pattern):
     return unittest.TestSuite(unittest.FunctionTestCase(test, setUp=set_up, tearDown=tear_down)
                               for name, test in sorted(globals().items()) if name.startswith("test_"))

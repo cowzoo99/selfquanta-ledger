@@ -11,6 +11,10 @@ from internal_ledger.accounting.drafts import (
 
 class VoucherDraft(Document):
     def validate(self):
+        names = [row.name for row in self.lines if row.name]
+        if len(names) != len(set(names)):
+            frappe.throw("分录行身份重复，不得复用同一子行名称")
+
         # Frappe rewrites child parent fields before validate, so check persisted ownership.
         for row in self.lines:
             identity = frappe.db.get_value("Voucher Draft Line", row.name,
