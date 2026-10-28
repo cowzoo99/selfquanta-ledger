@@ -35,10 +35,10 @@ foreach ($name in $required) {
 
 $repositoryRoot = (Resolve-Path (Join-Path $InfraRoot '..')).Path
 $versions = Get-Content -Raw -LiteralPath (Join-Path $InfraRoot 'versions.env')
-Assert-True ($versions -match '(?m)^ERPNEXT_VERSION=v16\.52\.1$') 'ERPNext version is not pinned to v16.52.1'
-Assert-True ($versions -match '(?m)^FRAPPE_REF=v16\.52\.0$') 'Frappe ref is not pinned to v16.52.0'
-Assert-True ($versions -match '(?m)^DB_IMAGE=mariadb:11\.8$') 'MariaDB image is not pinned to 11.8'
-Assert-True ($versions -match '(?m)^REDIS_IMAGE=redis:8\.2-alpine$') 'Redis image is not pinned to 8.2-alpine'
+Assert-True ($versions -match '(?m)^ERPNEXT_VERSION=v16\.52\.1\r?$') 'ERPNext version is not pinned to v16.52.1'
+Assert-True ($versions -match '(?m)^FRAPPE_REF=v16\.52\.0\r?$') 'Frappe ref is not pinned to v16.52.0'
+Assert-True ($versions -match '(?m)^DB_IMAGE=mariadb:11\.8\r?$') 'MariaDB image is not pinned to 11.8'
+Assert-True ($versions -match '(?m)^REDIS_IMAGE=redis:8\.2-alpine\r?$') 'Redis image is not pinned to 8.2-alpine'
 Assert-True ($versions -notmatch '(?im):latest\s*$') 'Mutable latest tag is forbidden'
 
 $compose = Get-Content -Raw -LiteralPath (Join-Path $InfraRoot 'compose.yaml')
@@ -142,7 +142,7 @@ try {
     Assert-CommandFailsLike { pwsh -NoProfile -File $PSCommandPath -InfraRoot $case -StaticOnly } 'ERPNext version|latest' 'Mutable version test'
 
     $case = New-MutatedInfra 'unsafe-db-port'
-    (Get-Content -Raw (Join-Path $case 'compose.yaml')).Replace("  db:`n", "  db:`n    ports:`n      - `"3306:3306`"`n") |
+    (Get-Content -Raw (Join-Path $case 'compose.yaml')) -replace '(?m)^  db:\r?$', "  db:`n    ports:`n      - `"3306:3306`"" |
         Set-Content -LiteralPath (Join-Path $case 'compose.yaml')
     Assert-CommandFailsLike { pwsh -NoProfile -File $PSCommandPath -InfraRoot $case -StaticOnly } 'db must not publish' 'Unsafe database port test'
 
