@@ -67,7 +67,7 @@ Git remote 'origin' is required before an image can be built.
 | 5 | 审核后生成正式凭证并可追溯到批次和原文件 | PASS | e2e 通过标准 Journal Entry/GL；链路为 JE→Posting Link→草稿→流水→批次→Source File→private File，并核验 SHA256/raw_row。 |
 | 6 | 已过账记录只能通过冲销更正 | PASS | `test_posting` 覆盖普通保存不能修改已过账记录、标准反向 JE、重复冲销拒绝和并发一次性。 |
 | 7 | 查看者在界面和后端均不能写 | BLOCKED | 服务端 PASS：所有写入口、通用 doc/client 绕过和原始文件直链均拒绝；界面桌面/窄屏未获得真实 DevTools 视觉证据。 |
-| 8 | 核心科目与基础财务报表可用 | PASS | 安装测试验证五类中文科目；e2e 余额现金增加 2857.50；权限测试验证绑定公司余额与 General Ledger，外公司不可见。 |
+| 8 | 核心科目与基础财务报表可用 | BLOCKED | 自动化 PASS：安装测试验证五类中文科目，e2e 余额现金增加 2857.50，权限测试验证绑定公司 `get_balance_on` 余额与 General Ledger 且外公司不可见。明细账、科目余额表、资产负债表和利润表未执行，因此本标准总体未满足。 |
 | 9 | 重启后数据完整，数据库与附件备份可恢复 | BLOCKED | 脚本/配置静态测试 PASS；真实 Docker 启动、重启、加密备份和隔离恢复未运行。 |
 
 ## 浏览器检查矩阵
