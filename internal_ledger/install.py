@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 
 import frappe
-from internal_ledger.permissions import require_ledger_admin
+from internal_ledger.permissions import require_ledger_admin, audit_install_change
 
 
 ROLE_PERMISSIONS = {
@@ -13,6 +13,7 @@ ROLE_PERMISSIONS = {
 
 def ensure_roles() -> None:
     require_ledger_admin()
+    before = _permission_state()
     for role in ROLE_PERMISSIONS:
         if not frappe.db.exists("Role", role):
             frappe.get_doc({"doctype": "Role", "role_name": role}).insert()
@@ -28,6 +29,20 @@ def ensure_roles() -> None:
             frappe.db.set_value("Custom DocPerm", {"parent": doctype, "role": role, "permlevel": 0},
                                 {action: int(action in actions) for action in rights})
     frappe.clear_cache()
+    if before != _permission_state():
+        audit_install_change("ensure_roles", "Internal Ledger Settings", "Internal Ledger Settings")
+
+
+def _permission_state():
+    from frappe.permissions import rights
+    from internal_ledger.permissions import LEDGER_DOCTYPES
+
+    fields = ["parent", "role", "permlevel", "if_owner", *rights]
+    rows = frappe.get_all("Custom DocPerm", filters={"parent": ["in", [*LEDGER_DOCTYPES,
+        "Journal Entry", "Account", "GL Entry"]]}, fields=fields)
+    permissions = sorted(tuple(row.get(field) or ("" if field in ("parent", "role") else 0)
+                               for field in fields) for row in rows)
+    return tuple(bool(frappe.db.exists("Role", role)) for role in ROLE_PERMISSIONS), permissions
 
 
 def load_chart_fixture() -> dict:
@@ -40,6 +55,7 @@ def install_chart(company: str) -> None:
     frappe.get_doc("Company", company)
     installed = {}
     roots = {}
+    created = False
     for accounts in load_chart_fixture().values():
         for account in accounts:
             values = dict(account)
@@ -68,4 +84,7 @@ def install_chart(company: str) -> None:
                 name = matches[0].name
             else:
                 name = frappe.get_doc({"doctype": "Account", **values}).insert().name
+                created = True
             installed[values["account_number"]] = name
+    if created:
+        audit_install_change("install_chart", "Company", company)

@@ -2,7 +2,7 @@ from decimal import Decimal
 
 import frappe
 from frappe.utils import getdate
-from internal_ledger.permissions import require_ledger_admin, record_audit
+from internal_ledger.permissions import require_ledger_admin, record_audit, _JOURNAL_WRITE
 
 
 def validate_unfrozen_accounts(accounts):
@@ -72,6 +72,7 @@ def post_draft(draft_name: str) -> str:
                 unit = Decimal(1).scaleb(-row.precision(field))
                 if amount != amount.quantize(unit):
                     frappe.throw("草稿金额超出 Journal Entry 币种精度，不得舍入")
+    journal.flags.ledger_journal_write = _JOURNAL_WRITE
     journal.insert()
     journal.submit()
     link = frappe.get_doc({"doctype": "Posting Link", "voucher_draft": draft.name,

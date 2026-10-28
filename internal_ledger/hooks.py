@@ -22,6 +22,15 @@ doc_events = {doctype: {"before_validate": "internal_ledger.permissions.protect_
               for doctype in _ledger_doctypes if doctype != "Internal Ledger Audit Event"}
 doc_events["File"] = {"before_validate": "internal_ledger.permissions.protect_source_file",
                       "on_trash": "internal_ledger.permissions.protect_source_file"}
+for _doctype in ("Import Batch", "Imported Transaction"):
+    doc_events[_doctype] = {"before_validate": "internal_ledger.permissions.protect_import_write",
+                           "on_trash": "internal_ledger.permissions.protect_import_write"}
+doc_events["Journal Entry"] = {event: "internal_ledger.permissions.protect_journal_write" for event in (
+    "before_validate", "before_submit", "before_update_after_submit", "before_cancel", "on_trash")}
+for _doctype in ("Classification Rule", "Internal Ledger Settings"):
+    doc_events[_doctype]["on_update"] = "internal_ledger.permissions.audit_configuration_write"
+doc_events["Classification Rule"]["after_delete"] = "internal_ledger.permissions.audit_configuration_write"
+ignore_links_on_delete = ["Internal Ledger Audit Event"]
 override_whitelisted_methods = {
     "erpnext.accounts.utils.get_balance_on": "internal_ledger.api.report_api.scoped_native_balance",
 }

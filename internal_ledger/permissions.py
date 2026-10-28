@@ -7,6 +7,8 @@ LEDGER_DOCTYPES = ("Import Batch", "Imported Transaction", "Classification Rule"
                   "Internal Ledger Source File")
 _AUDIT_INSERT = object()
 _SOURCE_INSERT = object()
+_IMPORT_WRITE = object()
+_JOURNAL_WRITE = object()
 
 
 def require_ledger_admin() -> None:
@@ -15,6 +17,8 @@ def require_ledger_admin() -> None:
 
 
 def document_company(doc):
+    if doc.doctype == "Company":
+        return doc.name
     if doc.doctype == "Imported Transaction" or doc.doctype == "Internal Ledger Source File":
         return frappe.db.get_value("Import Batch", doc.import_batch, "company")
     if doc.doctype == "Posting Link":
@@ -74,6 +78,21 @@ def protect_business_write(doc, method=None):
     require_ledger_admin()
 
 
+def protect_import_write(doc, method=None):
+    require_ledger_admin()
+    if doc.flags.ledger_import_write is not _IMPORT_WRITE:
+        frappe.throw("导入批次与流水只能由导入服务写入", frappe.PermissionError)
+
+
+def protect_journal_write(doc, method=None):
+    company = frappe.db.get_single_value("Internal Ledger Settings", "company")
+    old = doc.get_doc_before_save()
+    if company and (doc.company == company or (old and old.company == company)):
+        require_ledger_admin()
+        if doc.flags.ledger_journal_write is not _JOURNAL_WRITE:
+            frappe.throw("当前账套凭证只能由过账或冲销服务写入", frappe.PermissionError)
+
+
 def protect_source_file(doc, method=None):
     old = doc.get_doc_before_save()
     protected = doc.attached_to_doctype == "Internal Ledger Source File" or (
@@ -90,9 +109,36 @@ def record_audit(action: str, reference_doctype: str, reference_name: str, resul
     require_ledger_admin()
     reference = frappe.get_doc(reference_doctype, reference_name)
     reference.check_permission("read")
+    _insert_audit(action, reference, result)
+
+
+def _insert_audit(action, reference, result, deleted=False):
+    require_ledger_admin()
     event = frappe.get_doc({"doctype": "Internal Ledger Audit Event", "action": action,
-        "reference_doctype": reference_doctype, "reference_name": reference_name,
+        "reference_doctype": reference.doctype, "reference_name": reference.name,
         "result": result, "actor": frappe.session.user, "timestamp": now_datetime(),
         "company": document_company(reference)})
     event.flags.audit_insert = _AUDIT_INSERT
-    event.insert(ignore_permissions=True)
+    event.insert(ignore_permissions=True, ignore_links=deleted)
+
+
+def audit_configuration_write(doc, method=None):
+    if method == "after_delete":
+        _insert_audit("delete_classification_rule", doc, "success", deleted=True)
+        return
+    old = doc.get_doc_before_save()
+    if old and not any(doc.get(field.fieldname) != old.get(field.fieldname) for field in doc.meta.fields):
+        return
+    if doc.doctype == "Internal Ledger Settings":
+        action = "update_settings"
+    else:
+        action = "update_classification_rule" if old else "create_classification_rule"
+    record_audit(action, doc.doctype, doc.name, "success")
+
+
+def audit_install_change(action, reference_doctype, reference_name):
+    if not frappe.db.table_exists("Internal Ledger Audit Event"):
+        if frappe.flags.in_install or frappe.flags.in_migrate:
+            return
+        frappe.throw("审计表未就绪，不能保存安装变更")
+    record_audit(action, reference_doctype, reference_name, "success")

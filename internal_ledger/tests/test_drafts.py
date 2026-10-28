@@ -8,6 +8,7 @@ from uuid import uuid4
 import frappe
 
 from internal_ledger.tests.test_classifier import account, add_rule, set_up, tear_down, transaction
+from internal_ledger.tests.test_dedupe import insert_import_fixture
 
 
 def make_draft(kind, direction, debit, credit):
@@ -271,14 +272,14 @@ def test_two_independent_connections_create_only_one_draft():
         install_chart(company)
         frappe.flags.classification_company = company
         rule = add_rule()
-        batch = frappe.get_doc({"doctype": "Import Batch", "source": "wechat", "file_hash": uuid4().hex,
-                                "company": company, "base_currency": "CNY"}).insert()
+        batch = insert_import_fixture({"doctype": "Import Batch", "source": "wechat", "file_hash": uuid4().hex,
+                                       "company": company, "base_currency": "CNY"})
         from dataclasses import asdict
 
         row = tx(source_id=uuid4().hex, payment_account=account("1001"))
-        imported = frappe.get_doc({"doctype": "Imported Transaction", **asdict(row),
+        imported = insert_import_fixture({"doctype": "Imported Transaction", **asdict(row),
                                    "import_batch": batch.name, "status": "Imported",
-                                   "dedupe_key": "wechat:" + row.source_id}).insert()
+                                   "dedupe_key": "wechat:" + row.source_id})
         result = classify(imported.name)
         frappe.db.commit()
         return company, rule.name, batch.name, imported.name, result
@@ -298,9 +299,10 @@ def test_two_independent_connections_create_only_one_draft():
         for name in names:
             frappe.db.delete("Voucher Draft Line", {"parent": name})
             frappe.db.delete("Voucher Draft", {"name": name})
-        frappe.delete_doc("Classification Rule", fixture[1], force=True)
-        frappe.delete_doc("Imported Transaction", fixture[3], force=True)
-        frappe.delete_doc("Import Batch", fixture[2], force=True)
+        frappe.db.delete("Classification Rule", {"name": fixture[1]})
+        frappe.db.delete("Imported Transaction", {"name": fixture[3]})
+        frappe.db.delete("Import Batch", {"name": fixture[2]})
+        frappe.db.delete("Internal Ledger Audit Event", {"company": fixture[0]})
         frappe.delete_doc("Company", fixture[0], force=True)
         frappe.db.commit()
         return len(names)

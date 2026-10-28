@@ -10,6 +10,7 @@ import frappe
 
 from internal_ledger.tests.test_classifier import account, tear_down
 from internal_ledger.tests.test_review_api import draft, set_up
+from internal_ledger.tests.test_dedupe import insert_import_fixture
 
 
 def approved_draft():
@@ -337,12 +338,12 @@ def test_two_connections_post_once_and_reverse_once():
         if created_year:
             frappe.get_doc({"doctype": "Fiscal Year", "year": "2026", "year_start_date": "2026-01-01",
                             "year_end_date": "2026-12-31"}).insert()
-        batch = frappe.get_doc({"doctype": "Import Batch", "source": "wechat", "file_hash": uuid4().hex,
-                                "company": company, "base_currency": "CNY"}).insert()
+        batch = insert_import_fixture({"doctype": "Import Batch", "source": "wechat", "file_hash": uuid4().hex,
+                                       "company": company, "base_currency": "CNY"})
         row = tx(source_id=uuid4().hex, payment_account=account("1001"))
-        imported = frappe.get_doc({"doctype": "Imported Transaction", **asdict(row),
+        imported = insert_import_fixture({"doctype": "Imported Transaction", **asdict(row),
                                    "import_batch": batch.name, "status": "Imported",
-                                   "dedupe_key": "wechat:" + row.source_id}).insert()
+                                   "dedupe_key": "wechat:" + row.source_id})
         name = create_draft(imported.name, classify(imported.name))
         approve_draft(name)
         frappe.db.commit()
@@ -377,8 +378,9 @@ def test_two_connections_post_once_and_reverse_once():
         frappe.db.delete("Voucher Draft", {"name": fixture[4]})
         frappe.db.delete("Internal Ledger Audit Event", {"company": fixture[0]})
         for doctype, name in (("Classification Rule", fixture[1]), ("Imported Transaction", fixture[3]),
-                              ("Import Batch", fixture[2]), ("Company", fixture[0])):
-            frappe.delete_doc(doctype, name, force=True)
+                              ("Import Batch", fixture[2])):
+            frappe.db.delete(doctype, {"name": name})
+        frappe.delete_doc("Company", fixture[0], force=True)
         if fixture[5]:
             frappe.delete_doc("Fiscal Year", "2026", force=True)
         frappe.db.commit()
@@ -433,14 +435,14 @@ def test_two_connections_interleave_post_and_reverse_without_deadlock():
         if created_year:
             frappe.get_doc({"doctype": "Fiscal Year", "year": "2026", "year_start_date": "2026-01-01",
                             "year_end_date": "2026-12-31"}).insert()
-        batch = frappe.get_doc({"doctype": "Import Batch", "source": "wechat", "file_hash": uuid4().hex,
-                                "company": company, "base_currency": "CNY"}).insert()
+        batch = insert_import_fixture({"doctype": "Import Batch", "source": "wechat", "file_hash": uuid4().hex,
+                                       "company": company, "base_currency": "CNY"})
         imported, drafts = [], []
         for _ in range(2):
             row = tx(source_id=uuid4().hex, payment_account=account("1001"))
-            item = frappe.get_doc({"doctype": "Imported Transaction", **asdict(row),
+            item = insert_import_fixture({"doctype": "Imported Transaction", **asdict(row),
                                    "import_batch": batch.name, "status": "Imported",
-                                   "dedupe_key": "wechat:" + row.source_id}).insert()
+                                   "dedupe_key": "wechat:" + row.source_id})
             imported.append(item.name)
             name = create_draft(item.name, classify(item.name))
             approve_draft(name)
@@ -488,9 +490,10 @@ def test_two_connections_interleave_post_and_reverse_without_deadlock():
             frappe.db.delete("Voucher Draft", {"name": name})
         frappe.db.delete("Internal Ledger Audit Event", {"company": fixture[0]})
         for name in fixture[3]:
-            frappe.delete_doc("Imported Transaction", name, force=True)
-        for doctype, name in (("Classification Rule", fixture[1]), ("Import Batch", fixture[2]), ("Company", fixture[0])):
-            frappe.delete_doc(doctype, name, force=True)
+            frappe.db.delete("Imported Transaction", {"name": name})
+        for doctype, name in (("Classification Rule", fixture[1]), ("Import Batch", fixture[2])):
+            frappe.db.delete(doctype, {"name": name})
+        frappe.delete_doc("Company", fixture[0], force=True)
         if fixture[7]:
             frappe.delete_doc("Fiscal Year", "2026", force=True)
         frappe.db.commit()

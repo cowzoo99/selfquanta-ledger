@@ -41,6 +41,150 @@ def test_install_write_services_require_ledger_admin():
                 operation()
 
 
+def test_generic_import_documents_cannot_bypass_the_import_service():
+    from frappe import client
+
+    tx_name = transaction()
+    original = frappe.get_doc("Imported Transaction", tx_name)
+    batch = frappe.get_doc("Import Batch", original.import_batch)
+    actors = (user("账套管理员"), "Administrator")
+    for actor in actors:
+        frappe.set_user(actor)
+        for original_doc in (batch, original):
+            copied = frappe.copy_doc(original_doc)
+            if copied.doctype == "Imported Transaction":
+                copied.source_id = uuid4().hex
+                copied.dedupe_key = "forged:" + copied.source_id
+            copied.set("ledger_import_write", True)
+            copied.flags.ledger_import_write = True
+            payload = copied.as_dict()
+            payload["ledger_import_write"] = True
+            payload["flags"] = {"ledger_import_write": True}
+            for operation in (copied.insert, lambda: client.insert(payload),
+                              lambda: frappe.get_doc(original_doc.doctype, original_doc.name).save(),
+                              lambda: client.save(original_doc.as_dict())):
+                with unittest.TestCase().assertRaises(frappe.PermissionError):
+                    operation()
+
+
+def test_generic_journal_documents_cannot_bypass_posting_even_as_administrator():
+    from frappe import client
+    from internal_ledger.api.review_api import approve_draft
+    from internal_ledger.accounting.posting import post_draft
+
+    name = post_draft(approve_draft(draft().name).name)
+    # Test-only corruption supplies a persisted draft for exercising the actual submit API.
+    frappe.db.set_value("Journal Entry", name, "docstatus", 0)
+    frappe.db.set_value("Journal Entry Account", {"parent": name}, "docstatus", 0)
+    original = frappe.get_doc("Journal Entry", name)
+    for actor in (user("账套管理员"), "Administrator"):
+        frappe.set_user(actor)
+        copied = frappe.copy_doc(original)
+        copied.set("ledger_journal_write", True)
+        copied.flags.ledger_journal_write = True
+        payload = copied.as_dict()
+        payload["ledger_journal_write"] = True
+        payload["flags"] = {"ledger_journal_write": True}
+        for operation in (copied.insert, lambda: client.insert(payload),
+                          lambda: frappe.get_doc("Journal Entry", name).save(),
+                          lambda: client.save(original.as_dict()),
+                          lambda: frappe.get_doc("Journal Entry", name).submit(),
+                          lambda: client.submit(original.as_dict())):
+            with unittest.TestCase().assertRaises(frappe.PermissionError):
+                operation()
+
+
+def test_rule_and_settings_generic_writes_have_atomic_success_audits():
+    from frappe import client
+
+    admin = user("账套管理员")
+    frappe.set_user(admin)
+    before = frappe.get_single("Internal Ledger Settings").as_dict()
+    frappe.db.savepoint("sensitive_audit")
+    rule = client.insert({"doctype": "Classification Rule", "company": frappe.flags.classification_company,
+        "kind": "counterparty", "value": "审查测试商户", "direction": "expense", "transaction_type": "expense",
+        "debit_account": account("560201"), "enabled": 1})
+    rule["priority"] = 2
+    client.save(rule)
+    settings = frappe.get_single("Internal Ledger Settings")
+    settings.fiscal_year_start = "2026-04-01"
+    client.save(settings.as_dict())
+    events = frappe.get_all("Internal Ledger Audit Event", filters={"actor": admin}, fields=["*"])
+    assert sorted(row.action for row in events) == ["create_classification_rule", "update_classification_rule", "update_settings"]
+    assert all(row.actor == admin and row.timestamp and row.result == "success" for row in events)
+    assert {row.reference_name for row in events} == {rule["name"], "Internal Ledger Settings"}
+    with unittest.TestCase().assertRaises(frappe.PermissionError):
+        client.delete("Classification Rule", rule["name"])
+    frappe.db.rollback(save_point="sensitive_audit")
+    assert not frappe.db.exists("Classification Rule", rule["name"])
+    assert not frappe.db.count("Internal Ledger Audit Event", {"actor": admin})
+    assert str(frappe.get_single("Internal Ledger Settings").fiscal_year_start) == str(before["fiscal_year_start"])
+    frappe.set_user("Administrator")
+    rule = client.insert({"doctype": "Classification Rule", "company": frappe.flags.classification_company,
+        "kind": "counterparty", "value": "删除审查测试商户", "direction": "expense", "transaction_type": "expense",
+        "debit_account": account("560201"), "enabled": 1})
+    frappe.db.savepoint("rule_delete_audit")
+    client.delete("Classification Rule", rule["name"])
+    assert not frappe.db.exists("Classification Rule", rule["name"])
+    deleted = frappe.get_all("Internal Ledger Audit Event", filters={"action": "delete_classification_rule",
+        "reference_name": rule["name"]}, fields=["*"])
+    assert len(deleted) == 1 and deleted[0].actor == "Administrator" and deleted[0].timestamp
+    assert deleted[0].result == "success" and deleted[0].reference_doctype == "Classification Rule"
+    frappe.db.rollback(save_point="rule_delete_audit")
+    assert frappe.db.exists("Classification Rule", rule["name"])
+    assert not frappe.db.exists("Internal Ledger Audit Event", deleted[0].name)
+
+
+def test_install_changes_are_audited_but_idempotent_calls_are_not():
+    from internal_ledger.install import ensure_roles, install_chart
+
+    company = frappe.flags.classification_company
+    frappe.db.set_value("Custom DocPerm", {"parent": "Journal Entry", "role": "账务查看者", "permlevel": 0}, "write", 1)
+    frappe.db.delete("Internal Ledger Audit Event", {"company": company})
+    frappe.db.savepoint("install_audit")
+    ensure_roles()
+    event = frappe.get_all("Internal Ledger Audit Event", filters={"action": "ensure_roles"}, fields=["*"])
+    assert len(event) == 1 and event[0].actor == "Administrator" and event[0].timestamp and event[0].result == "success"
+    assert event[0].reference_doctype == "Internal Ledger Settings"
+    ensure_roles()
+    assert frappe.db.count("Internal Ledger Audit Event", {"action": "ensure_roles"}) == 1
+    frappe.db.rollback(save_point="install_audit")
+    assert not frappe.db.exists("Internal Ledger Audit Event", event[0].name)
+    assert frappe.db.get_value("Custom DocPerm", {"parent": "Journal Entry", "role": "账务查看者", "permlevel": 0}, "write") == 1
+    ensure_roles()
+    missing = frappe.get_doc("Account", account("560202"))
+    frappe.delete_doc("Account", missing.name)
+    frappe.db.savepoint("chart_audit")
+    install_chart(company)
+    event = frappe.get_all("Internal Ledger Audit Event", filters={"action": "install_chart", "reference_name": company}, fields=["*"])
+    assert len(event) == 1 and event[0].actor == "Administrator" and event[0].timestamp and event[0].result == "success"
+    assert event[0].reference_doctype == "Company"
+    install_chart(company)
+    assert frappe.db.count("Internal Ledger Audit Event", {"action": "install_chart", "reference_name": company}) == 1
+    frappe.db.rollback(save_point="chart_audit")
+    assert not frappe.db.exists("Account", missing.name)
+    assert not frappe.db.exists("Internal Ledger Audit Event", event[0].name)
+
+
+def test_install_bootstrap_skips_only_an_unready_audit_schema():
+    from internal_ledger.install import ensure_roles
+    from internal_ledger.permissions import audit_install_change
+
+    before = frappe.db.count("Internal Ledger Audit Event")
+    frappe.db.set_value("Custom DocPerm", {"parent": "Journal Entry", "role": "账务查看者", "permlevel": 0}, "write", 1)
+    real_table_exists = frappe.db.table_exists
+    def table_exists(doctype, *args, **kwargs):
+        return False if doctype == "Internal Ledger Audit Event" else real_table_exists(doctype, *args, **kwargs)
+    with patch.object(frappe.db, "table_exists", side_effect=table_exists):
+        with patch.dict(frappe.flags, {"in_install": True}):
+            ensure_roles()
+        with patch.dict(frappe.flags, {"in_install": False, "in_migrate": False}):
+            with unittest.TestCase().assertRaisesRegex(frappe.ValidationError, "审计表未就绪"):
+                audit_install_change("ensure_roles", "Internal Ledger Settings", "Internal Ledger Settings")
+    assert frappe.db.count("Internal Ledger Audit Event") == before
+    assert not frappe.db.get_value("Custom DocPerm", {"parent": "Journal Entry", "role": "账务查看者", "permlevel": 0}, "write")
+
+
 def test_viewer_and_guest_all_write_entrypoints_are_denied():
     from internal_ledger.accounting.drafts import create_draft
     from internal_ledger.accounting.classifier import classify

@@ -23,7 +23,7 @@ def save_batch(source: str, file_hash: str, rows: list[NormalizedTransaction]) -
     import frappe
 
     from internal_ledger.importing.dedupe import build_dedupe_key
-    from internal_ledger.permissions import require_ledger_admin, record_audit
+    from internal_ledger.permissions import require_ledger_admin, record_audit, _IMPORT_WRITE
 
     require_ledger_admin()
 
@@ -40,7 +40,9 @@ def save_batch(source: str, file_hash: str, rows: list[NormalizedTransaction]) -
         batch = frappe.get_doc({
             "doctype": "Import Batch", "source": source, "file_hash": file_hash,
             "company": settings.company, "base_currency": settings.base_currency,
-        }).insert()
+        })
+        batch.flags.ledger_import_write = _IMPORT_WRITE
+        batch.insert()
         for row in rows:
             values = {
                 "doctype": "Imported Transaction", **asdict(row), "import_batch": batch.name,
@@ -48,7 +50,9 @@ def save_batch(source: str, file_hash: str, rows: list[NormalizedTransaction]) -
             }
             frappe.db.savepoint(row_point)
             try:
-                frappe.get_doc(values).insert()
+                doc = frappe.get_doc(values)
+                doc.flags.ledger_import_write = _IMPORT_WRITE
+                doc.insert()
             except frappe.UniqueValidationError:
                 frappe.db.rollback(save_point=row_point)
                 canonical = frappe.db.get_value(
@@ -57,7 +61,9 @@ def save_batch(source: str, file_hash: str, rows: list[NormalizedTransaction]) -
                 if not canonical:
                     raise
                 values.update(status="Duplicate", dedupe_key=None, duplicate_of=canonical)
-                frappe.get_doc(values).insert()
+                doc = frappe.get_doc(values)
+                doc.flags.ledger_import_write = _IMPORT_WRITE
+                doc.insert()
             frappe.db.release_savepoint(row_point)
         record_audit("confirm_import", "Import Batch", batch.name, "success")
     except frappe.QueryDeadlockError:

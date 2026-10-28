@@ -1,7 +1,7 @@
 import frappe
 
 from internal_ledger.accounting.posting import validate_period, validate_unfrozen_accounts
-from internal_ledger.permissions import require_ledger_admin, record_audit
+from internal_ledger.permissions import require_ledger_admin, record_audit, _JOURNAL_WRITE
 
 
 def reverse_posting(posting_link: str, reason: str) -> str:
@@ -26,6 +26,7 @@ def reverse_posting(posting_link: str, reason: str) -> str:
     reverse = make_reverse_journal_entry(original.name)
     reverse.posting_date = original.posting_date
     reverse.user_remark = reason.strip()
+    reverse.flags.ledger_journal_write = _JOURNAL_WRITE
     reverse.insert()
     reverse.submit()
     link.status = "Reversed"

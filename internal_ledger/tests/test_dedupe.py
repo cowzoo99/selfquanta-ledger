@@ -14,6 +14,14 @@ from internal_ledger.importing.models import NormalizedTransaction, save_batch
 from internal_ledger.tests.test_install import make_company
 
 
+def insert_import_fixture(values):
+    from internal_ledger.permissions import _IMPORT_WRITE
+
+    doc = frappe.get_doc(values)
+    doc.flags.ledger_import_write = _IMPORT_WRITE
+    return doc.insert()
+
+
 def tx(**values):
     fields = dict(
         source="wechat", source_id="WX-1", occurred_at=datetime(2026, 10, 1, 10),

@@ -6,7 +6,7 @@ import frappe
 
 from internal_ledger.importing.models import save_batch
 from internal_ledger.importing.registry import MAX_FILE_BYTES, parse_statement
-from internal_ledger.permissions import require_ledger_admin, _SOURCE_INSERT
+from internal_ledger.permissions import require_ledger_admin, _SOURCE_INSERT, _IMPORT_WRITE
 
 
 def _parse_upload(source, content_base64, payment_account):
@@ -54,6 +54,7 @@ def confirm_import(source: str, content_base64: str, payment_account: str, expec
     carrier.raw_file = attachment.file_url
     carrier.save()
     batch.flags.source_insert = _SOURCE_INSERT
+    batch.flags.ledger_import_write = _IMPORT_WRITE
     batch.raw_file = carrier.name
     batch.save()
     return {"batch_name": name}
