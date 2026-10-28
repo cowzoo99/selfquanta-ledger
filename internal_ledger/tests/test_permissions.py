@@ -143,11 +143,15 @@ def test_install_changes_are_audited_but_idempotent_calls_are_not():
     frappe.db.delete("Internal Ledger Audit Event", {"company": company})
     frappe.db.savepoint("install_audit")
     ensure_roles()
-    event = frappe.get_all("Internal Ledger Audit Event", filters={"action": "ensure_roles"}, fields=["*"])
+    event = frappe.get_all(
+        "Internal Ledger Audit Event",
+        filters={"action": "ensure_roles", "company": company},
+        fields=["*"],
+    )
     assert len(event) == 1 and event[0].actor == "Administrator" and event[0].timestamp and event[0].result == "success"
     assert event[0].reference_doctype == "Internal Ledger Settings"
     ensure_roles()
-    assert frappe.db.count("Internal Ledger Audit Event", {"action": "ensure_roles"}) == 1
+    assert frappe.db.count("Internal Ledger Audit Event", {"action": "ensure_roles", "company": company}) == 1
     frappe.db.rollback(save_point="install_audit")
     assert not frappe.db.exists("Internal Ledger Audit Event", event[0].name)
     assert frappe.db.get_value("Custom DocPerm", {"parent": "Journal Entry", "role": "账务查看者", "permlevel": 0}, "write") == 1
@@ -219,7 +223,7 @@ def test_viewer_and_guest_all_write_entrypoints_are_denied():
 
 
 def test_roles_and_custom_permissions_are_idempotent_and_viewer_read_only():
-    from internal_ledger.install import ensure_roles
+    from internal_ledger.install import LEDGER_REPORTS, ensure_roles
 
     ensure_roles()
     ensure_roles()
@@ -239,6 +243,11 @@ def test_roles_and_custom_permissions_are_idempotent_and_viewer_read_only():
         assert not frappe.has_permission("Journal Entry", action, user=admin)
     assert frappe.db.count("Custom DocPerm", {"parent": "Journal Entry", "role": "账套管理员",
                                              "permlevel": 0}) == 1
+    for report_name in LEDGER_REPORTS:
+        custom = frappe.get_doc("Custom Role", {"report": report_name})
+        assert {row.role for row in custom.roles} >= {"账套管理员", "账务查看者"}
+        frappe.set_user(viewer)
+        assert frappe.get_doc("Report", report_name).is_permitted()
 
 
 def test_viewer_reads_filtered_company_and_sensitive_fields():

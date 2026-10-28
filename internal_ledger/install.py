@@ -10,6 +10,8 @@ ROLE_PERMISSIONS = {
     "账务查看者": {"read", "report"},
 }
 
+LEDGER_REPORTS = ("General Ledger", "Trial Balance", "Balance Sheet", "Profit and Loss Statement")
+
 
 def ensure_roles() -> None:
     require_ledger_admin()
@@ -28,6 +30,16 @@ def ensure_roles() -> None:
             actions = allowed if doctype == "Journal Entry" else {"read", "report"}
             frappe.db.set_value("Custom DocPerm", {"parent": doctype, "role": role, "permlevel": 0},
                                 {action: int(action in actions) for action in rights})
+    for report_name in LEDGER_REPORTS:
+        report = frappe.get_doc("Report", report_name)
+        expected = sorted({row.role for row in report.roles} | set(ROLE_PERMISSIONS))
+        name = frappe.db.get_value("Custom Role", {"report": report_name}, "name")
+        custom = frappe.get_doc("Custom Role", name) if name else frappe.get_doc({
+            "doctype": "Custom Role", "report": report_name,
+        })
+        if sorted(row.role for row in custom.roles) != expected:
+            custom.set("roles", [{"role": role} for role in expected])
+            custom.save(ignore_permissions=True) if name else custom.insert(ignore_permissions=True)
     frappe.clear_cache()
     if before != _permission_state():
         audit_install_change("ensure_roles", "Internal Ledger Settings", "Internal Ledger Settings")
@@ -42,7 +54,11 @@ def _permission_state():
         "Journal Entry", "Account", "GL Entry"]]}, fields=fields)
     permissions = sorted(tuple(row.get(field) or ("" if field in ("parent", "role") else 0)
                                for field in fields) for row in rows)
-    return tuple(bool(frappe.db.exists("Role", role)) for role in ROLE_PERMISSIONS), permissions
+    report_roles = tuple((report, tuple(sorted(frappe.get_all(
+        "Has Role", filters={"parenttype": "Custom Role", "parent": frappe.db.get_value(
+            "Custom Role", {"report": report}, "name")}, pluck="role"
+    )))) for report in LEDGER_REPORTS)
+    return tuple(bool(frappe.db.exists("Role", role)) for role in ROLE_PERMISSIONS), permissions, report_roles
 
 
 def load_chart_fixture() -> dict:

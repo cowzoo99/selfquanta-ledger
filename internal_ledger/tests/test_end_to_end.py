@@ -13,6 +13,7 @@ from internal_ledger.tests.test_review_api import set_up
 
 
 def test_real_three_source_workflow_balances_audit_and_source_trace():
+    from frappe.desk.query_report import run as run_report
     from erpnext.accounts.utils import get_balance_on
     from internal_ledger.api.import_api import preview_import, confirm_import
     from internal_ledger.api.review_api import prepare_draft, approve_draft, get_review_item, get_dashboard_counts
@@ -74,7 +75,32 @@ def test_real_three_source_workflow_balances_audit_and_source_trace():
     assert counts["posted"] == 9 and counts["income"] == "3000.0" and counts["expense"] == "142.5"
     first = frappe.db.get_value("Posting Link", {"journal_entry": journals[0]}, "voucher_draft")
     assert get_review_item(first)["draft"]["status"] == "Posted"
-    print("E2E EVIDENCE", batches, journals, "18 GL; cash delta=2857.50; 3 duplicates; 31 audit events; viewer reads")
+    company = frappe.flags.classification_company
+    common = {"company": company, "from_date": "2026-01-01", "to_date": "2026-12-31"}
+    general_ledger = run_report("General Ledger", filters={
+        **common, "account": [payment], "categorize_by": "Categorize by Voucher (Consolidated)",
+        "include_default_book_entries": 1,
+    })
+    trial_balance = run_report("Trial Balance", filters={
+        **common, "fiscal_year": "2026", "with_period_closing_entry_for_opening": 1,
+        "with_period_closing_entry_for_current_period": 1, "include_default_book_entries": 1,
+        "show_net_values": 1, "show_group_accounts": 1,
+    })
+    statement_filters = {
+        "company": company, "filter_based_on": "Date Range", "period_start_date": "2026-01-01",
+        "period_end_date": "2026-12-31", "periodicity": "Yearly", "selected_view": "Report",
+        "include_default_book_entries": 1, "show_zero_values": 1,
+    }
+    balance_sheet = run_report("Balance Sheet", filters={**statement_filters, "accumulated_values": 1})
+    profit_and_loss = run_report(
+        "Profit and Loss Statement", filters={**statement_filters, "accumulated_values": 0}
+    )
+    assert len(general_ledger["result"]) >= 9 and any(row.get("voucher_no") in journals for row in general_ledger["result"])
+    assert trial_balance["columns"] and trial_balance["result"]
+    assert balance_sheet["columns"] and balance_sheet["result"]
+    assert profit_and_loss["columns"] and profit_and_loss["result"]
+    print("E2E EVIDENCE", batches, journals,
+          "18 GL; cash delta=2857.50; 3 duplicates; 31 audit events; viewer reads; 4 reports")
 
 
 def load_tests(loader, tests, pattern):
