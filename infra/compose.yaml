@@ -1,0 +1,232 @@
+x-app-image: &app-image
+  image: ${INTERNAL_LEDGER_IMAGE:?set INTERNAL_LEDGER_IMAGE to internal-ledger:<git-sha>}
+  pull_policy: never
+
+x-app-service: &app-service
+  <<: *app-image
+  restart: unless-stopped
+  networks:
+    - internal
+  volumes:
+    - sites:/home/frappe/frappe-bench/sites
+    - logs:/home/frappe/frappe-bench/logs
+  depends_on:
+    configurator:
+      condition: service_completed_successfully
+
+services:
+  db:
+    image: ${DB_IMAGE:?set DB_IMAGE in versions.env}
+    restart: unless-stopped
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --skip-character-set-client-handshake
+    environment:
+      MARIADB_ROOT_PASSWORD_FILE: /run/secrets/db_root_password
+    secrets:
+      - db_root_password
+    volumes:
+      - db-data:/var/lib/mysql
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  redis-cache:
+    image: ${REDIS_IMAGE:?set REDIS_IMAGE in versions.env}
+    restart: unless-stopped
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  redis-queue:
+    image: ${REDIS_IMAGE:?set REDIS_IMAGE in versions.env}
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-queue-data:/data
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  configurator:
+    <<: *app-image
+    restart: "no"
+    entrypoint: ["bash", "-c"]
+    command:
+      - >
+        ls -1 apps > sites/apps.txt;
+        bench set-config -g db_host db;
+        bench set-config -gp db_port 3306;
+        bench set-config -g redis_cache redis://redis-cache:6379;
+        bench set-config -g redis_queue redis://redis-queue:6379;
+        bench set-config -g redis_socketio redis://redis-queue:6379;
+        bench set-config -gp socketio_port 9000;
+        bench set-config -g chromium_path /usr/lib/chromium/chromium-headless-shell
+    volumes:
+      - sites:/home/frappe/frappe-bench/sites
+      - logs:/home/frappe/frappe-bench/logs
+    networks:
+      - internal
+    depends_on:
+      db:
+        condition: service_healthy
+      redis-cache:
+        condition: service_healthy
+      redis-queue:
+        condition: service_healthy
+
+  create-site:
+    <<: *app-image
+    profiles: ["init"]
+    restart: "no"
+    entrypoint: ["bash", "-c"]
+    command:
+      - >
+        test -n "$$SITE_NAME";
+        test ! -d "sites/$$SITE_NAME";
+        bench new-site "$$SITE_NAME"
+        --mariadb-user-host-login-scope=%
+        --db-root-password "$$(cat /run/secrets/db_root_password)"
+        --admin-password "$$(cat /run/secrets/site_admin_password)"
+        --install-app erpnext
+        --install-app internal_ledger;
+        bench use "$$SITE_NAME"
+    environment:
+      SITE_NAME: ${SITE_NAME:?set SITE_NAME}
+    secrets:
+      - db_root_password
+      - site_admin_password
+    volumes:
+      - sites:/home/frappe/frappe-bench/sites
+      - logs:/home/frappe/frappe-bench/logs
+    networks:
+      - internal
+    depends_on:
+      configurator:
+        condition: service_completed_successfully
+
+  backend:
+    <<: *app-service
+    environment:
+      GUNICORN_THREADS: ${GUNICORN_THREADS:-4}
+      GUNICORN_WORKERS: ${GUNICORN_WORKERS:-2}
+      GUNICORN_TIMEOUT: ${GUNICORN_TIMEOUT:-120}
+    secrets:
+      - db_root_password
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - python -c "import socket;s=socket.create_connection(('127.0.0.1',8000),5);s.close()"
+      interval: 15s
+      timeout: 7s
+      retries: 12
+      start_period: 40s
+
+  frontend:
+    <<: *app-service
+    command: ["nginx-entrypoint.sh"]
+    environment:
+      BACKEND: backend:8000
+      SOCKETIO: websocket:9000
+      NGINX_LISTEN_PORT: 8080
+      FRAPPE_SITE_NAME_HEADER: ${SITE_NAME:?set SITE_NAME}
+      UPSTREAM_REAL_IP_ADDRESS: gateway
+      UPSTREAM_REAL_IP_HEADER: X-Forwarded-For
+      UPSTREAM_REAL_IP_RECURSIVE: "off"
+      PROXY_READ_TIMEOUT: 120
+      CLIENT_MAX_BODY_SIZE: 25m
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - python -c "import socket;s=socket.create_connection(('127.0.0.1',8080),5);s.close()"
+      interval: 15s
+      timeout: 7s
+      retries: 12
+      start_period: 20s
+    depends_on:
+      backend:
+        condition: service_healthy
+      websocket:
+        condition: service_started
+
+  websocket:
+    <<: *app-service
+    command: ["node", "/home/frappe/frappe-bench/apps/frappe/socketio.js"]
+
+  queue-short:
+    <<: *app-service
+    command: ["bench", "worker", "--queue", "short,default"]
+
+  queue-long:
+    <<: *app-service
+    command: ["bench", "worker", "--queue", "long,default,short"]
+
+  scheduler:
+    <<: *app-service
+    command: ["bench", "schedule"]
+
+  gateway:
+    image: ${NGINX_IMAGE:?set NGINX_IMAGE in versions.env}
+    restart: unless-stopped
+    ports:
+      - "${HTTP_BIND:-0.0.0}:${HTTP_PORT:-80}:8080"
+      - "${HTTPS_BIND:-0.0.0}:${HTTPS_PORT:-443}:8443"
+    configs:
+      - source: gateway_config
+        target: /etc/nginx/nginx.conf
+    secrets:
+      - source: tls_certificate
+        target: tls_certificate.pem
+      - source: tls_private_key
+        target: tls_private_key.pem
+    networks:
+      - edge
+      - internal
+    healthcheck:
+      test: ["CMD", "nginx", "-t"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    depends_on:
+      frontend:
+        condition: service_healthy
+
+secrets:
+  db_root_password:
+    file: ${DB_ROOT_PASSWORD_FILE:?set DB_ROOT_PASSWORD_FILE}
+  site_admin_password:
+    file: ${SITE_ADMIN_PASSWORD_FILE:?set SITE_ADMIN_PASSWORD_FILE}
+  tls_certificate:
+    file: ${TLS_CERTIFICATE_FILE:?set TLS_CERTIFICATE_FILE}
+  tls_private_key:
+    file: ${TLS_PRIVATE_KEY_FILE:?set TLS_PRIVATE_KEY_FILE}
+
+configs:
+  gateway_config:
+    file: ./nginx.conf
+
+volumes:
+  db-data:
+  redis-queue-data:
+  sites:
+  logs:
+
+networks:
+  edge:
+  internal:
+    internal: true
