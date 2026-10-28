@@ -120,6 +120,59 @@ def test_amounts_are_never_silently_rounded():
         assert "金额" in result.errors[0]["reason"]
 
 
+def assert_file_rejected_without_writes(source, content, reason):
+    from internal_ledger.api.import_api import preview_import, confirm_import
+    encoded = base64.b64encode(content).decode()
+    before = [frappe.db.count(doctype) for doctype in ("Import Batch", "Imported Transaction", "Journal Entry")]
+    rejects(lambda: confirm_import(source, encoded, "测试资金账户", hashlib.sha256(content).hexdigest()), reason)
+    rejects(lambda: preview_import(source, encoded, "测试资金账户"), reason)
+    rejects(lambda: parse(source, content), reason)
+    assert [frappe.db.count(doctype) for doctype in ("Import Batch", "Imported Transaction", "Journal Entry")] == before
+
+
+def test_formula_preamble_is_rejected_without_writes():
+    for source in ("bank", "wechat", "alipay"):
+        for formula in (b"=1+1", b"+SUM(1)", b"-SUM(1)", b"@SUM(1)"):
+            assert_file_rejected_without_writes(source, formula + b"\n" + fixture(source), "公式")
+
+
+def test_formula_extra_header_is_rejected_without_writes():
+    for source in ("bank", "wechat", "alipay"):
+        lines = fixture(source).decode().splitlines()
+        header_index = 0 if source == "bank" else 1
+        lines[header_index] += ",=1+1"
+        for index in range(header_index + 1, len(lines)):
+            lines[index] += ","
+        assert_file_rejected_without_writes(source, ("\n".join(lines) + "\n").encode(), "公式")
+
+
+def test_damaged_first_header_cannot_be_recovered_later():
+    for source in ("bank", "wechat", "alipay"):
+        lines = fixture(source).decode().splitlines()
+        header_index = 0 if source == "bank" else 1
+        damaged = lines[header_index].replace("交易", "损坏", 1)
+        content = "\n".join(lines[:header_index] + [damaged, lines[header_index + 1]] + lines[header_index:]) + "\n"
+        assert_file_rejected_without_writes(source, content.encode(), "表头")
+
+
+def test_duplicate_first_header_cannot_be_recovered_later():
+    for source in ("bank", "wechat", "alipay"):
+        lines = fixture(source).decode().splitlines()
+        header_index = 0 if source == "bank" else 1
+        columns = lines[header_index].split(",")
+        duplicate = list(columns)
+        duplicate[0] = duplicate[-1]
+        for damaged in (",".join(duplicate), ",".join(columns + [columns[0]])):
+            content = "\n".join(lines[:header_index] + [damaged, lines[header_index + 1]] + lines[header_index:]) + "\n"
+            assert_file_rejected_without_writes(source, content.encode(), "表头")
+
+
+def test_unknown_single_column_preamble_is_rejected_without_writes():
+    for source in ("bank", "wechat", "alipay"):
+        content = "未支持的说明行\n".encode() + fixture(source)
+        assert_file_rejected_without_writes(source, content, "表头")
+
+
 def test_preview_is_serializable_and_does_not_write():
     from internal_ledger.api.import_api import preview_import
     before = [frappe.db.count(doctype) for doctype in ("Import Batch", "Imported Transaction", "Journal Entry")]

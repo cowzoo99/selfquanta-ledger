@@ -13,6 +13,7 @@ from internal_ledger.importing.models import NormalizedTransaction
 
 MAX_FILE_BYTES = 2 * 1024 * 1024
 AMOUNT_PATTERN = re.compile(r"[+-]?(?:[0-9]+|[0-9]{1,3}(?:,[0-9]{3})+)(?:\.[0-9]+)?")
+PREAMBLES = {"wechat": "微信支付账单明细（脱敏测试）", "alipay": "支付宝交易记录（脱敏测试）"}
 
 
 @dataclass(frozen=True)
@@ -75,10 +76,15 @@ def _parse_csv(source, content, payment_account, columns):
         if not any(cells):
             continue
         if header is None:
-            if set(columns.values()).issubset(cells):
-                if len(cells) != len(set(cells)):
-                    raise ValidationError("账单表头包含重复字段")
-                header = cells
+            if any(value and value != "-" and value[0] in "=+-@" for value in cells):
+                raise ValidationError(f"第 {raw_row} 行单元格包含不允许的公式")
+            if len(cells) == 1 and cells[0] == PREAMBLES.get(source):
+                continue
+            if len(cells) != len(set(cells)):
+                raise ValidationError("账单表头包含重复字段")
+            if not set(columns.values()).issubset(cells):
+                raise ValidationError("未识别的账单表头，请使用支持的 CSV 表头")
+            header = cells
             continue
         try:
             if len(cells) != len(header):
