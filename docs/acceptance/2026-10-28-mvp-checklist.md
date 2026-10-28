@@ -8,14 +8,14 @@
 
 ## 结论
 
-- **本地自动化：PASS。** 全应用 147 项测试通过，基础设施静态与安全反例测试通过。
+- **本地自动化：PASS。** 上轮全应用 147 项测试通过；登录跳转修复后企业成员专项 29 项测试通过，基础设施静态与安全反例测试通过。
 - **浏览器视觉验收：PASS。** 使用本机 Chrome 的原生 DevTools Protocol 完成 10 项管理员/查看者检查，覆盖 1440px 桌面与 390px 手机视口并保存 7 张脱敏截图；未发现水平溢出或页面报错，查看者没有上传、预览、审核、保存或维护入口。
 - **生产上线验收：BLOCKED。** 仓库缺少所有者提供并已推送的真实 `origin`，当前 Windows 主机没有 Docker。镜像、Compose、重启、真实备份、隔离恢复、HTTPS 与云服务器检查均未执行。
 - **发布标签：BLOCKED。** 未创建 `v0.1.0`；只有全部生产门禁通过后才能标记版本。
 
 ## 最新命令证据
 
-### 全应用测试
+### 全应用测试（登录跳转修复前）
 
 ```text
 wsl -d Ubuntu-24.04 -u frappe -- bash -lc "cd /opt/internal-ledger-bench && bench --site test.localhost run-tests --app internal_ledger"
@@ -38,14 +38,14 @@ E2E EVIDENCE ['irsm8ha8lc', 'isg5uutqud', 'isnpp3mh76']
 
 ```text
 bench --site test.localhost run-tests --app internal_ledger --module internal_ledger.tests.test_member_api
-exit 0; Ran 28 tests in 79.142s; OK
+exit 0; Ran 29 tests in 41.010s; OK（登录跳转修复后）
 bench --site test.localhost run-tests --app internal_ledger --module internal_ledger.tests.test_end_to_end
 exit 0; Ran 1 test in 7.741s; OK
 ```
 
-端到端使用 API 创建的只读成员，成功改密后读取工作台、审核项和四类报表，并检查创建、停用、启用和重置审计不包含密码。并发冒烟使用五个不同的受管理查看者和一个管理员、六条独立数据库连接与屏障同步；查看者读取企业范围计数，管理员预览脱敏银行样本。六个调用在 30 秒内完成、计数一致且预览没有持久化批次；这不代表更高并发容量或可用性承诺。
+端到端使用 API 创建的只读成员，成功改密后读取工作台、审核项和四类报表，并检查创建、停用、启用和重置审计不包含密码。并发冒烟使用五个不同的受管理查看者和一个管理员、六条独立数据库连接与屏障同步；查看者读取企业范围计数，管理员预览脱敏银行样本。六个调用在 30 秒内完成、计数一致，管理员连接在预览前后检查批次数相同，外层连接也检查没有持久化批次；这不代表更高并发容量或可用性承诺。
 
-专用 Chrome 和本地 Bench 无重载服务完成 1440px 管理员创建、列表与计数刷新、停用、启用、重置密码弹窗，以及 390px 成员行、操作按钮和无水平页面溢出检查。查看者桌面和手机均无企业成员导航，四个成员管理 API 均返回权限拒绝；临时密码登录进入改密页，改密前内账 API 被阻止，改密后查看者读取成功。截图使用合成身份并脱敏成员邮箱；临时用户、企业、浏览器资料、日志和密钥已清理。手机成员表状态列文字换行，操作按钮可见。
+专用 Chrome 和本地 Bench 无重载服务完成 1440px 管理员创建、列表与计数刷新、停用、启用、重置密码弹窗，以及 390px 成员行、操作按钮和无水平页面溢出检查。查看者桌面和手机均无企业成员导航，四个成员管理 API 均返回权限拒绝；可见登录表单提交临时密码后自动进入改密页；改密前内账 API 返回 401，可见改密表单提交成功后查看者读取返回 200。测试站点临时配置本地端口所需的 host_name，验收后原配置逐字节恢复。截图使用合成身份并脱敏成员邮箱；临时用户、企业、浏览器资料、日志和密钥已清理。手机成员表状态列文字换行，操作按钮可见。
 
 截图：`admin-desktop-members.png`、`admin-mobile-members.png`、`viewer-desktop-no-members.png`。
 

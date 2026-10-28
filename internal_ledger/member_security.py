@@ -57,6 +57,8 @@ def block_temporary_password_session() -> None:
         return
     command = _request_command()
     if command in ALLOWED_RESET_COMMANDS:
+        if command in ("login", "frappe.auth.login") and frappe.local.response.get("redirect_to"):
+            frappe.local.response["home_page"] = frappe.local.response["redirect_to"]
         return
     if not command and getattr(frappe.local.request, "path", "") in ALLOWED_RESET_PATHS:
         return

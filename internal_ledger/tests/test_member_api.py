@@ -138,6 +138,31 @@ def test_temporary_password_guard_runs_before_request_and_after_token_authentica
     assert guard in frappe.get_hooks("auth_hooks")
 
 
+def test_login_home_page_redirect_is_limited_to_flagged_login_responses():
+    from internal_ledger.member_security import block_temporary_password_session
+
+    doc = member()
+    frappe.set_user(doc.name)
+    try:
+        for command in ("login", "frappe.auth.login"):
+            frappe.local.form_dict = frappe._dict(cmd=command)
+            frappe.local.request = SimpleNamespace(path="/")
+            frappe.local.response.update(home_page="original", redirect_to="reset-target")
+            block_temporary_password_session()
+            assert frappe.local.response.home_page == "reset-target"
+        frappe.local.response.pop("redirect_to")
+        frappe.local.response.home_page = "original"
+        block_temporary_password_session()
+        assert frappe.local.response.home_page == "original"
+        frappe.db.set_value("User", doc.name, "internal_ledger_must_change_password", 0)
+        frappe.local.response.redirect_to = "reset-target"
+        block_temporary_password_session()
+        assert frappe.local.response.home_page == "original"
+    finally:
+        frappe.local.response.pop("redirect_to", None)
+        frappe.local.response.pop("home_page", None)
+
+
 def test_flagged_api_token_cannot_bypass_reset_requirement():
     from frappe.auth import validate_auth
     from werkzeug.wrappers import Request
@@ -490,8 +515,12 @@ def test_member_five_viewers_and_admin_preview_capacity_smoke():
                 connection = frappe.db.sql("select connection_id()")[0][0]
                 frappe.db.sql("set session innodb_lock_wait_timeout = 20")
                 barrier.wait()
-                result = (preview_import("bank", encoded, "test payment account") if actor == "Administrator"
-                          else get_dashboard_counts("2026-10"))
+                if actor == "Administrator":
+                    before = frappe.db.count("Import Batch")
+                    result = preview_import("bank", encoded, "test payment account")
+                    assert frappe.db.count("Import Batch") == before
+                else:
+                    result = get_dashboard_counts("2026-10")
                 return connection, result
             finally:
                 frappe.destroy()
@@ -710,6 +739,8 @@ def test_member_temporary_login_requires_core_password_reset_before_viewer_api()
         assert frappe.session.user == email
         redirect = frappe.local.response.get("redirect_to", "")
         assert "/update-password?key=" in redirect
+        block_temporary_password_session()
+        assert frappe.local.response.get("home_page") == redirect
         frappe.local.form_dict = frappe._dict(cmd="internal_ledger.api.review_api.get_dashboard_counts")
         frappe.local.request = Request.from_values(path="/api/method/internal_ledger.api.review_api.get_dashboard_counts")
         with unittest.TestCase().assertRaises(frappe.AuthenticationError):
