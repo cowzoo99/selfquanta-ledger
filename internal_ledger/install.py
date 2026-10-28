@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 
 import frappe
+from frappe.custom.doctype.custom_field.custom_field import create_custom_fields
 from internal_ledger.permissions import require_ledger_admin, audit_install_change
 
 
@@ -16,6 +17,15 @@ LEDGER_REPORTS = ("General Ledger", "Trial Balance", "Balance Sheet", "Profit an
 def ensure_roles() -> None:
     require_ledger_admin()
     before = _permission_state()
+    create_custom_fields({"User": [{
+        "fieldname": "internal_ledger_must_change_password",
+        "label": "Internal Ledger Must Change Password",
+        "fieldtype": "Check",
+        "hidden": 1,
+        "no_copy": 1,
+        "read_only": 1,
+        "default": "0",
+    }]}, update=True)
     for role in ROLE_PERMISSIONS:
         if not frappe.db.exists("Role", role):
             frappe.get_doc({"doctype": "Role", "role_name": role}).insert()
@@ -58,7 +68,11 @@ def _permission_state():
         "Has Role", filters={"parenttype": "Custom Role", "parent": frappe.db.get_value(
             "Custom Role", {"report": report}, "name")}, pluck="role"
     )))) for report in LEDGER_REPORTS)
-    return tuple(bool(frappe.db.exists("Role", role)) for role in ROLE_PERMISSIONS), permissions, report_roles
+    password_field = frappe.db.get_value("Custom Field", {
+        "dt": "User", "fieldname": "internal_ledger_must_change_password",
+    }, ["fieldtype", "label", "hidden", "no_copy", "read_only", "default"])
+    return (tuple(bool(frappe.db.exists("Role", role)) for role in ROLE_PERMISSIONS),
+            permissions, report_roles, password_field)
 
 
 def load_chart_fixture() -> dict:

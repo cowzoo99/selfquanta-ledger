@@ -34,3 +34,10 @@ ignore_links_on_delete = ["Internal Ledger Audit Event"]
 override_whitelisted_methods = {
     "erpnext.accounts.utils.get_balance_on": "internal_ledger.api.report_api.scoped_native_balance",
 }
+
+
+on_login = "internal_ledger.member_security.redirect_temporary_password"
+before_request = ["internal_ledger.member_security.block_temporary_password_session"]
+doc_events["User"] = {
+    "validate_reset_password": "internal_ledger.member_security.clear_temporary_password_flag",
+}
