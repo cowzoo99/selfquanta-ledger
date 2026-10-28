@@ -1,0 +1,9 @@
+{
+ "doctype": "Page",
+ "name": "ledger-workbench",
+ "page_name": "ledger-workbench",
+ "title": "协同内账工作台",
+ "module": "Internal Ledger",
+ "standard": "Yes",
+ "roles": [{"role": "账套管理员"}, {"role": "账务查看者"}, {"role": "System Manager"}]
+}
