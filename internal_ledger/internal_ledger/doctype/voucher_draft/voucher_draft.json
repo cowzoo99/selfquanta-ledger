@@ -6,7 +6,7 @@
  "engine": "InnoDB",
  "field_order": ["imported_transaction", "company", "base_currency", "posting_date", "transaction_type", "status", "classification_rule", "classification_reason", "lines"],
  "fields": [
-  {"fieldname": "imported_transaction", "label": "Imported Transaction", "fieldtype": "Link", "options": "Imported Transaction", "reqd": 1},
+  {"fieldname": "imported_transaction", "label": "Imported Transaction", "fieldtype": "Link", "options": "Imported Transaction", "reqd": 1, "unique": 1},
   {"fieldname": "company", "label": "Company", "fieldtype": "Link", "options": "Company", "reqd": 1},
   {"fieldname": "base_currency", "label": "Base Currency", "fieldtype": "Link", "options": "Currency", "reqd": 1},
   {"fieldname": "posting_date", "label": "Posting Date", "fieldtype": "Date", "reqd": 1},

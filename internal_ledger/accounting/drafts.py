@@ -41,7 +41,8 @@ def validate_balanced(lines: Sequence[DraftLine]) -> None:
 
 
 def validate_account(name: str, company: str, roots: set[str]) -> None:
-    account = frappe.db.get_value("Account", name, ["company", "is_group", "disabled", "root_type"], as_dict=True)
+    account = frappe.db.get_value("Account", name, ["company", "is_group", "disabled", "root_type"],
+                                  as_dict=True, for_update=True)
     if not account or account.company != company or account.is_group or account.disabled or account.root_type not in roots:
         frappe.throw("科目必须为同公司、启用、非组且根类型合法的 Account 链接")
 
@@ -85,23 +86,39 @@ def fee_lines(amount, fee, payment):
     return [DraftLine(fee, debit=amount), DraftLine(payment, credit=amount)]
 
 
-def create_draft(tx_name: str, result: "ClassificationResult") -> str:
-    from internal_ledger.accounting.classifier import classify
-
-    if result.status != "matched" or classify(tx_name) != result:
-        frappe.throw("仅当前匹配且无冲突的分类结果可以生成草稿")
-    tx = frappe.get_doc("Imported Transaction", tx_name)
-    batch = frappe.get_doc("Import Batch", tx.import_batch)
-    kind = frappe.db.get_value("Classification Rule", result.rule_name, "transaction_type")
-    amount = Decimal(str(tx.amount))
+def build_lines(amount: Decimal, result: "ClassificationResult", kind: str) -> list[DraftLine]:
+    """Generate and validate the complete lines without database reads or writes."""
     builders = {"expense": expense_lines, "income": income_lines, "transfer": transfer_lines,
                 "refund": refund_lines, "fee": fee_lines}
     lines = builders[kind](amount, result.debit_account, result.credit_account)
     validate_balanced(lines)
-    return frappe.get_doc({
+    return lines
+
+
+def current_draft(tx_name: str):
+    """Keep current classification reads locked in the caller's transaction."""
+    from internal_ledger.accounting.classifier import classify
+
+    result = classify(tx_name)
+    if result.status != "matched":
+        frappe.throw("仅当前匹配且无冲突的分类结果可以生成草稿")
+    tx = frappe.get_doc("Imported Transaction", tx_name, for_update=True)
+    batch = frappe.get_doc("Import Batch", tx.import_batch, for_update=True)
+    kind = frappe.db.get_value("Classification Rule", result.rule_name, "transaction_type", for_update=True)
+    lines = build_lines(Decimal(str(tx.amount)), result, kind)
+    return result, {
         "doctype": "Voucher Draft", "imported_transaction": tx_name,
         "classification_rule": result.rule_name, "classification_reason": result.reason,
         "company": batch.company, "base_currency": batch.base_currency,
         "posting_date": getdate(tx.occurred_at), "transaction_type": kind, "status": "Draft",
         "lines": [asdict(line) for line in lines],
-    }).insert().name
+    }
+
+
+def create_draft(tx_name: str, result: "ClassificationResult") -> str:
+    current, values = current_draft(tx_name)
+    if result != current:
+        frappe.throw("仅当前匹配且无冲突的分类结果可以生成草稿")
+    # The unique imported_transaction index rejects both retries and races.
+    # Do not catch unique errors: unrelated constraint failures must propagate too.
+    return frappe.get_doc(values).insert().name

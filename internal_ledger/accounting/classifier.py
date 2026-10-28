@@ -21,13 +21,13 @@ class ClassificationResult:
 
 
 def classify(tx_name: str) -> ClassificationResult:
-    tx = frappe.get_doc("Imported Transaction", tx_name)
+    tx = frappe.get_doc("Imported Transaction", tx_name, for_update=True)
     if tx.status != "Imported":
         frappe.throw("重复流水不得分类或生成草稿")
-    company = frappe.db.get_value("Import Batch", tx.import_batch, "company")
-    rules = frappe.get_all("Classification Rule", filters={
+    company = frappe.db.get_value("Import Batch", tx.import_batch, "company", for_update=True)
+    rules = frappe.db.get_values("Classification Rule", filters={
         "company": company, "enabled": 1, "direction": tx.direction,
-    }, fields=["*"])
+    }, fieldname=["*"], as_dict=True, for_update=True, order_by="name")
     matches = []
     for rule in rules:
         if not rule.value:

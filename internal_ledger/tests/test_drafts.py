@@ -1,6 +1,9 @@
 from dataclasses import replace
+from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
+from threading import Barrier
 import unittest
+from uuid import uuid4
 
 import frappe
 
@@ -159,8 +162,163 @@ def test_draft_document_revalidates_manual_edits_and_stays_draft():
         assert viewer.read and not viewer.write and not viewer.create and not viewer.submit
 
 
+def test_direct_insert_rejects_unmatched_and_conflicting_classification():
+    original = make_draft("expense", "expense", account("560201"), None)
+    unmatched = transaction(counterparty="未匹配商户")
+    conflict = transaction(counterparty="冲突商户")
+    add_rule(value="冲突商户")
+    add_rule(value="冲突商户", debit_account=account("560202"))
+    before = frappe.db.count("Voucher Draft")
+    for name in (unmatched, conflict):
+        forged = frappe.copy_doc(original)
+        forged.imported_transaction = name
+        with unittest.TestCase().assertRaises(frappe.ValidationError):
+            forged.insert()
+    assert frappe.db.count("Voucher Draft") == before
+    assert frappe.db.count("Journal Entry") == frappe.flags.classification_journals
+
+
+def test_save_rejects_another_valid_expense_account():
+    draft = make_draft("expense", "expense", account("560201"), None)
+    draft.lines[0].account = account("560202")
+    with unittest.TestCase().assertRaises(frappe.ValidationError):
+        draft.save()
+    assert frappe.get_doc("Voucher Draft", draft.name).lines[0].account == account("560201")
+
+
+def test_save_rejects_tampered_rule_type_and_reason():
+    draft = make_draft("expense", "expense", account("560201"), None)
+    other = add_rule(value="不匹配商户")
+    for field, value in (("classification_rule", other.name), ("transaction_type", "fee"),
+                         ("classification_reason", "伪造原因")):
+        draft.reload()
+        draft.set(field, value)
+        with unittest.TestCase().assertRaises(frappe.ValidationError):
+            draft.save()
+
+
+def test_save_rejects_disabled_or_changed_rule():
+    draft = make_draft("expense", "expense", account("560201"), None)
+    rule = frappe.get_doc("Classification Rule", draft.classification_rule)
+    rule.enabled = 0
+    rule.save()
+    with unittest.TestCase().assertRaises(frappe.ValidationError):
+        draft.save()
+    rule.enabled = 1
+    rule.debit_account = account("560202")
+    rule.save()
+    draft.reload()
+    with unittest.TestCase().assertRaises(frappe.ValidationError):
+        draft.save()
+
+
+def test_same_transaction_retry_is_rejected_without_another_draft():
+    from internal_ledger.accounting.classifier import classify
+    from internal_ledger.accounting.drafts import create_draft
+
+    draft = make_draft("expense", "expense", account("560201"), None)
+    with unittest.TestCase().assertRaises(frappe.UniqueValidationError):
+        create_draft(draft.imported_transaction, classify(draft.imported_transaction))
+    assert frappe.db.count("Voucher Draft", {"imported_transaction": draft.imported_transaction}) == 1
+
+
+def test_database_unique_index_rejects_direct_second_draft():
+    draft = make_draft("expense", "expense", account("560201"), None)
+    copied = frappe.copy_doc(draft)
+    with unittest.TestCase().assertRaises(frappe.UniqueValidationError):
+        copied.db_insert()
+    assert frappe.db.count("Voucher Draft", {"imported_transaction": draft.imported_transaction}) == 1
+
+
+def test_creation_belongs_to_callers_transaction():
+    from internal_ledger.accounting.classifier import classify
+    from internal_ledger.accounting.drafts import create_draft
+
+    add_rule()
+    name = transaction()
+    frappe.db.savepoint("draft_caller")
+    draft_name = create_draft(name, classify(name))
+    assert frappe.db.exists("Voucher Draft", draft_name)
+    frappe.db.rollback(save_point="draft_caller")
+    assert not frappe.db.exists("Voucher Draft", draft_name)
+    assert frappe.db.exists("Imported Transaction", name)
+
+
+def test_two_independent_connections_create_only_one_draft():
+    from internal_ledger.accounting.classifier import classify
+    from internal_ledger.accounting.drafts import create_draft
+    from internal_ledger.install import install_chart
+    from internal_ledger.tests.test_dedupe import tx
+    from internal_ledger.tests.test_install import make_company
+
+    site, sites_path = frappe.local.site, frappe.local.sites_path
+    # Rollback-to-savepoint retains InnoDB locks from preceding company fixtures.
+    frappe.db.rollback()
+    barrier = Barrier(2)
+
+    def connected(action):
+        frappe.init(site=site, sites_path=sites_path)
+        frappe.connect()
+        frappe.set_user("Administrator")
+        try:
+            return action()
+        finally:
+            frappe.db.rollback()
+            frappe.destroy()
+
+    def prepare():
+        company = make_company()
+        install_chart(company)
+        frappe.flags.classification_company = company
+        rule = add_rule()
+        batch = frappe.get_doc({"doctype": "Import Batch", "source": "wechat", "file_hash": uuid4().hex,
+                                "company": company, "base_currency": "CNY"}).insert()
+        from dataclasses import asdict
+
+        row = tx(source_id=uuid4().hex, payment_account=account("1001"))
+        imported = frappe.get_doc({"doctype": "Imported Transaction", **asdict(row),
+                                   "import_batch": batch.name, "status": "Imported",
+                                   "dedupe_key": "wechat:" + row.source_id}).insert()
+        result = classify(imported.name)
+        frappe.db.commit()
+        return company, rule.name, batch.name, imported.name, result
+
+    def insert_one():
+        barrier.wait(timeout=20)
+        try:
+            name = create_draft(fixture[3], fixture[4])
+            frappe.db.commit()
+            return "inserted", name
+        except frappe.UniqueValidationError:
+            frappe.db.rollback()
+            return "duplicate", None
+
+    def verify_and_clean():
+        names = frappe.get_all("Voucher Draft", filters={"imported_transaction": fixture[3]}, pluck="name")
+        for name in names:
+            frappe.db.delete("Voucher Draft Line", {"parent": name})
+            frappe.db.delete("Voucher Draft", {"name": name})
+        frappe.delete_doc("Classification Rule", fixture[1], force=True)
+        frappe.delete_doc("Imported Transaction", fixture[3], force=True)
+        frappe.delete_doc("Import Batch", fixture[2], force=True)
+        frappe.delete_doc("Company", fixture[0], force=True)
+        frappe.db.commit()
+        return len(names)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        fixture = pool.submit(connected, prepare).result(timeout=60)
+        try:
+            futures = [pool.submit(connected, insert_one) for _ in range(2)]
+            results = [future.result(timeout=60) for future in futures]
+        finally:
+            count = pool.submit(connected, verify_and_clean).result(timeout=60)
+    assert sorted(status for status, name in results) == ["duplicate", "inserted"]
+    assert count == 1
+
+
 def load_tests(loader, tests, pattern):
     return unittest.TestSuite(
-        unittest.FunctionTestCase(test, setUp=set_up, tearDown=tear_down)
+        unittest.FunctionTestCase(test, setUp=None if name == "test_two_independent_connections_create_only_one_draft" else set_up,
+                                  tearDown=None if name == "test_two_independent_connections_create_only_one_draft" else tear_down)
         for name, test in sorted(globals().items()) if name.startswith("test_")
     )
