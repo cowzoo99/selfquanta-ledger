@@ -132,6 +132,45 @@ def test_flagged_session_allows_only_reset_and_logout():
             block_temporary_password_session()
 
 
+def test_temporary_password_guard_runs_before_request_and_after_token_authentication():
+    guard = "internal_ledger.member_security.block_temporary_password_session"
+    assert guard in frappe.get_hooks("before_request")
+    assert guard in frappe.get_hooks("auth_hooks")
+
+
+def test_flagged_api_token_cannot_bypass_reset_requirement():
+    from frappe.auth import validate_auth
+    from werkzeug.wrappers import Request
+
+    from internal_ledger.member_security import block_temporary_password_session
+
+    doc = member()
+    doc.api_key = uuid4().hex
+    doc.api_secret = uuid4().hex
+    secret = doc.api_secret
+    doc.save(ignore_permissions=True)
+    for path in ("/api/resource/User", "/api/method/frappe.client.get_list"):
+        frappe.set_user("Guest")
+        frappe.local.request = Request.from_values(path=path, headers={
+            "Authorization": f"token {doc.api_key}:{secret}",
+        })
+        block_temporary_password_session()
+        with patch.object(frappe.local, "login_manager", SimpleNamespace(user="Guest"), create=True):
+            with unittest.TestCase().assertRaisesRegex(frappe.AuthenticationError, "请先修改临时密码"):
+                validate_auth()
+        assert frappe.session.user == doc.name
+    for path in ("/update-password", f"/api/method/{PASSWORD_COMMAND}",
+                 "/api/method/frappe.core.doctype.user.user.test_password_strength",
+                 "/api/method/logout", "/api/method/frappe.auth.logout"):
+        frappe.set_user("Guest")
+        frappe.local.request = Request.from_values(path=path, headers={
+            "Authorization": f"token {doc.api_key}:{secret}",
+        })
+        with patch.object(frappe.local, "login_manager", SimpleNamespace(user="Guest"), create=True):
+            validate_auth()
+        assert frappe.session.user == doc.name
+
+
 def test_post_login_flagged_session_can_deliver_reset_redirect():
     from internal_ledger.member_security import block_temporary_password_session, redirect_temporary_password
 

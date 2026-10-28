@@ -38,6 +38,7 @@ override_whitelisted_methods = {
 
 on_login = "internal_ledger.member_security.redirect_temporary_password"
 before_request = ["internal_ledger.member_security.block_temporary_password_session"]
+auth_hooks = ["internal_ledger.member_security.block_temporary_password_session"]
 doc_events["User"] = {
     "validate_reset_password": "internal_ledger.member_security.clear_temporary_password_flag",
 }
