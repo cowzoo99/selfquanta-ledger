@@ -1,10 +1,11 @@
 import frappe
 
-from internal_ledger.accounting.posting import validate_period, validate_unfrozen_accounts, write_permission
+from internal_ledger.accounting.posting import validate_period, validate_unfrozen_accounts
+from internal_ledger.permissions import require_ledger_admin, record_audit
 
 
 def reverse_posting(posting_link: str, reason: str) -> str:
-    write_permission()
+    require_ledger_admin()
     if not isinstance(reason, str) or not reason.strip():
         frappe.throw("冲销必须填写原因")
     link = frappe.get_doc("Posting Link", posting_link, for_update=True)
@@ -32,4 +33,5 @@ def reverse_posting(posting_link: str, reason: str) -> str:
     link.reversal_reason = reason.strip()
     link.flags.posting_service = True
     link.save()
+    record_audit("reverse_posting", "Posting Link", link.name, "success")
     return reverse.name

@@ -1,0 +1,10 @@
+{
+ "doctype": "DocType", "name": "Internal Ledger Source File", "module": "Internal Ledger",
+ "autoname": "hash", "engine": "InnoDB",
+ "field_order": ["import_batch", "raw_file"],
+ "fields": [
+  {"fieldname": "import_batch", "label": "Import Batch", "fieldtype": "Link", "options": "Import Batch", "reqd": 1, "unique": 1, "read_only": 1},
+  {"fieldname": "raw_file", "label": "Original File", "fieldtype": "Attach", "read_only": 1}
+ ],
+ "permissions": [{"role": "账套管理员", "read": 1, "create": 1, "write": 1}]
+}

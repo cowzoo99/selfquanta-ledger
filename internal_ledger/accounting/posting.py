@@ -2,11 +2,7 @@ from decimal import Decimal
 
 import frappe
 from frappe.utils import getdate
-
-
-def write_permission():
-    if frappe.session.user != "Administrator" and "账套管理员" not in frappe.get_roles():
-        frappe.throw("仅账套管理员可执行过账或冲销", frappe.PermissionError)
+from internal_ledger.permissions import require_ledger_admin, record_audit
 
 
 def validate_unfrozen_accounts(accounts):
@@ -37,7 +33,7 @@ def validate_period(company, posting_date):
 
 def post_draft(draft_name: str) -> str:
     """Post once in the caller's transaction; let every failure propagate."""
-    write_permission()
+    require_ledger_admin()
     draft = frappe.get_doc("Voucher Draft", draft_name, for_update=True)
     draft.check_permission("write")
     existing = frappe.db.get_value("Posting Link", {"voucher_draft": draft.name}, "name", for_update=True)
@@ -88,4 +84,5 @@ def post_draft(draft_name: str) -> str:
     # Document.save() would also rewrite the already-approved child rows.
     draft.validate()
     draft.db_set("status", "Posted")
+    record_audit("post_draft", "Voucher Draft", draft.name, "success")
     return journal.name

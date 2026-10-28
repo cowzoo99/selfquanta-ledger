@@ -7,6 +7,7 @@ from frappe.utils import add_months, getdate, nowdate
 
 from internal_ledger.accounting.classifier import classify
 from internal_ledger.accounting.drafts import create_draft
+from internal_ledger.permissions import require_ledger_admin, record_audit
 
 
 ALLOWED_TRANSITIONS = {
@@ -20,9 +21,7 @@ def assert_transition(current: str, target: str) -> None:
 
 
 def _write_permission():
-    # Administrator is Frappe's built-in superuser, including in site tests.
-    if frappe.session.user != "Administrator" and "账套管理员" not in frappe.get_roles():
-        frappe.throw("仅账套管理员可执行人工审核操作", frappe.PermissionError)
+    require_ledger_admin()
     frappe.has_permission("Voucher Draft", ptype="write", throw=True)
 
 
@@ -32,6 +31,14 @@ def _draft(name, write=False):
     doc = frappe.get_doc("Voucher Draft", name, for_update=write)
     doc.check_permission("write" if write else "read")
     return doc
+
+
+def _transaction_values(tx):
+    values = dict(tx) if isinstance(tx, dict) else tx.as_dict()
+    if frappe.session.user != "Administrator" and "账套管理员" not in frappe.get_roles():
+        for field in ("source_id", "dedupe_key"):
+            values.pop(field, None)
+    return values
 
 
 @frappe.whitelist(methods=["GET", "POST"])
@@ -45,7 +52,7 @@ def get_review_item(name: str):
         doc.validate()
     except frappe.ValidationError as exc:
         error = str(exc)
-    return {"draft": doc.as_dict(), "transaction": tx.as_dict(), "error": error,
+    return {"draft": doc.as_dict(), "transaction": _transaction_values(tx), "error": error,
             "can_approve": doc.status == "Draft" and error is None}
 
 
@@ -63,7 +70,7 @@ def list_review_items():
             error = None if result["status"] == "matched" else result["reason"]
         except frappe.ValidationError as exc:
             result, error = None, str(exc)
-        items.append({"draft": None, "transaction": tx, "classification": result,
+        items.append({"draft": None, "transaction": _transaction_values(tx), "classification": result,
                       "error": error, "can_approve": False})
     return sorted(items, key=lambda item: not bool(item["error"] or (
         item["draft"] and item["draft"]["status"] == "Rejected")))
@@ -110,7 +117,9 @@ def update_draft(name: str, lines, summary: str, posting_date: str):
     doc.is_manual_override = 1
     doc.manual_override_by = frappe.session.user
     doc.flags.review_edit = True
-    return doc.save()
+    doc.save()
+    record_audit("update_draft", "Voucher Draft", doc.name, "success")
+    return doc
 
 
 def _transition(name, target, reason=None):
@@ -121,7 +130,10 @@ def _transition(name, target, reason=None):
     doc.status = target
     doc.rejection_reason = reason if target == "Rejected" else None
     doc.flags.review_transition = target
-    return doc.save()
+    doc.save()
+    action = {"Approved": "approve_draft", "Rejected": "reject_draft", "Draft": "reopen_draft"}[target]
+    record_audit(action, "Voucher Draft", doc.name, "success")
+    return doc
 
 
 @frappe.whitelist(methods=["POST"])

@@ -23,6 +23,9 @@ def save_batch(source: str, file_hash: str, rows: list[NormalizedTransaction]) -
     import frappe
 
     from internal_ledger.importing.dedupe import build_dedupe_key
+    from internal_ledger.permissions import require_ledger_admin, record_audit
+
+    require_ledger_admin()
 
     if any(row.source != source for row in rows):
         frappe.throw("Every row must match the batch source.")
@@ -56,6 +59,7 @@ def save_batch(source: str, file_hash: str, rows: list[NormalizedTransaction]) -
                 values.update(status="Duplicate", dedupe_key=None, duplicate_of=canonical)
                 frappe.get_doc(values).insert()
             frappe.db.release_savepoint(row_point)
+        record_audit("confirm_import", "Import Batch", batch.name, "success")
     except frappe.QueryDeadlockError:
         # InnoDB already rolled back the transaction and invalidated its savepoints.
         raise

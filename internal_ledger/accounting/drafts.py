@@ -4,6 +4,7 @@ from typing import Sequence, TYPE_CHECKING
 
 import frappe
 from frappe.utils import getdate
+from internal_ledger.permissions import require_ledger_admin, record_audit
 
 if TYPE_CHECKING:
     from internal_ledger.accounting.classifier import ClassificationResult
@@ -116,9 +117,13 @@ def current_draft(tx_name: str):
 
 
 def create_draft(tx_name: str, result: "ClassificationResult") -> str:
+    require_ledger_admin()
+    frappe.get_doc("Imported Transaction", tx_name).check_permission("read")
     current, values = current_draft(tx_name)
     if result != current:
         frappe.throw("仅当前匹配且无冲突的分类结果可以生成草稿")
     # The unique imported_transaction index rejects both retries and races.
     # Do not catch unique errors: unrelated constraint failures must propagate too.
-    return frappe.get_doc(values).insert().name
+    name = frappe.get_doc(values).insert().name
+    record_audit("prepare_draft", "Voucher Draft", name, "success")
+    return name

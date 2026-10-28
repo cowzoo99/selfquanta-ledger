@@ -375,6 +375,7 @@ def test_two_connections_post_once_and_reverse_once():
         frappe.db.delete("Posting Link", {"voucher_draft": fixture[4]})
         frappe.db.delete("Voucher Draft Line", {"parent": fixture[4]})
         frappe.db.delete("Voucher Draft", {"name": fixture[4]})
+        frappe.db.delete("Internal Ledger Audit Event", {"company": fixture[0]})
         for doctype, name in (("Classification Rule", fixture[1]), ("Imported Transaction", fixture[3]),
                               ("Import Batch", fixture[2]), ("Company", fixture[0])):
             frappe.delete_doc(doctype, name, force=True)
@@ -485,6 +486,7 @@ def test_two_connections_interleave_post_and_reverse_without_deadlock():
         for name in fixture[4]:
             frappe.db.delete("Voucher Draft Line", {"parent": name})
             frappe.db.delete("Voucher Draft", {"name": name})
+        frappe.db.delete("Internal Ledger Audit Event", {"company": fixture[0]})
         for name in fixture[3]:
             frappe.delete_doc("Imported Transaction", name, force=True)
         for doctype, name in (("Classification Rule", fixture[1]), ("Import Batch", fixture[2]), ("Company", fixture[0])):

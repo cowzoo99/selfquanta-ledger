@@ -11,7 +11,7 @@
  "fields": [
   {"fieldname": "import_batch", "label": "Import Batch", "fieldtype": "Link", "options": "Import Batch", "reqd": 1},
   {"fieldname": "source", "label": "Source", "fieldtype": "Data", "reqd": 1},
-  {"fieldname": "source_id", "label": "Source ID", "fieldtype": "Data"},
+  {"fieldname": "source_id", "label": "Source ID", "fieldtype": "Data", "permlevel": 1},
   {"fieldname": "occurred_at", "label": "Occurred At", "fieldtype": "Datetime", "reqd": 1},
   {"fieldname": "amount", "label": "Amount", "fieldtype": "Currency", "options": "Import Batch:import_batch:base_currency", "precision": "9", "reqd": 1},
   {"fieldname": "direction", "label": "Direction", "fieldtype": "Select", "options": "income\nexpense", "reqd": 1},
@@ -20,12 +20,12 @@
   {"fieldname": "payment_account", "label": "Payment Account", "fieldtype": "Data", "reqd": 1},
   {"fieldname": "raw_row", "label": "Raw Row", "fieldtype": "Int", "reqd": 1},
   {"fieldname": "status", "label": "Status", "fieldtype": "Select", "options": "Imported\nDuplicate", "default": "Imported", "reqd": 1, "read_only": 1},
-  {"fieldname": "dedupe_key", "label": "Dedupe Key", "fieldtype": "Data", "unique": 1, "read_only": 1},
+  {"fieldname": "dedupe_key", "label": "Dedupe Key", "fieldtype": "Data", "unique": 1, "read_only": 1, "permlevel": 1},
   {"fieldname": "duplicate_of", "label": "Duplicate Of", "fieldtype": "Link", "options": "Imported Transaction", "read_only": 1}
  ],
  "permissions": [
-  {"role": "System Manager", "read": 1, "write": 1, "create": 1},
-  {"role": "账套管理员", "read": 1, "write": 1, "create": 1},
-  {"role": "账务查看者", "read": 1}
+  {"role": "账套管理员", "read": 1, "write": 1, "create": 1, "report": 1},
+  {"role": "账套管理员", "permlevel": 1, "read": 1, "write": 1},
+  {"role": "账务查看者", "read": 1, "report": 1}
  ]
 }

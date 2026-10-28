@@ -33,10 +33,16 @@
  ],
  "permissions": [
   {
-   "role": "System Manager",
+   "role": "账套管理员",
    "read": 1,
    "write": 1,
-   "create": 1
+   "create": 1,
+   "report": 1
+  },
+  {
+   "role": "账务查看者",
+   "read": 1,
+   "report": 1
   }
  ]
 }

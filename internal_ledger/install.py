@@ -2,23 +2,32 @@ import json
 from pathlib import Path
 
 import frappe
+from internal_ledger.permissions import require_ledger_admin
 
 
 ROLE_PERMISSIONS = {
-    "账套管理员": {"read", "write", "create", "submit", "cancel"},
-    "账务查看者": {"read"},
+    "账套管理员": {"read", "write", "create", "submit", "report"},
+    "账务查看者": {"read", "report"},
 }
 
 
 def ensure_roles() -> None:
+    require_ledger_admin()
     for role in ROLE_PERMISSIONS:
         if not frappe.db.exists("Role", role):
             frappe.get_doc({"doctype": "Role", "role_name": role}).insert()
-    from frappe.permissions import add_permission, update_permission_property
+    from frappe.permissions import add_permission, rights
+    from internal_ledger.permissions import LEDGER_DOCTYPES
 
-    add_permission("Journal Entry", "账套管理员", ptype="read")
-    for action in ("read", "write", "create", "submit"):
-        update_permission_property("Journal Entry", "账套管理员", 0, action, 1)
+    # App schemas are authoritative, including sites with legacy Custom DocPerm overrides.
+    frappe.db.delete("Custom DocPerm", {"parent": ["in", LEDGER_DOCTYPES]})
+    for role, allowed in ROLE_PERMISSIONS.items():
+        for doctype in ("Journal Entry", "Account", "GL Entry"):
+            add_permission(doctype, role, ptype="read")
+            actions = allowed if doctype == "Journal Entry" else {"read", "report"}
+            frappe.db.set_value("Custom DocPerm", {"parent": doctype, "role": role, "permlevel": 0},
+                                {action: int(action in actions) for action in rights})
+    frappe.clear_cache()
 
 
 def load_chart_fixture() -> dict:
@@ -27,6 +36,7 @@ def load_chart_fixture() -> dict:
 
 
 def install_chart(company: str) -> None:
+    require_ledger_admin()
     frappe.get_doc("Company", company)
     installed = {}
     roots = {}

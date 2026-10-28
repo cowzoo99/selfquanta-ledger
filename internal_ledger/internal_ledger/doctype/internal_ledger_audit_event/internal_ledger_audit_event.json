@@ -1,0 +1,15 @@
+{
+ "doctype": "DocType", "name": "Internal Ledger Audit Event", "module": "Internal Ledger",
+ "autoname": "hash", "engine": "InnoDB",
+ "field_order": ["actor", "action", "reference_doctype", "reference_name", "result", "timestamp", "company"],
+ "fields": [
+  {"fieldname": "actor", "label": "Actor", "fieldtype": "Link", "options": "User", "reqd": 1, "read_only": 1},
+  {"fieldname": "action", "label": "Action", "fieldtype": "Data", "reqd": 1, "read_only": 1},
+  {"fieldname": "reference_doctype", "label": "Reference DocType", "fieldtype": "Link", "options": "DocType", "reqd": 1, "read_only": 1},
+  {"fieldname": "reference_name", "label": "Reference Name", "fieldtype": "Dynamic Link", "options": "reference_doctype", "reqd": 1, "read_only": 1},
+  {"fieldname": "result", "label": "Result", "fieldtype": "Data", "reqd": 1, "read_only": 1},
+  {"fieldname": "timestamp", "label": "Timestamp", "fieldtype": "Datetime", "reqd": 1, "read_only": 1},
+  {"fieldname": "company", "label": "Company", "fieldtype": "Link", "options": "Company", "reqd": 1, "read_only": 1}
+ ],
+ "permissions": [{"role": "账套管理员", "read": 1, "report": 1}, {"role": "账务查看者", "read": 1, "report": 1}]
+}

@@ -21,8 +21,7 @@
   {"fieldname": "lines", "label": "Lines", "fieldtype": "Table", "options": "Voucher Draft Line", "reqd": 1}
  ],
  "permissions": [
-  {"role": "System Manager", "read": 1, "write": 1, "create": 1},
-  {"role": "账套管理员", "read": 1, "write": 1, "create": 1},
-  {"role": "账务查看者", "read": 1}
+  {"role": "账套管理员", "read": 1, "write": 1, "create": 1, "report": 1},
+  {"role": "账务查看者", "read": 1, "report": 1}
  ]
 }
