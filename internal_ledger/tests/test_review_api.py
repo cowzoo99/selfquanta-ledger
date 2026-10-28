@@ -206,6 +206,71 @@ def test_viewer_cannot_modify_and_writes_are_post_only():
         frappe.set_user("Administrator")
 
 
+def assert_foreign_child_rejected(manual):
+    from internal_ledger.accounting.classifier import classify
+    from internal_ledger.accounting.drafts import create_draft
+    from internal_ledger.api.review_api import approve_draft, update_draft
+
+    source = draft()
+    if manual:
+        source = update_draft(source.name, [row.as_dict() for row in source.lines],
+                              "人工确认", str(source.posting_date))
+    else:
+        source = approve_draft(source.name)
+    tx_name = transaction()
+    target = frappe.get_doc("Voucher Draft", create_draft(tx_name, classify(tx_name)))
+    source_snapshot = frappe.get_doc("Voucher Draft", source.name).as_dict()
+    target_snapshot = target.as_dict()
+    for local in (0, 1):
+        target.reload()
+        target.lines[0].name = source.lines[0].name
+        target.lines[0].set("__islocal", local)
+        with unittest.TestCase().assertRaisesRegex(frappe.ValidationError, "分录行身份"):
+            target.save()
+        assert frappe.get_doc("Voucher Draft", source.name).as_dict() == source_snapshot
+        assert frappe.get_doc("Voucher Draft", target.name).as_dict() == target_snapshot
+
+
+def test_approved_draft_child_cannot_be_moved_by_another_draft():
+    assert_foreign_child_rejected(manual=False)
+
+
+def test_manual_override_child_cannot_be_moved_by_another_draft():
+    assert_foreign_child_rejected(manual=True)
+
+
+def test_nonexistent_existing_child_name_is_rejected():
+    doc = draft()
+    before = doc.as_dict()
+    doc.lines[0].name = "forged-existing-child-name"
+    with unittest.TestCase().assertRaisesRegex(frappe.ValidationError, "分录行身份"):
+        doc.save()
+    assert frappe.get_doc("Voucher Draft", doc.name).as_dict() == before
+
+
+def test_existing_child_requires_correct_database_parent_type_and_field():
+    doc = draft()
+    for field, invalid in (("parenttype", "Other Parent"), ("parentfield", "other_lines")):
+        frappe.db.set_value("Voucher Draft Line", doc.lines[0].name, field, invalid)
+        with unittest.TestCase().assertRaisesRegex(frappe.ValidationError, "分录行身份"):
+            doc.save()
+        frappe.db.set_value("Voucher Draft Line", doc.lines[0].name, field,
+                            "Voucher Draft" if field == "parenttype" else "lines")
+        doc.reload()
+
+
+def test_update_draft_new_children_are_inserted_under_current_parent():
+    from internal_ledger.api.review_api import update_draft
+
+    doc = draft()
+    old_names = {row.name for row in doc.lines}
+    result = update_draft(doc.name, [row.as_dict() for row in doc.lines], "合法新行", str(doc.posting_date))
+    assert old_names.isdisjoint({row.name for row in result.lines})
+    for row in result.lines:
+        assert frappe.db.get_value("Voucher Draft Line", row.name,
+                                    ["parent", "parenttype", "parentfield"]) == (doc.name, "Voucher Draft", "lines")
+
+
 def load_tests(loader, tests, pattern):
     return unittest.TestSuite(unittest.FunctionTestCase(test, setUp=set_up, tearDown=tear_down)
                               for name, test in sorted(globals().items()) if name.startswith("test_"))

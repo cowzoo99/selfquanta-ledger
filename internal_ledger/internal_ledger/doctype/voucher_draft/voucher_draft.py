@@ -11,6 +11,16 @@ from internal_ledger.accounting.drafts import (
 
 class VoucherDraft(Document):
     def validate(self):
+        # Frappe rewrites child parent fields before validate, so check persisted ownership.
+        for row in self.lines:
+            identity = frappe.db.get_value("Voucher Draft Line", row.name,
+                                           ["parent", "parenttype", "parentfield"], for_update=True)
+            if identity:
+                if identity != (self.name, "Voucher Draft", "lines"):
+                    frappe.throw("分录行身份不属于当前草稿")
+            elif not row.is_new():
+                frappe.throw("分录行身份不存在，不得伪造既有行名")
+
         from internal_ledger.api.review_api import assert_transition
 
         previous = self.get_doc_before_save()
