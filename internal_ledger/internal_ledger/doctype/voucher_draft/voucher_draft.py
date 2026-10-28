@@ -16,12 +16,16 @@ class VoucherDraft(Document):
             frappe.throw("分录行身份重复，不得复用同一子行名称")
 
         # Frappe rewrites child parent fields before validate, so check persisted ownership.
+        canonical_names = set()
         for row in self.lines:
             identity = frappe.db.get_value("Voucher Draft Line", row.name,
-                                           ["parent", "parenttype", "parentfield"], for_update=True)
+                                           ["name", "parent", "parenttype", "parentfield"], for_update=True)
             if identity:
-                if identity != (self.name, "Voucher Draft", "lines"):
+                if identity[1:] != (self.name, "Voucher Draft", "lines"):
                     frappe.throw("分录行身份不属于当前草稿")
+                if identity[0] in canonical_names:
+                    frappe.throw("分录行身份重复，不得复用同一数据库子行")
+                canonical_names.add(identity[0])
             elif not row.is_new():
                 frappe.throw("分录行身份不存在，不得伪造既有行名")
 

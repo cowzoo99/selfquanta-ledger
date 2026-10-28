@@ -271,7 +271,7 @@ def test_update_draft_new_children_are_inserted_under_current_parent():
                                     ["parent", "parenttype", "parentfield"]) == (doc.name, "Voucher Draft", "lines")
 
 
-def assert_duplicate_child_rejected(state):
+def assert_duplicate_child_rejected(state, canonical_alias=False):
     from internal_ledger.api.review_api import approve_draft, update_draft
 
     doc = draft()
@@ -280,10 +280,15 @@ def assert_duplicate_child_rejected(state):
     elif state == "Manual":
         update_draft(doc.name, [row.as_dict() for row in doc.lines], "人工确认", str(doc.posting_date))
     doc.reload()
+    if canonical_alias:
+        canonical_name = "ledger-canonical-child-" + doc.name
+        frappe.db.set_value("Voucher Draft Line", doc.lines[0].name, "name", canonical_name,
+                            update_modified=False)
+        doc.reload()
     before = doc.as_dict()
     for local in (0, 1):
         doc.reload()
-        doc.lines[1].name = doc.lines[0].name
+        doc.lines[1].name = doc.lines[0].name.upper() if canonical_alias else doc.lines[0].name
         doc.lines[1].set("__islocal", local)
         with unittest.TestCase().assertRaisesRegex(frappe.ValidationError, "分录行身份重复"):
             doc.save()
@@ -300,6 +305,18 @@ def test_approved_rejects_duplicate_child_names():
 
 def test_manual_override_rejects_duplicate_child_names():
     assert_duplicate_child_rejected("Manual")
+
+
+def test_draft_rejects_database_equivalent_child_names():
+    assert_duplicate_child_rejected("Draft", canonical_alias=True)
+
+
+def test_approved_rejects_database_equivalent_child_names():
+    assert_duplicate_child_rejected("Approved", canonical_alias=True)
+
+
+def test_manual_override_rejects_database_equivalent_child_names():
+    assert_duplicate_child_rejected("Manual", canonical_alias=True)
 
 
 def load_tests(loader, tests, pattern):
