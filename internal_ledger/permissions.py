@@ -112,6 +112,17 @@ def record_audit(action: str, reference_doctype: str, reference_name: str, resul
     _insert_audit(action, reference, result)
 
 
+def record_member_audit(action: str, user: str, company: str) -> None:
+    require_ledger_admin()
+    if company != frappe.db.get_single_value("Internal Ledger Settings", "company"):
+        frappe.throw("不能记录其他企业的成员操作", frappe.PermissionError)
+    event = frappe.get_doc({"doctype": "Internal Ledger Audit Event", "action": action,
+        "reference_doctype": "User", "reference_name": user, "result": "success",
+        "actor": frappe.session.user, "timestamp": now_datetime(), "company": company})
+    event.flags.audit_insert = _AUDIT_INSERT
+    event.insert(ignore_permissions=True)
+
+
 def _insert_audit(action, reference, result, deleted=False):
     require_ledger_admin()
     event = frappe.get_doc({"doctype": "Internal Ledger Audit Event", "action": action,
