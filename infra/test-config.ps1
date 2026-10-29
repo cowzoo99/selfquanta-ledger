@@ -117,7 +117,7 @@ Assert-True ($runtime -match '(?m)^SITE_NAME=ledger\.selfquanta\.com\r?$') 'Runt
 Assert-True ($runtime -match '(?m)^COMPOSE_PROJECT_NAME=selfquanta-ledger\r?$') 'Runtime project name is wrong'
 Assert-True ($runtime -match '(?m)^HTTP_BIND=10\.77\.0\.1\r?$') 'Pre-ICP public exposure: HTTP must bind only to WireGuard'
 Assert-True ($runtime -match '(?m)^HTTPS_BIND=10\.77\.0\.1\r?$') 'Pre-ICP public exposure: HTTPS must bind only to WireGuard'
-$runtimeCrlf = $runtime.Replace("`n", "`r`n")
+$runtimeCrlf = $runtime.Replace("`r`n", "`n").Replace("`n", "`r`n")
 Assert-True ($runtimeCrlf -match '(?m)^SITE_NAME=ledger\.selfquanta\.com\r?$' -and $runtimeCrlf -match '(?m)^COMPOSE_PROJECT_NAME=selfquanta-ledger\r?$') 'Runtime identity values must accept CRLF line endings'
 Assert-True ($runtime -match '/etc/selfquanta/ledger/db-root-password') 'Database secret path is wrong'
 Assert-True ($runtime -match '/etc/selfquanta/ledger/site-admin-password') 'Admin secret path is wrong'
