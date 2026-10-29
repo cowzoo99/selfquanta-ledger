@@ -49,7 +49,23 @@ def _request_command():
             return path[len(prefix):]
 
 
+def _validate_cookie_session() -> None:
+    request = getattr(frappe.local, "request", None)
+    if not request or frappe.flags.get("internal_ledger_cookie_session_validated"):
+        return
+    sid = getattr(request, "cookies", {}).get("sid")
+    user = frappe.session.user
+    if not sid or sid == "Guest" or user in ("", "Guest"):
+        return
+    if (not frappe.db.get_value("User", user, "enabled")
+            or not frappe.db.exists("Sessions", {"sid": sid, "user": user})):
+        frappe.cache.hdel("session", sid)
+        raise frappe.AuthenticationError("会话已失效，请重新登录")
+    frappe.flags.internal_ledger_cookie_session_validated = True
+
+
 def block_temporary_password_session() -> None:
+    _validate_cookie_session()
     user = frappe.session.user
     if user in ("Guest", "Administrator") or not frappe.db.get_value(
         "User", user, "internal_ledger_must_change_password"

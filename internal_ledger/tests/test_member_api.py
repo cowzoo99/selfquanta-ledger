@@ -266,6 +266,11 @@ def company_permission(user, company):
                            "for_value": company, "apply_to_all_doctypes": 1}).insert(ignore_permissions=True)
 
 
+def add_role(user, role):
+    return frappe.get_doc({"doctype": "Has Role", "parent": user, "parenttype": "User",
+                           "parentfield": "roles", "role": role}).insert(ignore_permissions=True)
+
+
 def member_company_reference():
     # Only the Company link/row lock is needed; bypass chart/bootstrap side effects in this fixture.
     name = f"_Test Member Company {uuid4().hex}"
@@ -354,6 +359,35 @@ def test_member_listing_intersects_exact_company_and_viewer_role():
     for target in (role_only, company_only, foreign, "Administrator", "Guest", "missing@example.invalid"):
         with unittest.TestCase().assertRaises(frappe.PermissionError):
             _managed_member(target, company)
+
+
+def test_member_management_excludes_mixed_management_roles_and_current_actor():
+    from internal_ledger.api.member_api import (list_enterprise_members,
+                                                 reset_enterprise_member_password,
+                                                 set_enterprise_member_enabled)
+
+    ledger_admin = create_member(first_name="Ledger Admin")["email"]
+    system_manager = create_member(first_name="System Manager")["email"]
+    add_role(ledger_admin, "账套管理员")
+    add_role(system_manager, "System Manager")
+
+    assert not {ledger_admin, system_manager} & {
+        row["email"] for row in list_enterprise_members()["members"]
+    }
+    password = uuid4().hex + "!aB7"
+    for target in (ledger_admin, system_manager):
+        for operation in (lambda target=target: set_enterprise_member_enabled(target, 0),
+                          lambda target=target: reset_enterprise_member_password(
+                              target, password, password)):
+            with unittest.TestCase().assertRaises(frappe.PermissionError):
+                operation()
+
+    frappe.clear_cache(user=ledger_admin)
+    frappe.set_user(ledger_admin)
+    for operation in (lambda: set_enterprise_member_enabled(ledger_admin, 0),
+                      lambda: reset_enterprise_member_password(ledger_admin, password, password)):
+        with unittest.TestCase().assertRaisesRegex(frappe.PermissionError, "不能操作当前账户"):
+            operation()
 
 
 def test_member_invalid_input_and_duplicates_leave_no_partial_accounts():
@@ -615,6 +649,66 @@ def test_member_reset_replaces_password_without_email_commit_or_secret_output():
     assert frappe.allowed_http_methods_for_whitelisted_func[reset_enterprise_member_password] == ["POST"]
 
 
+def test_member_reset_invalidates_previously_issued_password_link():
+    from frappe.core.doctype.user.user import update_password
+    from frappe.utils.password import check_password
+    from internal_ledger.api.member_api import reset_enterprise_member_password
+
+    email = create_member()["email"]
+    old_url = frappe.get_doc("User", email)._reset_password(send_email=False)
+    old_key = old_url.split("key=", 1)[1]
+    frappe.cache.hset("redirect_after_login", email, old_url)
+    password = uuid4().hex + "!aB7"
+
+    reset_enterprise_member_password(email, password, password)
+
+    assert not frappe.db.get_value("User", email, "reset_password_key")
+    assert not frappe.db.get_value("User", email, "last_reset_password_key_generated_on")
+    assert not frappe.cache.hget("redirect_after_login", email)
+    frappe.set_user("Guest")
+    frappe.local.form_dict = frappe._dict(cmd=PASSWORD_COMMAND)
+    with patch("frappe.core.doctype.user.user.test_password_strength", return_value={}), \
+            patch.object(frappe.local, "login_manager", SimpleNamespace(login_as=Mock()), create=True):
+        assert update_password(uuid4().hex + "!aB7", key=old_key)
+    assert check_password(email, password) == email
+
+
+def test_member_revoked_cookie_session_cannot_be_revived_after_disable_or_password_change():
+    from frappe.auth import CookieManager
+    from frappe.core.doctype.user.user import update_password
+    from werkzeug.wrappers import Request
+    from internal_ledger.api.member_api import (reset_enterprise_member_password,
+                                                 set_enterprise_member_enabled)
+    from internal_ledger.member_security import block_temporary_password_session
+
+    for lifecycle in ("disable", "password_change"):
+        frappe.set_user("Administrator")
+        email = create_member()["email"]
+        sid = member_sessions(email)[0]
+        if lifecycle == "disable":
+            set_enterprise_member_enabled(email, 0)
+        else:
+            password = uuid4().hex + "!aB7"
+            reset_enterprise_member_password(email, password, password)
+            reset_url = frappe.get_doc("User", email)._reset_password(send_email=False)
+            frappe.local.form_dict = frappe._dict(cmd=PASSWORD_COMMAND)
+            with patch("frappe.core.doctype.user.user.test_password_strength", return_value={}), \
+                    patch.object(frappe.local, "login_manager", SimpleNamespace(login_as=Mock()), create=True):
+                update_password(uuid4().hex + "!aB7", key=reset_url.split("key=", 1)[1])
+            assert not frappe.db.get_value("User", email, "internal_ledger_must_change_password")
+
+        assert not frappe.db.exists("Sessions", {"sid": sid, "user": email})
+        frappe.cache.hset("session", sid, {"user": email, "sid": sid, "data": {"user": email}})
+        frappe.set_user(email)
+        frappe.local.request = Request.from_values(path="/api/method/frappe.client.get_list",
+                                                   headers={"Cookie": f"sid={sid}"})
+        frappe.local.cookie_manager = CookieManager()
+        frappe.local.session_obj = SimpleNamespace(sid=sid)
+        with unittest.TestCase().assertRaises(frappe.AuthenticationError):
+            block_temporary_password_session()
+        assert not frappe.cache.hget("session", sid)
+
+
 def test_member_lifecycle_denies_unauthorized_actors_and_nonmembers():
     from internal_ledger.api.member_api import reset_enterprise_member_password, set_enterprise_member_enabled
     from internal_ledger.tests.test_permissions import user
@@ -779,6 +873,7 @@ def load_tests(loader, tests, pattern):
 
     def tear_down():
         frappe.set_user("Administrator")
+        frappe.flags.pop("internal_ledger_cookie_session_validated", None)
         for sid in frappe.flags.pop("member_test_sessions", []):
             frappe.cache.hdel("session", sid)
         # Custom Field updates run schema DDL, which commits and invalidates savepoints.

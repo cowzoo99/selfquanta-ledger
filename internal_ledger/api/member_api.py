@@ -8,6 +8,9 @@ from internal_ledger.member_security import revoke_sessions, validate_temporary_
 from internal_ledger.permissions import record_member_audit, require_ledger_admin
 
 
+MANAGEMENT_ROLES = ("账套管理员", "System Manager")
+
+
 def _company(for_update=False):
     company = frappe.db.get_single_value("Internal Ledger Settings", "company")
     if not company or not frappe.db.exists("Company", company):
@@ -19,8 +22,12 @@ def _company(for_update=False):
 
 def _managed_member(user: str, company: str, for_update: bool = False) -> Document:
     require_ledger_admin()
+    if user == frappe.session.user:
+        frappe.throw("不能操作当前账户", frappe.PermissionError)
     if (user in ("Administrator", "Guest") or not frappe.db.exists("User", user)
             or not frappe.db.exists("Has Role", {"parenttype": "User", "parent": user, "role": "账务查看者"})
+            or frappe.db.exists("Has Role", {"parenttype": "User", "parent": user,
+                                              "role": ["in", MANAGEMENT_ROLES]})
             or not frappe.db.exists("User Permission", {"user": user, "allow": "Company", "for_value": company})):
         frappe.throw("该用户不是当前企业的只读成员", frappe.PermissionError)
     return frappe.get_doc("User", user, for_update=for_update)
@@ -32,7 +39,9 @@ def list_enterprise_members() -> dict:
     company = _company()
     permitted = frappe.get_all("User Permission", filters={"allow": "Company", "for_value": company}, pluck="user")
     viewers = set(frappe.get_all("Has Role", filters={"parenttype": "User", "role": "账务查看者"}, pluck="parent"))
-    users = sorted(set(permitted) & viewers - {"Administrator", "Guest"})
+    managers = set(frappe.get_all("Has Role", filters={"parenttype": "User",
+        "role": ["in", MANAGEMENT_ROLES]}, pluck="parent"))
+    users = sorted(set(permitted) & viewers - managers - {"Administrator", "Guest"})
     rows = frappe.get_all("User", filters={"name": ["in", users]},
                           fields=["name", "full_name", "enabled", "creation", "last_login"],
                           order_by="enabled desc, full_name asc, name asc") if users else []
@@ -113,7 +122,12 @@ def reset_enterprise_member_password(user: str, temporary_password: str, confirm
     frappe.db.savepoint(savepoint)
     try:
         update_password(member.name, temporary_password, logout_all_sessions=False)
-        frappe.db.set_value("User", member.name, "internal_ledger_must_change_password", 1)
+        frappe.db.set_value("User", member.name, {
+            "internal_ledger_must_change_password": 1,
+            "reset_password_key": "",
+            "last_reset_password_key_generated_on": None,
+        })
+        frappe.cache.hdel("redirect_after_login", member.name)
         revoke_sessions(member.name)
         record_member_audit("reset_enterprise_member_password", member.name, company)
     except Exception:
