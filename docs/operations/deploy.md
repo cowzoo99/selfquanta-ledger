@@ -13,22 +13,26 @@ The build follows the official layered image interface: `images/layered/Containe
 
 ## Network state before and after ICP approval
 
-**Pre-ICP:** Keep the service WireGuard-only. Set `HTTP_BIND=HTTPS_BIND=10.77.0.1`; firewall rules deny public TCP 80/443 and allow those ports only on `wg0`. Do not publish public DNS or expose public 80/443. The private-access setup creates an internal CA and an internal certificate for `ledger.selfquanta.com`; distribute its CA certificate to authorized clients.
+**Pre-ICP:** Keep the service WireGuard-only. Set `HTTP_BIND=HTTPS_BIND=10.77.0.1`; firewall rules deny public TCP 80/443 and allow those ports only on `wg0`. Do not publish public DNS or expose public 80/443. The private-access setup creates an internal CA and an internal certificate for `ledger.selfquanta.com`; distribute its CA certificate to authorized clients. To provision a WireGuard client, replace the endpoint placeholder with the reachable server public IPv4 address or hostname only; use no scheme, port, or credentials. Do not run this placeholder verbatim:
+
+```bash
+sudo env WIREGUARD_ENDPOINT='SERVER_PUBLIC_IP_OR_HOSTNAME' bash /srv/selfquanta/ledger/infra/host/configure-private-access.sh laptop-cao
+```
 
 **Post-ICP:** Only after filing approval, provision public DNS and a valid public TLS certificate, then deliberately change the HTTP/HTTPS bindings and firewall rules for public access. Public bindings, public DNS, and public 80/443 remain disabled until that gate is met. Re-run the configuration checks and review the changed firewall rules before cutover.
 
 ## Build the immutable image
 
-Place the application checkout at `/srv/selfquanta/ledger` and the pinned upstream checkout at `/srv/frappe_docker`. Do not put credentials in either remote URL. Build the pre-release from `main`:
+Place the application checkout at `/srv/selfquanta/ledger` and the pinned upstream checkout at `/srv/selfquanta/frappe_docker`. Do not put credentials in either remote URL. Build the pre-release from `main`:
 
 ```powershell
 git -C /srv/selfquanta/ledger checkout main
-git -C /srv/frappe_docker checkout v4.1.1
-git -C /srv/frappe_docker rev-parse HEAD
+git -C /srv/selfquanta/frappe_docker checkout v4.1.1
+git -C /srv/selfquanta/frappe_docker rev-parse HEAD
 
-$env:FRAPPE_DOCKER_DIR = '/srv/frappe_docker'
+$env:FRAPPE_DOCKER_DIR = '/srv/selfquanta/frappe_docker'
 $env:INTERNAL_LEDGER_APP_REF = 'main'
-$env:INTERNAL_LEDGER_BUILD_TEMP = '/srv/selfquanta/build-tmp'
+$env:INTERNAL_LEDGER_BUILD_TEMP = '/srv/selfquanta/build'
 pwsh -NoProfile -File /srv/selfquanta/ledger/infra/build_image.ps1
 ```
 

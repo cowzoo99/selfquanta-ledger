@@ -113,10 +113,12 @@ foreach ($unit in @('selfquanta-ledger-backup.service', 'selfquanta-ledger-backu
 Assert-True ($unitInstaller -match '(?m)^systemctl enable selfquanta-ledger-backup.timer$') 'Unit installer must enable the backup timer without starting it'
 
 $runtime = Get-Content -Raw -LiteralPath (Join-Path $InfraRoot 'runtime.env.example')
-Assert-True ($runtime -match '(?m)^SITE_NAME=ledger\.selfquanta\.com$') 'Runtime site name is wrong'
-Assert-True ($runtime -match '(?m)^COMPOSE_PROJECT_NAME=selfquanta-ledger$') 'Runtime project name is wrong'
+Assert-True ($runtime -match '(?m)^SITE_NAME=ledger\.selfquanta\.com\r?$') 'Runtime site name is wrong'
+Assert-True ($runtime -match '(?m)^COMPOSE_PROJECT_NAME=selfquanta-ledger\r?$') 'Runtime project name is wrong'
 Assert-True ($runtime -match '(?m)^HTTP_BIND=10\.77\.0\.1\r?$') 'Pre-ICP public exposure: HTTP must bind only to WireGuard'
 Assert-True ($runtime -match '(?m)^HTTPS_BIND=10\.77\.0\.1\r?$') 'Pre-ICP public exposure: HTTPS must bind only to WireGuard'
+$runtimeCrlf = $runtime.Replace("`n", "`r`n")
+Assert-True ($runtimeCrlf -match '(?m)^SITE_NAME=ledger\.selfquanta\.com\r?$' -and $runtimeCrlf -match '(?m)^COMPOSE_PROJECT_NAME=selfquanta-ledger\r?$') 'Runtime identity values must accept CRLF line endings'
 Assert-True ($runtime -match '/etc/selfquanta/ledger/db-root-password') 'Database secret path is wrong'
 Assert-True ($runtime -match '/etc/selfquanta/ledger/site-admin-password') 'Admin secret path is wrong'
 Assert-True ($runtime -notmatch '(?im)(secret|password|token)=.+') 'Runtime example must not contain secret values'
@@ -179,7 +181,9 @@ Assert-True ($restore -match 'Merge-SiteConfig') 'Restore must merge the origina
 
 $deployDoc = Get-Content -Raw -LiteralPath (Join-Path $repositoryRoot 'docs/operations/deploy.md')
 Assert-True ($deployDoc -match "INTERNAL_LEDGER_APP_REF = 'main'") 'Pre-release deploy example must use main as the app ref'
+Assert-True ($deployDoc -match '/srv/selfquanta/frappe_docker' -and $deployDoc -match '/srv/selfquanta/build' -and $deployDoc -notmatch '/srv/frappe_docker|/srv/selfquanta/build-tmp') 'Deploy documentation must use the approved upstream and build scratch paths'
 Assert-True ($deployDoc -match '/srv/selfquanta/ledger' -and $deployDoc -match '/etc/selfquanta/ledger/runtime\.env' -and $deployDoc -match '/etc/selfquanta/ledger/db-root-password' -and $deployDoc -match '/etc/selfquanta/ledger/internal-fullchain\.pem') 'Deploy documentation must use the approved SelfQuanta host paths'
+Assert-True ($deployDoc -match "sudo env WIREGUARD_ENDPOINT='SERVER_PUBLIC_IP_OR_HOSTNAME' bash /srv/selfquanta/ledger/infra/host/configure-private-access\.sh laptop-cao" -and $deployDoc -match 'no scheme, port, or credentials' -and $deployDoc -match 'Do not run this placeholder verbatim') 'Deploy documentation must show the safe WireGuard endpoint invocation without a real endpoint'
 Assert-True ($deployDoc -match 'pre-ICP' -and $deployDoc -match 'HTTP_BIND=HTTPS_BIND=10\.77\.0\.1' -and $deployDoc -match 'deny public TCP 80/443' -and $deployDoc -match 'Do not publish public DNS') 'Deploy documentation must state the pre-ICP WireGuard-only binding'
 Assert-True ($deployDoc -match 'post-ICP' -and $deployDoc -match 'filing approval' -and $deployDoc -match 'public DNS' -and $deployDoc -match 'certificate') 'Deploy documentation must gate public DNS and bindings on filing approval'
 Assert-True ($deployDoc -match 'systemctl start selfquanta-ledger' -and $deployDoc -match 'systemctl status selfquanta-ledger' -and $deployDoc -match 'systemctl restart selfquanta-ledger' -and $deployDoc -match 'journalctl -u selfquanta-ledger') 'Deploy documentation must provide exact systemd operator commands'
