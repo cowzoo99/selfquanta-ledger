@@ -82,7 +82,7 @@
 最快路径采用 GitHub 公共仓库：
 
 ```text
-https://github.com/cowzooo1/selfquanta-ledger.git
+https://github.com/cowzoo99/selfquanta-ledger.git
 ```
 
 原因：现有固定版本镜像构建只接受不含凭据的 HTTPS Git origin。仓库只保存源代码、脱敏测试样本和运维脚本，不保存客户数据、服务器地址、密码、密钥、证书或备份。

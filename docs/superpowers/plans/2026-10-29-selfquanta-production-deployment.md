@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - 本计划只针对首台上海主节点和当前内账；不增加 Kubernetes、CloudBase 重构、多租户共享数据库或复杂 CI/CD。
-- GitHub 公共仓库固定为 `https://github.com/cowzooo1/selfquanta-ledger.git`；仓库中不得出现服务器 IP、真实账单、客户数据、密码、密钥、证书私钥或营业执照敏感字段。
+- GitHub 公共仓库固定为 `https://github.com/cowzoo99/selfquanta-ledger.git`；仓库中不得出现服务器 IP、真实账单、客户数据、密码、密钥、证书私钥或营业执照敏感字段。
 - 本地项目继续位于 `E:\杭州逆熵云\记账`；SSH 私钥、WireGuard 客户端配置和云凭据放在 `E:\杭州逆熵云\运维密钥\selfquanta`，不得写入 C 盘或项目仓库。
 - 生产目录固定为 `/srv/selfquanta/ledger`，固定依赖目录为 `/srv/selfquanta/frappe_docker`，构建临时目录为 `/srv/selfquanta/build`。
 - 生产秘密目录固定为 `/etc/selfquanta/ledger`，备份目录固定为 `/var/backups/selfquanta/ledger`；秘密文件权限为 `0600`，目录权限为 `0700`。
@@ -39,7 +39,7 @@
 
 - [ ] **Step 3: Create the empty public GitHub repository**
 
-  在 GitHub 账号 `cowzooo1` 下创建公共仓库 `selfquanta-ledger`，不要勾选自动生成 README、License 或 `.gitignore`，以免形成冲突历史。
+  在 GitHub 账号 `cowzoo99` 下创建公共仓库 `selfquanta-ledger`，不要勾选自动生成 README、License 或 `.gitignore`，以免形成冲突历史。
 
 - [ ] **Step 4: Create local key storage off C drive**
 
@@ -81,12 +81,12 @@
   Run:
 
   ```powershell
-  git remote add origin https://github.com/cowzooo1/selfquanta-ledger.git
+  git remote add origin https://github.com/cowzoo99/selfquanta-ledger.git
   git remote get-url origin
   git push -u origin main
   ```
 
-  If `origin` already exists, first verify it. Only when it is not the exact URL above, run `git remote set-url origin https://github.com/cowzooo1/selfquanta-ledger.git` and recheck it. Do not embed a token in the URL.
+  If `origin` already exists, first verify it. Only when it is not the exact URL above, run `git remote set-url origin https://github.com/cowzoo99/selfquanta-ledger.git` and recheck it. Do not embed a token in the URL.
 
 - [ ] **Step 3: Verify local and remote SHAs are identical**
 
@@ -425,7 +425,7 @@
 
   ```bash
   sudo install -d -o selfquantaops -g selfquantaops /srv/selfquanta/ledger /srv/selfquanta/frappe_docker /srv/selfquanta/build
-  git clone https://github.com/cowzooo1/selfquanta-ledger.git /srv/selfquanta/ledger
+  git clone https://github.com/cowzoo99/selfquanta-ledger.git /srv/selfquanta/ledger
   git clone https://github.com/frappe/frappe_docker.git /srv/selfquanta/frappe_docker
   git -C /srv/selfquanta/frappe_docker checkout v4.1.1
   test "$(git -C /srv/selfquanta/frappe_docker rev-parse HEAD)" = d84154ae23ab7ae756dfe942e3f24dcd70d1fbda
