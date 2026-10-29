@@ -70,13 +70,15 @@ Download the matching encrypted archive and manifest to a restricted restore dir
 
 The image named in `INTERNAL_LEDGER_IMAGE` must already exist locally and exactly match `git_sha` in the chosen manifest. Set absolute paths to the downloaded archive, its manifest, a unique isolated project name, and a report directory outside the repository:
 
+Replace `<manifest-git-sha>` with the 40-character `git_sha` value from the selected manifest. The image value is quoted so Bash treats the angle-bracket placeholder as text.
+
 ```bash
 export INTERNAL_LEDGER_BACKUP_ARCHIVE=/mnt/restore/daily/internal-ledger-ledger.selfquanta.com-20261030-023000.zip.enc
 export INTERNAL_LEDGER_BACKUP_MANIFEST=/mnt/restore/daily/internal-ledger-ledger.selfquanta.com-20261030-023000.manifest.json
 export BACKUP_KEY_FILE=/etc/selfquanta/ledger/backup.key
 export INTERNAL_LEDGER_RESTORE_PROJECT=ledger-restore-drill-20261030
 export INTERNAL_LEDGER_RESTORE_REPORT_DIR=/mnt/restore/restore-reports
-export INTERNAL_LEDGER_IMAGE=internal-ledger:<manifest-git-sha>
+export INTERNAL_LEDGER_IMAGE='internal-ledger:<manifest-git-sha>'
 
 sudo --preserve-env=INTERNAL_LEDGER_BACKUP_ARCHIVE,INTERNAL_LEDGER_BACKUP_MANIFEST,BACKUP_KEY_FILE,INTERNAL_LEDGER_RESTORE_PROJECT,INTERNAL_LEDGER_RESTORE_REPORT_DIR,INTERNAL_LEDGER_IMAGE \
   pwsh -NoProfile -File /srv/selfquanta/ledger/infra/restore-check.ps1 -ValidateOnly

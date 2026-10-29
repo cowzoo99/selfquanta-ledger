@@ -77,6 +77,17 @@ Copy the repository to `/srv/selfquanta/ledger`, set `/etc/selfquanta/ledger/run
 sudo bash /srv/selfquanta/ledger/infra/host/install-systemd-units.sh
 sudo systemctl daemon-reload
 sudo systemctl enable --now selfquanta-ledger-backup.timer
+```
+
+On the **first install only**, create the site once before starting the normal systemd service. This loads the root-owned runtime environment and supplies the pinned Compose versions file:
+
+```bash
+sudo bash -c 'set -a; . /etc/selfquanta/ledger/runtime.env; set +a; docker compose --env-file /srv/selfquanta/ledger/infra/versions.env -f /srv/selfquanta/ledger/infra/compose.yaml --profile init run --rm create-site'
+```
+
+Do not repeat the one-time create-site step for an existing site. Start and inspect the regular service for first startup after creation and for subsequent boots:
+
+```bash
 sudo systemctl start selfquanta-ledger
 sudo systemctl status selfquanta-ledger
 sudo journalctl -u selfquanta-ledger --since today

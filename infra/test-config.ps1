@@ -183,6 +183,7 @@ Assert-True ($deployDoc -match '/srv/selfquanta/ledger' -and $deployDoc -match '
 Assert-True ($deployDoc -match 'pre-ICP' -and $deployDoc -match 'HTTP_BIND=HTTPS_BIND=10\.77\.0\.1' -and $deployDoc -match 'deny public TCP 80/443' -and $deployDoc -match 'Do not publish public DNS') 'Deploy documentation must state the pre-ICP WireGuard-only binding'
 Assert-True ($deployDoc -match 'post-ICP' -and $deployDoc -match 'filing approval' -and $deployDoc -match 'public DNS' -and $deployDoc -match 'certificate') 'Deploy documentation must gate public DNS and bindings on filing approval'
 Assert-True ($deployDoc -match 'systemctl start selfquanta-ledger' -and $deployDoc -match 'systemctl status selfquanta-ledger' -and $deployDoc -match 'systemctl restart selfquanta-ledger' -and $deployDoc -match 'journalctl -u selfquanta-ledger') 'Deploy documentation must provide exact systemd operator commands'
+Assert-True ($deployDoc -match '(?s)First install.*set -a; \. /etc/selfquanta/ledger/runtime\.env; set \+a; docker compose --env-file /srv/selfquanta/ledger/infra/versions\.env -f /srv/selfquanta/ledger/infra/compose\.yaml --profile init run --rm create-site.*systemctl start selfquanta-ledger') 'Deploy documentation must create the site once before the normal systemd start'
 Assert-True ($deployDoc -match 'previous SHA image' -and $deployDoc -match 'INTERNAL_LEDGER_IMAGE') 'Deploy documentation must explain rollback to the previous SHA image'
 
 $backupDoc = Get-Content -Raw -LiteralPath (Join-Path $repositoryRoot 'docs/operations/backup-restore.md')
@@ -192,6 +193,7 @@ Assert-True ($backupDoc -match 'systemctl start selfquanta-ledger-backup\.servic
 Assert-True ($backupDoc -match 'coscli ls' -and $backupDoc -match 'cos://selfquanta-ledger-backup/production/ledger/') 'Backup documentation must show COS object listing at the configured prefix'
 Assert-True ($backupDoc -match 'encrypted' -and $backupDoc -match 'SHA-256' -and $backupDoc -match 'manifest') 'Backup documentation must explain encrypted-object verification'
 Assert-True ($backupDoc -match 'infra/restore-check\.ps1' -and $backupDoc -match 'ledger-restore-' -and $backupDoc -match 'status.*PASS' -and $backupDoc -match 'restore-reports') 'Backup documentation must require isolated restore evidence'
+Assert-True ($backupDoc -match "export INTERNAL_LEDGER_IMAGE='internal-ledger:<manifest-git-sha>'" -and $backupDoc -match 'Replace.*40-character.*selected manifest') 'Restore documentation must quote and explain the manifest SHA image placeholder'
 
 $scripts = @('test-config.ps1', 'build_image.ps1', 'backup.ps1', 'backup-and-upload.ps1', 'restore-check.ps1')
 foreach ($name in $scripts) {
