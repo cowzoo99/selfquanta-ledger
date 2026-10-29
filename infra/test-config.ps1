@@ -26,6 +26,8 @@ $required = @(
     'runtime.env.example',
     'host/bootstrap-ubuntu.sh',
     'host/configure-private-access.sh',
+    'systemd/selfquanta-ledger.service',
+    'host/install-systemd-units.sh',
     'compose.yaml',
     'nginx.conf',
     'build_image.ps1',
@@ -70,6 +72,28 @@ Assert-True ($privateAccess -match 'systemctl enable --now wg-quick@wg0' -and $p
 Assert-True ($privateAccess -match 'ufw default deny incoming' -and $privateAccess -match 'ufw insert 1 deny 80/tcp' -and $privateAccess -match 'ufw insert 1 deny 443/tcp' -and $privateAccess -match 'ufw insert 1 allow in on wg0') 'Pre-ICP public exposure: HTTP and HTTPS must be denied publicly and allowed only on WireGuard'
 Assert-True ($privateAccess -notmatch '(?im)^\s*ufw\s+(?:--\S+\s+)*(?:insert\s+\d+\s+)?(?:allow|limit)\s+(?!(?:in\s+on\s+wg0)\b)[^\r\n]*(?:\b(?:80|443)\b|https?|Nginx|WWW)') 'Pre-ICP public exposure: public HTTP/HTTPS firewall allowances are forbidden'
 Assert-True ($privateAccess -notmatch '(?im)^\s*(?:set -x|cat\s+.*(?:privkey|\.key)|(?:echo|printf)\s+[^\r\n]*\$(?:server_private|client_private))') 'Private access setup must never print private keys'
+$ledgerUnit = Get-Content -Raw -LiteralPath (Join-Path $InfraRoot 'systemd/selfquanta-ledger.service')
+foreach ($directive in @(
+    'After=docker.service wg-quick@wg0.service network-online.target',
+    'Requires=docker.service wg-quick@wg0.service',
+    'Type=oneshot',
+    'WorkingDirectory=/srv/selfquanta/ledger',
+    'EnvironmentFile=/etc/selfquanta/ledger/runtime.env',
+    'ExecStartPre=/usr/bin/pwsh -NoProfile -File /srv/selfquanta/ledger/infra/test-config.ps1 -StaticOnly',
+    'ExecStart=/usr/bin/docker compose --env-file /srv/selfquanta/ledger/infra/versions.env -f /srv/selfquanta/ledger/infra/compose.yaml up -d --remove-orphans',
+    'ExecStop=/usr/bin/docker compose --env-file /srv/selfquanta/ledger/infra/versions.env -f /srv/selfquanta/ledger/infra/compose.yaml stop',
+    'RemainAfterExit=yes',
+    'WantedBy=multi-user.target'
+)) {
+    Assert-True ($ledgerUnit -match "(?m)^$([regex]::Escape($directive))\r?$") "Ledger systemd unit requires: $directive"
+}
+$unitInstaller = Get-Content -Raw -LiteralPath (Join-Path $InfraRoot 'host/install-systemd-units.sh')
+Assert-True ($unitInstaller -match '(?m)^set -euo pipefail$' -and $unitInstaller -match 'EUID.*-ne 0') 'Unit installer must require root and propagate failures'
+Assert-True ($unitInstaller -match '(?m)^runtime=/etc/selfquanta/ledger/runtime.env$' -and $unitInstaller -match 'if \[\[ ! -f "\$runtime" \]\]' -and $unitInstaller -match 'Missing runtime.env' -and $unitInstaller.IndexOf('Missing runtime.env') -lt $unitInstaller.IndexOf('install -o root')) 'Unit installer must reject missing runtime.env before host mutations'
+Assert-True ($unitInstaller -match 'grep -Eq.*0\{40\}' -and $unitInstaller -match 'SHA sentinel' -and $unitInstaller.IndexOf('SHA sentinel') -lt $unitInstaller.IndexOf('install -o root')) 'Unit installer must reject the all-zero SHA sentinel before host mutations'
+Assert-True ($unitInstaller -match '(?m)^install -o root -g root -m 0644 "\$unit_source" /etc/systemd/system/selfquanta-ledger.service$' -and $unitInstaller -match 'systemd/selfquanta-ledger.service' -and $unitInstaller -notmatch '\*') 'Unit installer must install only the named ledger unit with root ownership'
+Assert-True ($unitInstaller -match '(?m)^systemctl daemon-reload$' -and $unitInstaller -match '(?m)^systemctl enable selfquanta-ledger.service$' -and $unitInstaller -notmatch '(?m)^systemctl.*(start|restart|--now)') 'Unit installer must reload and enable without starting services'
+
 $runtime = Get-Content -Raw -LiteralPath (Join-Path $InfraRoot 'runtime.env.example')
 Assert-True ($runtime -match '(?m)^SITE_NAME=ledger\.selfquanta\.com$') 'Runtime site name is wrong'
 Assert-True ($runtime -match '(?m)^COMPOSE_PROJECT_NAME=selfquanta-ledger$') 'Runtime project name is wrong'
@@ -183,6 +207,20 @@ try {
         }
         return $case
     }
+
+    # Execute only the real installer preflight, with fixture paths and no host mutations.
+    $unitPreflight = Join-Path $scratch 'systemd-preflight.sh'
+    $runtimeFixture = Join-Path $scratch 'runtime.env'
+    $runtimeFixtureBash = $runtimeFixture.Replace('\', '/')
+    ($unitInstaller.Substring(0, $unitInstaller.IndexOf('script_dir=')).Replace('if [[ $EUID -ne 0 ]]; then', 'if false; then').Replace('runtime=/etc/selfquanta/ledger/runtime.env', "runtime='$runtimeFixtureBash'") + "printf 'Unit preflight passed.\n'`n").Replace("`r`n", "`n") |
+        Set-Content -LiteralPath $unitPreflight -NoNewline
+    Assert-CommandFailsLike { bash $unitPreflight } 'Missing runtime.env' 'Missing systemd runtime test'
+    Copy-Item -LiteralPath (Join-Path $InfraRoot 'runtime.env.example') -Destination $runtimeFixture
+    Assert-CommandFailsLike { bash $unitPreflight } 'SHA sentinel' 'Systemd runtime SHA sentinel test'
+    (Get-Content -Raw -LiteralPath $runtimeFixture).Replace(('0' * 40), ('1' * 40)) |
+        Set-Content -LiteralPath $runtimeFixture
+    $output = & bash $unitPreflight 2>&1 | Out-String
+    Assert-True ($LASTEXITCODE -eq 0 -and $output -match 'Unit preflight passed') 'Valid systemd runtime preflight failed'
 
     # Run the real firewall block against a stateful UFW boundary double. Insertion
     # deliberately skips an existing tuple even when its action/position differs.

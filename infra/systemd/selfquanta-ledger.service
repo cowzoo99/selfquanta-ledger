@@ -1,0 +1,16 @@
+[Unit]
+Description=SelfQuanta ledger Compose stack
+After=docker.service wg-quick@wg0.service network-online.target
+Requires=docker.service wg-quick@wg0.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/srv/selfquanta/ledger
+EnvironmentFile=/etc/selfquanta/ledger/runtime.env
+ExecStartPre=/usr/bin/pwsh -NoProfile -File /srv/selfquanta/ledger/infra/test-config.ps1 -StaticOnly
+ExecStart=/usr/bin/docker compose --env-file /srv/selfquanta/ledger/infra/versions.env -f /srv/selfquanta/ledger/infra/compose.yaml up -d --remove-orphans
+ExecStop=/usr/bin/docker compose --env-file /srv/selfquanta/ledger/infra/versions.env -f /srv/selfquanta/ledger/infra/compose.yaml stop
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
