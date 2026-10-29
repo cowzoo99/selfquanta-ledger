@@ -703,10 +703,83 @@ def test_member_revoked_cookie_session_cannot_be_revived_after_disable_or_passwo
         frappe.local.request = Request.from_values(path="/api/method/frappe.client.get_list",
                                                    headers={"Cookie": f"sid={sid}"})
         frappe.local.cookie_manager = CookieManager()
-        frappe.local.session_obj = SimpleNamespace(sid=sid)
+        frappe.local.session_obj = SimpleNamespace(sid=sid, user=email)
         with unittest.TestCase().assertRaises(frappe.AuthenticationError):
             block_temporary_password_session()
         assert not frappe.cache.hget("session", sid)
+
+
+def test_member_revoked_form_or_query_session_cannot_be_revived_from_cache():
+    from frappe.app import make_form_dict
+    from frappe.auth import CookieManager, LoginManager
+    from frappe.sessions import get_expiry_period
+    from frappe.utils import now
+    from werkzeug.wrappers import Request
+    from internal_ledger.member_security import block_temporary_password_session, revoke_sessions
+
+    email = create_member()["email"]
+    frappe.db.set_value("User", email, "internal_ledger_must_change_password", 0)
+    sid = member_sessions(email)[0]
+
+    def revived_session():
+        timestamp = now()
+        return frappe._dict({"user": email, "sid": sid, "data": frappe._dict({
+            "user": email, "last_updated": timestamp, "creation": timestamp,
+            "session_expiry": get_expiry_period(), "full_name": "只读成员",
+            "user_type": "System User", "session_ip": "127.0.0.1",
+        })})
+
+    revoke_sessions(email)
+    assert not frappe.db.count("Sessions", {"sid": sid, "user": email})
+
+    requests = (
+        Request.from_values(path="/api/method/frappe.client.get_list", query_string={"sid": sid}),
+        Request.from_values(path="/api/method/frappe.client.get_list", method="POST", data={"sid": sid}),
+    )
+    for request in requests:
+        frappe.cache.hset("session", sid, revived_session())
+        frappe.flags.pop("internal_ledger_session_validated", None)
+        frappe.local.request = request
+        frappe.local.request_ip = "127.0.0.1"
+        frappe.local.cookie_manager = CookieManager()
+        frappe.set_user("Guest")
+        make_form_dict(request)
+        frappe.local.login_manager = LoginManager()
+        assert frappe.session.user == email, request.method
+        assert frappe.local.session_obj.sid == sid
+        assert "sid" not in frappe.form_dict
+        with unittest.TestCase().assertRaises(frappe.AuthenticationError):
+            block_temporary_password_session()
+        assert not frappe.cache.hget("session", sid)
+
+
+def test_member_login_uses_new_session_instead_of_incoming_other_user_cookie():
+    from frappe.app import make_form_dict
+    from frappe.auth import CookieManager, LoginManager
+    from werkzeug.wrappers import Request
+    from internal_ledger.member_security import block_temporary_password_session
+
+    other = create_member(first_name="Other Session")["email"]
+    incoming_sid = member_sessions(other)[0]
+    email = create_member(first_name="Login Target")["email"]
+    frappe.db.set_value("User", email, "internal_ledger_must_change_password", 0)
+    request = Request.from_values(path="/api/method/login", method="POST",
+        data={"cmd": "login", "usr": email, "pwd": MEMBER_PASSWORD},
+        headers={"Cookie": f"sid={incoming_sid}"})
+    frappe.local.request = request
+    frappe.local.request_ip = "127.0.0.1"
+    frappe.local.cookie_manager = CookieManager()
+    frappe.set_user("Guest")
+    make_form_dict(request)
+    with patch.object(frappe.db, "commit"):
+        frappe.local.login_manager = LoginManager()
+    established_sid = frappe.local.session_obj.sid
+    frappe.flags.member_test_sessions = frappe.flags.get("member_test_sessions", []) + [established_sid]
+
+    assert frappe.session.user == email
+    assert established_sid != incoming_sid
+    assert frappe.db.count("Sessions", {"sid": established_sid, "user": email}) == 1
+    block_temporary_password_session()
 
 
 def test_member_lifecycle_denies_unauthorized_actors_and_nonmembers():
@@ -873,13 +946,14 @@ def load_tests(loader, tests, pattern):
 
     def tear_down():
         frappe.set_user("Administrator")
-        frappe.flags.pop("internal_ledger_cookie_session_validated", None)
+        frappe.flags.pop("internal_ledger_session_validated", None)
         for sid in frappe.flags.pop("member_test_sessions", []):
             frappe.cache.hdel("session", sid)
         # Custom Field updates run schema DDL, which commits and invalidates savepoints.
         frappe.db.rollback()
         frappe.local.form_dict = frappe._dict()
         frappe.local.request = None
+        frappe.local.session_obj = None
         frappe.clear_cache()
 
     return unittest.TestSuite(PasswordSafeFunctionTestCase(test, setUp=lambda test=test: set_up(test), tearDown=tear_down)

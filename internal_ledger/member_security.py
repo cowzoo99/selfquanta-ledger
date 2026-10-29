@@ -49,23 +49,24 @@ def _request_command():
             return path[len(prefix):]
 
 
-def _validate_cookie_session() -> None:
+def _validate_authenticated_session() -> None:
     request = getattr(frappe.local, "request", None)
-    if not request or frappe.flags.get("internal_ledger_cookie_session_validated"):
+    if not request or frappe.flags.get("internal_ledger_session_validated"):
         return
-    sid = getattr(request, "cookies", {}).get("sid")
-    user = frappe.session.user
-    if not sid or sid == "Guest" or user in ("", "Guest"):
+    session = getattr(frappe.local, "session_obj", None)
+    sid, user = getattr(session, "sid", None), getattr(session, "user", None)
+    if (not sid or sid == "Guest" or user in (None, "", "Guest")
+            or user != frappe.session.user):
         return
     if (not frappe.db.get_value("User", user, "enabled")
-            or not frappe.db.exists("Sessions", {"sid": sid, "user": user})):
+            or not frappe.db.count("Sessions", {"sid": sid, "user": user})):
         frappe.cache.hdel("session", sid)
         raise frappe.AuthenticationError("会话已失效，请重新登录")
-    frappe.flags.internal_ledger_cookie_session_validated = True
+    frappe.flags.internal_ledger_session_validated = True
 
 
 def block_temporary_password_session() -> None:
-    _validate_cookie_session()
+    _validate_authenticated_session()
     user = frappe.session.user
     if user in ("Guest", "Administrator") or not frappe.db.get_value(
         "User", user, "internal_ledger_must_change_password"
