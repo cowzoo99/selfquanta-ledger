@@ -24,6 +24,7 @@ $required = @(
     'versions.env',
     'runtime.env.example',
     'host/bootstrap-ubuntu.sh',
+    'host/configure-private-access.sh',
     'compose.yaml',
     'nginx.conf',
     'build_image.ps1',
@@ -55,11 +56,24 @@ Assert-True ($bootstrap -notmatch '(?im)(:latest|ERPNEXT_VERSION|FRAPPE_REF|git 
 Assert-True ($bootstrap -notmatch '(?im)(password|secret|token)\s*=\s*\S+' -and $bootstrap -notmatch '\b(?:\d{1,3}\.){3}\d{1,3}\b') 'Bootstrap must not embed secrets or IP addresses'
 Assert-True ($bootstrap -notmatch '(?im)(rm\s+-[a-z]*r|docker\s+(system|volume)\s+prune|apt-get\s+(purge|autoremove))') 'Bootstrap must not perform broad destructive cleanup'
 Assert-True ($bootstrap -match 'docker --version' -and $bootstrap -match 'docker compose version' -and $bootstrap -match 'pwsh.*PSVersionTable') 'Bootstrap must print a final version summary'
+$privateAccess = Get-Content -Raw -LiteralPath (Join-Path $InfraRoot 'host/configure-private-access.sh')
+Assert-True ($privateAccess -match '(?m)^set -euo pipefail$' -and $privateAccess -match 'EUID.*-ne 0') 'Private access setup must require root and propagate failures'
+Assert-True ($privateAccess -match '\$#.*-ne 1' -and $privateAccess -match 'client_name=\$1' -and $privateAccess -match 'Duplicate client name') 'Private access setup must accept exactly one unique client name'
+Assert-True ($privateAccess -match 'WIREGUARD_ENDPOINT' -and $privateAccess -match 'Invalid or missing WIREGUARD_ENDPOINT' -and $privateAccess -match 'Endpoint = \$\{WIREGUARD_ENDPOINT\}:51820' -and $privateAccess.IndexOf('Invalid or missing WIREGUARD_ENDPOINT') -lt $privateAccess.IndexOf('install -d')) 'WireGuard must validate an external endpoint before host mutations; public DNS is unavailable before ICP approval'
+Assert-True ($privateAccess -match 'Address = 10\.77\.0\.1/24' -and $privateAccess -match 'ListenPort = 51820') 'WireGuard server address or port is wrong'
+Assert-True ($privateAccess -match 'seq 2 254' -and $privateAccess -match 'AllowedIPs.*10\.77\.0\.' -and $privateAccess -match 'No free client addresses') 'WireGuard must allocate a free address from 10.77.0.2 through 10.77.0.254'
+Assert-True ($privateAccess -match '(?m)^umask 077$' -and $privateAccess -match '/etc/wireguard' -and $privateAccess -match '/etc/selfquanta/ledger' -and $privateAccess -match 'wireguard-clients' -and $privateAccess -match 'chmod 0600' -and $privateAccess -match 'wg genkey') 'WireGuard keys and client configurations must stay in restricted host paths outside Git'
+Assert-True ($privateAccess -match 'if \[\[ ! -f "\$server_config" \]\]' -and $privateAccess -match 'flock') 'WireGuard setup must preserve the server and serialize client allocation'
+Assert-True ($privateAccess -match 'openssl req -x509' -and $privateAccess -match 'openssl x509 -req' -and $privateAccess -match 'IP:10\.77\.0\.1,DNS:ledger\.selfquanta\.com' -and $privateAccess -match 'internal-fullchain\.pem' -and $privateAccess -match 'internal-privkey\.pem') 'Internal TLS must use an internal CA and both required SANs at the runtime secret paths'
+Assert-True ($privateAccess -match 'systemctl enable --now wg-quick@wg0' -and $privateAccess -match 'ufw --force enable' -and $privateAccess -match 'ufw allow OpenSSH' -and $privateAccess -match 'ufw allow 51820/udp') 'Private access setup must enable WireGuard and UFW with SSH and WireGuard ingress'
+Assert-True ($privateAccess -match 'ufw default deny incoming' -and $privateAccess -match 'ufw insert 1 deny 80/tcp' -and $privateAccess -match 'ufw insert 1 deny 443/tcp' -and $privateAccess -match 'ufw insert 1 allow in on wg0') 'Pre-ICP public exposure: HTTP and HTTPS must be denied publicly and allowed only on WireGuard'
+Assert-True ($privateAccess -notmatch '(?im)^\s*ufw\s+(?:--\S+\s+)*(?:insert\s+\d+\s+)?(?:allow|limit)\s+(?!(?:in\s+on\s+wg0)\b)[^\r\n]*(?:\b(?:80|443)\b|https?|Nginx|WWW)') 'Pre-ICP public exposure: public HTTP/HTTPS firewall allowances are forbidden'
+Assert-True ($privateAccess -notmatch '(?im)^\s*(?:set -x|cat\s+.*(?:privkey|\.key)|(?:echo|printf)\s+[^\r\n]*\$(?:server_private|client_private))') 'Private access setup must never print private keys'
 $runtime = Get-Content -Raw -LiteralPath (Join-Path $InfraRoot 'runtime.env.example')
 Assert-True ($runtime -match '(?m)^SITE_NAME=ledger\.selfquanta\.com$') 'Runtime site name is wrong'
 Assert-True ($runtime -match '(?m)^COMPOSE_PROJECT_NAME=selfquanta-ledger$') 'Runtime project name is wrong'
-Assert-True ($runtime -match '(?m)^HTTP_BIND=10\.77\.0\.1$') 'Private HTTP bind is wrong'
-Assert-True ($runtime -match '(?m)^HTTPS_BIND=10\.77\.0\.1$') 'Private HTTPS bind is wrong'
+Assert-True ($runtime -match '(?m)^HTTP_BIND=10\.77\.0\.1\r?$') 'Pre-ICP public exposure: HTTP must bind only to WireGuard'
+Assert-True ($runtime -match '(?m)^HTTPS_BIND=10\.77\.0\.1\r?$') 'Pre-ICP public exposure: HTTPS must bind only to WireGuard'
 Assert-True ($runtime -match '/etc/selfquanta/ledger/db-root-password') 'Database secret path is wrong'
 Assert-True ($runtime -match '/etc/selfquanta/ledger/site-admin-password') 'Admin secret path is wrong'
 Assert-True ($runtime -notmatch '(?im)(secret|password|token)=.+') 'Runtime example must not contain secret values'
@@ -172,6 +186,46 @@ try {
     $case = New-MutatedInfra 'bootstrap-curl-shell'
     Add-Content -LiteralPath (Join-Path $case 'host/bootstrap-ubuntu.sh') -Value "`ncurl https://example.invalid/install.sh | sh"
     Assert-CommandFailsLike { pwsh -NoProfile -File $PSCommandPath -InfraRoot $case -StaticOnly } 'Bootstrap must not pipe curl into a shell' 'Unsafe bootstrap installer test'
+
+    foreach ($bind in @('HTTP', 'HTTPS')) {
+        $case = New-MutatedInfra "public-$bind-bind"
+        (Get-Content -Raw (Join-Path $case 'runtime.env.example')).Replace("${bind}_BIND=10.77.0.1", "${bind}_BIND=0.0.0.0") |
+            Set-Content -LiteralPath (Join-Path $case 'runtime.env.example')
+        Assert-CommandFailsLike { pwsh -NoProfile -File $PSCommandPath -InfraRoot $case -StaticOnly } 'Pre-ICP public exposure' "Public $bind bind test"
+    }
+    $case = New-MutatedInfra 'public-https-firewall'
+    Add-Content -LiteralPath (Join-Path $case 'host/configure-private-access.sh') -Value "`nufw allow 443/tcp"
+    Assert-CommandFailsLike { pwsh -NoProfile -File $PSCommandPath -InfraRoot $case -StaticOnly } 'Pre-ICP public exposure' 'Public HTTPS firewall test'
+
+    $case = New-MutatedInfra 'hardcoded-wireguard-endpoint'
+    (Get-Content -Raw (Join-Path $case 'host/configure-private-access.sh')).Replace('Endpoint = ${WIREGUARD_ENDPOINT}:51820', 'Endpoint = ledger.selfquanta.com:51820') |
+        Set-Content -LiteralPath (Join-Path $case 'host/configure-private-access.sh')
+    Assert-CommandFailsLike { pwsh -NoProfile -File $PSCommandPath -InfraRoot $case -StaticOnly } 'validate an external endpoint before host mutations' 'Hardcoded pre-ICP WireGuard endpoint test'
+
+    if (Get-Command bash -ErrorAction SilentlyContinue) {
+        # Exercise the real input-validation prefix only; bypass UID in this local fixture.
+        # No host-mutating commands are copied or executed.
+        $preflight = Join-Path $scratch 'private-access-preflight.sh'
+        ($privateAccess.Substring(0, $privateAccess.IndexOf('install -d')).Replace('if [[ $EUID -ne 0 ]]; then', 'if false; then') + "printf 'Endpoint preflight passed.\\n'`n").Replace("`r`n", "`n") |
+            Set-Content -LiteralPath $preflight -NoNewline
+        $oldEndpoint = $env:WIREGUARD_ENDPOINT
+        try {
+            foreach ($endpoint in @('', 'user:password@example.invalid', 'https://example.invalid', 'example.invalid:51820', '-bad.invalid', 'bad..invalid', '256.1.2.3', "bad`nname")) {
+                $env:WIREGUARD_ENDPOINT = $endpoint
+                Assert-CommandFailsLike { bash $preflight laptop-cao } 'WIREGUARD_ENDPOINT' 'Invalid WireGuard endpoint test'
+            }
+            foreach ($endpoint in @('192.0.2.10', 'vpn.example.invalid')) {
+                $env:WIREGUARD_ENDPOINT = $endpoint
+                $output = & bash $preflight laptop-cao 2>&1 | Out-String
+                Assert-True ($LASTEXITCODE -eq 0 -and $output -match 'Endpoint preflight passed') 'Valid WireGuard endpoint preflight failed'
+            }
+            Assert-CommandFailsLike { bash $preflight } 'Usage:' 'Missing WireGuard client name test'
+            Assert-CommandFailsLike { bash $preflight laptop-cao phone-cao } 'Usage:' 'Multiple WireGuard client names test'
+            Assert-CommandFailsLike { bash $preflight '../unsafe' } 'Usage:' 'Unsafe WireGuard client name test'
+        }
+        finally { $env:WIREGUARD_ENDPOINT = $oldEndpoint }
+    }
+
     $case = New-MutatedInfra 'mutable-version'
     (Get-Content -Raw (Join-Path $case 'versions.env')).Replace('ERPNEXT_VERSION=v16.52.1', 'ERPNEXT_VERSION=latest') |
         Set-Content -LiteralPath (Join-Path $case 'versions.env')
