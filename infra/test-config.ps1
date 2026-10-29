@@ -2,7 +2,8 @@
 param(
     [string]$InfraRoot = $PSScriptRoot,
     [switch]$StaticOnly,
-    [switch]$PrivateAccessOnly
+    [switch]$PrivateAccessOnly,
+    [switch]$BackupUploadOnly
 )
 
 Set-StrictMode -Version Latest
@@ -32,6 +33,9 @@ $required = @(
     'nginx.conf',
     'build_image.ps1',
     'backup.ps1',
+    'backup-and-upload.ps1',
+    'systemd/selfquanta-ledger-backup.service',
+    'systemd/selfquanta-ledger-backup.timer',
     'restore-check.ps1'
 )
 foreach ($name in $required) {
@@ -93,6 +97,20 @@ Assert-True ($unitInstaller -match '(?m)^runtime=/etc/selfquanta/ledger/runtime.
 Assert-True ($unitInstaller -match 'grep -Eq.*0\{40\}' -and $unitInstaller -match 'SHA sentinel' -and $unitInstaller.IndexOf('SHA sentinel') -lt $unitInstaller.IndexOf('install -o root')) 'Unit installer must reject the all-zero SHA sentinel before host mutations'
 Assert-True ($unitInstaller -match '(?m)^install -o root -g root -m 0644 "\$unit_source" /etc/systemd/system/selfquanta-ledger.service$' -and $unitInstaller -match 'systemd/selfquanta-ledger.service' -and $unitInstaller -notmatch '\*') 'Unit installer must install only the named ledger unit with root ownership'
 Assert-True ($unitInstaller -match '(?m)^systemctl daemon-reload$' -and $unitInstaller -match '(?m)^systemctl enable selfquanta-ledger.service$' -and $unitInstaller -notmatch '(?m)^systemctl.*(start|restart|--now)') 'Unit installer must reload and enable without starting services'
+
+$backupUnit = Get-Content -Raw -LiteralPath (Join-Path $InfraRoot 'systemd/selfquanta-ledger-backup.service')
+foreach ($directive in @('Type=oneshot', 'User=root', 'Group=root', 'UMask=0077', 'WorkingDirectory=/srv/selfquanta/ledger', 'EnvironmentFile=/etc/selfquanta/ledger/runtime.env', 'ExecStart=/usr/bin/pwsh -NoProfile -File /srv/selfquanta/ledger/infra/backup-and-upload.ps1')) {
+    Assert-True ($backupUnit -match "(?m)^$([regex]::Escape($directive))\r?$") "Backup service requires: $directive"
+}
+$backupTimer = Get-Content -Raw -LiteralPath (Join-Path $InfraRoot 'systemd/selfquanta-ledger-backup.timer')
+foreach ($directive in @('OnCalendar=*-*-* 02:30:00 Asia/Shanghai', 'Persistent=true', 'RandomizedDelaySec=10m', 'WantedBy=timers.target')) {
+    Assert-True ($backupTimer -match "(?m)^$([regex]::Escape($directive))\r?$") "Backup timer requires: $directive"
+}
+Assert-True (($backupUnit + $backupTimer) -notmatch '(?i)SecretId|SecretKey') 'Backup units must not embed COS credentials'
+foreach ($unit in @('selfquanta-ledger-backup.service', 'selfquanta-ledger-backup.timer')) {
+    Assert-True ($unitInstaller.Contains("install -o root -g root -m 0644 `"`$script_dir/../systemd/$unit`" /etc/systemd/system/$unit")) "Unit installer must install $unit"
+}
+Assert-True ($unitInstaller -match '(?m)^systemctl enable selfquanta-ledger-backup.timer$') 'Unit installer must enable the backup timer without starting it'
 
 $runtime = Get-Content -Raw -LiteralPath (Join-Path $InfraRoot 'runtime.env.example')
 Assert-True ($runtime -match '(?m)^SITE_NAME=ledger\.selfquanta\.com$') 'Runtime site name is wrong'
@@ -163,7 +181,7 @@ $deployDoc = Get-Content -Raw -LiteralPath (Join-Path $repositoryRoot 'docs/oper
 Assert-True ($deployDoc -match "INTERNAL_LEDGER_APP_REF = 'v0\.1\.0'") 'Deploy example must use the short app ref accepted by build_image.ps1'
 Assert-True ($deployDoc -notmatch 'refs/tags/v0\.1\.0') 'Deploy example must not use a rejected full ref'
 
-$scripts = @('test-config.ps1', 'build_image.ps1', 'backup.ps1', 'restore-check.ps1')
+$scripts = @('test-config.ps1', 'build_image.ps1', 'backup.ps1', 'backup-and-upload.ps1', 'restore-check.ps1')
 foreach ($name in $scripts) {
     $tokens = $null
     $errors = $null
@@ -207,6 +225,80 @@ try {
         }
         return $case
     }
+
+    # Copy the real wrapper beside a backup boundary double: no Docker or network.
+    $uploadFixture = Join-Path $scratch 'upload-fixture'
+    [void](New-Item -ItemType Directory -Path $uploadFixture)
+    $uploadWrapper = Join-Path $uploadFixture 'backup-and-upload.ps1'
+    Copy-Item -LiteralPath (Join-Path $InfraRoot 'backup-and-upload.ps1') -Destination $uploadWrapper
+    $uploadRoot = Join-Path $uploadFixture 'encrypted backups'
+    [void](New-Item -ItemType Directory -Path (Join-Path $uploadRoot 'daily') -Force)
+    Set-Content -LiteralPath (Join-Path $uploadRoot 'daily/sample.zip.enc') -Value 'encrypted-fixture'
+    Set-Content -LiteralPath (Join-Path $uploadRoot 'daily/sample.manifest.json') -Value '{"schema":1}'
+    $cosConfig = Join-Path $uploadFixture 'private cos.yaml'
+    $secretMarker = 'private-config-and-key-marker'
+    Set-Content -LiteralPath $cosConfig -Value $secretMarker
+    $env:UPLOAD_TEST_LOG = Join-Path $uploadFixture 'calls.jsonl'
+    $env:UPLOAD_TEST_BACKUP_EXIT = '0'
+    $env:UPLOAD_TEST_COS_EXIT = '0'
+    @'
+param([string]$Destination)
+@{ kind = 'backup'; destination = $Destination } | ConvertTo-Json -Compress | Add-Content -LiteralPath $env:UPLOAD_TEST_LOG
+Write-Output 'private-config-and-key-marker'
+exit ([int]$env:UPLOAD_TEST_BACKUP_EXIT)
+'@ | Set-Content -LiteralPath (Join-Path $uploadFixture 'backup.ps1')
+    @'
+@{ kind = 'cos'; arguments = @($args) } | ConvertTo-Json -Compress | Add-Content -LiteralPath $env:UPLOAD_TEST_LOG
+Write-Output 'private-config-and-key-marker'
+exit ([int]$env:UPLOAD_TEST_COS_EXIT)
+'@ | Set-Content -LiteralPath (Join-Path $uploadFixture 'fake-cos.ps1')
+    if ($IsWindows) {
+        $fakeCos = Join-Path $uploadFixture 'coscli.cmd'
+        '@pwsh -NoProfile -File "%~dp0fake-cos.ps1" %*' | Set-Content -LiteralPath $fakeCos
+    }
+    else {
+        $fakeCos = Join-Path $uploadFixture 'coscli'
+        "#!/bin/sh`nexec pwsh -NoProfile -File `"`$(dirname `"`$0`")/fake-cos.ps1`" `"`$@`"`n" | Set-Content -LiteralPath $fakeCos -NoNewline
+        & chmod 700 $fakeCos
+    }
+    $cosUri = 'cos://selfquanta-ledger-backup/production/ledger/'
+    function Invoke-UploadCase {
+        param([string]$Destination = $uploadRoot, [string]$Config = $cosConfig, [string]$Uri = $cosUri)
+        Remove-Item -LiteralPath $env:UPLOAD_TEST_LOG -Force -ErrorAction SilentlyContinue
+        $output = & pwsh -NoProfile -File $uploadWrapper -Destination $Destination -CosConfig $Config -CosUri $Uri -CosExecutable $fakeCos 2>&1 | Out-String
+        $code = $LASTEXITCODE
+        Assert-True (-not $output.Contains($secretMarker)) 'Upload wrapper leaked child output/config or key material'
+        $calls = if (Test-Path -LiteralPath $env:UPLOAD_TEST_LOG) { @(Get-Content -LiteralPath $env:UPLOAD_TEST_LOG | ConvertFrom-Json) } else { @() }
+        return @{ Code = $code; Calls = @($calls); Output = $output }
+    }
+    foreach ($invalid in @(
+        @{ Destination = '' }, @{ Destination = 'relative-backups' },
+        @{ Config = '' }, @{ Config = 'relative.yaml' }, @{ Config = (Join-Path $uploadFixture 'missing.yaml') },
+        @{ Uri = 'https://example.invalid/backups' }
+    )) {
+        $result = Invoke-UploadCase @invalid
+        Assert-True ($result.Code -ne 0 -and $result.Calls.Count -eq 0) 'Invalid upload input must fail before backup/COS execution'
+    }
+    $env:UPLOAD_TEST_BACKUP_EXIT = '23'
+    $result = Invoke-UploadCase
+    Assert-True ($result.Code -ne 0 -and $result.Calls.Count -eq 1 -and $result.Calls[0].kind -eq 'backup') 'Backup failure must prevent COS execution'
+    $env:UPLOAD_TEST_BACKUP_EXIT = '0'
+    $unexpected = Join-Path $uploadRoot 'daily/plaintext.zip'
+    Set-Content -LiteralPath $unexpected -Value 'plaintext-fixture'
+    $result = Invoke-UploadCase
+    Assert-True ($result.Code -ne 0 -and $result.Calls.Count -eq 1) 'Plaintext files must prevent recursive COS upload'
+    Remove-Item -LiteralPath $unexpected
+    foreach ($cosExit in @(0, 37)) {
+        $env:UPLOAD_TEST_COS_EXIT = [string]$cosExit
+        $result = Invoke-UploadCase
+        Assert-True ($result.Code -eq $cosExit) 'COSCLI exit code must be propagated'
+        Assert-True ($result.Calls.Count -eq 2 -and $result.Calls[0].kind -eq 'backup' -and $result.Calls[1].kind -eq 'cos') 'Upload must call backup then COS exactly once'
+        Assert-True ($result.Calls[0].destination -eq $uploadRoot) 'Wrapper must pass the local root to backup'
+        $expected = @('sync', $uploadRoot, $cosUri, '--recursive', '-c', $cosConfig)
+        Assert-True (($result.Calls[1].arguments | ConvertTo-Json -Compress) -ceq ($expected | ConvertTo-Json -Compress)) 'COSCLI sync argument vector differs from documented command'
+    }
+    Write-Host 'Fake COS checks passed: invalid inputs, backup gate, plaintext gate, exact sync once, exit 37, secret suppression.'
+    if ($BackupUploadOnly) { exit 0 }
 
     # Execute only the real installer preflight, with fixture paths and no host mutations.
     $unitPreflight = Join-Path $scratch 'systemd-preflight.sh'
@@ -474,6 +566,7 @@ exit 0
     if ($LASTEXITCODE -ne 0) { throw 'Valid restore input test failed.' }
 }
 finally {
+    Remove-Item Env:UPLOAD_TEST_LOG, Env:UPLOAD_TEST_BACKUP_EXIT, Env:UPLOAD_TEST_COS_EXIT -ErrorAction SilentlyContinue
     $env:INTERNAL_LEDGER_IMAGE = $oldImage
     foreach ($path in @($scratch, $externalScratch)) {
         if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force }

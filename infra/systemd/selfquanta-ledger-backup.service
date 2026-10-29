@@ -1,0 +1,14 @@
+[Unit]
+Description=SelfQuanta ledger encrypted backup to COS
+After=selfquanta-ledger.service network-online.target
+Requires=selfquanta-ledger.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+UMask=0077
+WorkingDirectory=/srv/selfquanta/ledger
+EnvironmentFile=/etc/selfquanta/ledger/runtime.env
+ExecStart=/usr/bin/pwsh -NoProfile -File /srv/selfquanta/ledger/infra/backup-and-upload.ps1

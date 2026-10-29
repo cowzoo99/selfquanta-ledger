@@ -18,5 +18,8 @@ fi
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 unit_source="$script_dir/../systemd/selfquanta-ledger.service"
 install -o root -g root -m 0644 "$unit_source" /etc/systemd/system/selfquanta-ledger.service
+install -o root -g root -m 0644 "$script_dir/../systemd/selfquanta-ledger-backup.service" /etc/systemd/system/selfquanta-ledger-backup.service
+install -o root -g root -m 0644 "$script_dir/../systemd/selfquanta-ledger-backup.timer" /etc/systemd/system/selfquanta-ledger-backup.timer
 systemctl daemon-reload
 systemctl enable selfquanta-ledger.service
+systemctl enable selfquanta-ledger-backup.timer
