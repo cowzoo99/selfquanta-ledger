@@ -178,8 +178,20 @@ Assert-True ($restore -match "label=com\.docker\.compose\.project=") 'Restore mu
 Assert-True ($restore -match 'Merge-SiteConfig') 'Restore must merge the original encryption key into fresh site credentials'
 
 $deployDoc = Get-Content -Raw -LiteralPath (Join-Path $repositoryRoot 'docs/operations/deploy.md')
-Assert-True ($deployDoc -match "INTERNAL_LEDGER_APP_REF = 'v0\.1\.0'") 'Deploy example must use the short app ref accepted by build_image.ps1'
-Assert-True ($deployDoc -notmatch 'refs/tags/v0\.1\.0') 'Deploy example must not use a rejected full ref'
+Assert-True ($deployDoc -match "INTERNAL_LEDGER_APP_REF = 'main'") 'Pre-release deploy example must use main as the app ref'
+Assert-True ($deployDoc -match '/srv/selfquanta/ledger' -and $deployDoc -match '/etc/selfquanta/ledger/runtime\.env' -and $deployDoc -match '/etc/selfquanta/ledger/db-root-password' -and $deployDoc -match '/etc/selfquanta/ledger/internal-fullchain\.pem') 'Deploy documentation must use the approved SelfQuanta host paths'
+Assert-True ($deployDoc -match 'pre-ICP' -and $deployDoc -match 'HTTP_BIND=HTTPS_BIND=10\.77\.0\.1' -and $deployDoc -match 'deny public TCP 80/443' -and $deployDoc -match 'Do not publish public DNS') 'Deploy documentation must state the pre-ICP WireGuard-only binding'
+Assert-True ($deployDoc -match 'post-ICP' -and $deployDoc -match 'filing approval' -and $deployDoc -match 'public DNS' -and $deployDoc -match 'certificate') 'Deploy documentation must gate public DNS and bindings on filing approval'
+Assert-True ($deployDoc -match 'systemctl start selfquanta-ledger' -and $deployDoc -match 'systemctl status selfquanta-ledger' -and $deployDoc -match 'systemctl restart selfquanta-ledger' -and $deployDoc -match 'journalctl -u selfquanta-ledger') 'Deploy documentation must provide exact systemd operator commands'
+Assert-True ($deployDoc -match 'previous SHA image' -and $deployDoc -match 'INTERNAL_LEDGER_IMAGE') 'Deploy documentation must explain rollback to the previous SHA image'
+
+$backupDoc = Get-Content -Raw -LiteralPath (Join-Path $repositoryRoot 'docs/operations/backup-restore.md')
+Assert-True ($backupDoc -match '/etc/selfquanta/ledger/cos\.yaml' -and $backupDoc -match 'COSCLI_CONFIG_FILE') 'Backup documentation must name the COSCLI config path and setting'
+Assert-True ($backupDoc -match 'systemctl list-timers' -and $backupDoc -match 'selfquanta-ledger-backup\.timer') 'Backup documentation must show timer inspection'
+Assert-True ($backupDoc -match 'systemctl start selfquanta-ledger-backup\.service') 'Backup documentation must show the manual backup trigger'
+Assert-True ($backupDoc -match 'coscli ls' -and $backupDoc -match 'cos://selfquanta-ledger-backup/production/ledger/') 'Backup documentation must show COS object listing at the configured prefix'
+Assert-True ($backupDoc -match 'encrypted' -and $backupDoc -match 'SHA-256' -and $backupDoc -match 'manifest') 'Backup documentation must explain encrypted-object verification'
+Assert-True ($backupDoc -match 'infra/restore-check\.ps1' -and $backupDoc -match 'ledger-restore-' -and $backupDoc -match 'status.*PASS' -and $backupDoc -match 'restore-reports') 'Backup documentation must require isolated restore evidence'
 
 $scripts = @('test-config.ps1', 'build_image.ps1', 'backup.ps1', 'backup-and-upload.ps1', 'restore-check.ps1')
 foreach ($name in $scripts) {

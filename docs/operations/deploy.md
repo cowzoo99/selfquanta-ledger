@@ -1,79 +1,111 @@
-# Internal Ledger deployment
+# SelfQuanta ledger deployment
 
 This is the production path for one company and one site. It uses the exact application image built from this repository; it does not use a floating latest tag.
 
 ## Prerequisites
 
-- Ubuntu LTS server. Two CPU cores and 4 GB RAM are the minimum trial size; 4 cores and 8 GB are recommended.
-- Docker Engine with Compose v2 and BuildKit secret mounts, Git, PowerShell 7, and OpenSSL.
-- A DNS name, a real TLS certificate/key, and firewall rules exposing only SSH, TCP 80, and TCP 443.
-- A credential-free HTTPS Git origin reachable from the image builder. The exact application commit must be available through a branch or tag named by INTERNAL_LEDGER_APP_REF. SSH and embedded-credential URLs are rejected because the pinned layered build does not mount SSH credentials.
-- An official frappe_docker checkout at tag v4.1.1, commit d84154ae23ab7ae756dfe942e3f24dcd70d1fbda.
+- Ubuntu 24.04 server. Two CPU cores and 4 GB RAM are the minimum trial size; 4 cores and 8 GB are recommended.
+- Docker Engine with Compose v2 and BuildKit secret mounts, Git, PowerShell 7, OpenSSL, and WireGuard.
+- A credential-free HTTPS Git origin reachable from the image builder. The exact application commit must be available through a branch or tag named by `INTERNAL_LEDGER_APP_REF`. SSH and embedded-credential URLs are rejected because the pinned layered build does not mount SSH credentials.
+- An official `frappe_docker` checkout at tag `v4.1.1`, commit `d84154ae23ab7ae756dfe942e3f24dcd70d1fbda`.
 
-The build follows the official layered image interface: images/layered/Containerfile, FRAPPE_BRANCH, and the BuildKit apps_json secret. See the [official build setup](https://github.com/frappe/frappe_docker/blob/v4.1.1/docs/02-setup/02-build-setup.md) and [layered Containerfile](https://github.com/frappe/frappe_docker/blob/v4.1.1/images/layered/Containerfile).
+The build follows the official layered image interface: `images/layered/Containerfile`, `FRAPPE_BRANCH`, and the BuildKit `apps_json` secret. See the [official build setup](https://github.com/frappe/frappe_docker/blob/v4.1.1/docs/02-setup/02-build-setup.md) and [layered Containerfile](https://github.com/frappe/frappe_docker/blob/v4.1.1/images/layered/Containerfile).
+
+## Network state before and after ICP approval
+
+**Pre-ICP:** Keep the service WireGuard-only. Set `HTTP_BIND=HTTPS_BIND=10.77.0.1`; firewall rules deny public TCP 80/443 and allow those ports only on `wg0`. Do not publish public DNS or expose public 80/443. The private-access setup creates an internal CA and an internal certificate for `ledger.selfquanta.com`; distribute its CA certificate to authorized clients.
+
+**Post-ICP:** Only after filing approval, provision public DNS and a valid public TLS certificate, then deliberately change the HTTP/HTTPS bindings and firewall rules for public access. Public bindings, public DNS, and public 80/443 remain disabled until that gate is met. Re-run the configuration checks and review the changed firewall rules before cutover.
 
 ## Build the immutable image
 
-Clone both repositories to a data disk. The application build requires a credential-free HTTPS origin; do not put credentials in either remote URL.
+Place the application checkout at `/srv/selfquanta/ledger` and the pinned upstream checkout at `/srv/frappe_docker`. Do not put credentials in either remote URL. Build the pre-release from `main`:
 
-    git clone https://github.com/frappe/frappe_docker /srv/frappe_docker
-    git -C /srv/frappe_docker checkout v4.1.1
-    git -C /srv/frappe_docker rev-parse HEAD
+```powershell
+git -C /srv/selfquanta/ledger checkout main
+git -C /srv/frappe_docker checkout v4.1.1
+git -C /srv/frappe_docker rev-parse HEAD
 
-    $env:FRAPPE_DOCKER_DIR = '/srv/frappe_docker'
-    $env:INTERNAL_LEDGER_APP_REF = 'v0.1.0'
-    $env:INTERNAL_LEDGER_BUILD_TEMP = '/srv/internal-ledger-build'
-    pwsh -NoProfile -File infra/build_image.ps1
+$env:FRAPPE_DOCKER_DIR = '/srv/frappe_docker'
+$env:INTERNAL_LEDGER_APP_REF = 'main'
+$env:INTERNAL_LEDGER_BUILD_TEMP = '/srv/selfquanta/build-tmp'
+pwsh -NoProfile -File /srv/selfquanta/ledger/infra/build_image.ps1
+```
 
-The script refuses a dirty worktree, a missing/non-network origin, an app ref that does not point to HEAD, or a modified/wrong frappe_docker checkout. It writes a temporary apps.json only in the explicit scratch directory, passes it as a BuildKit secret, removes it, and creates internal-ledger:<40-character-git-sha>.
+The script refuses a dirty worktree, a missing/non-network origin, an app ref that does not point to `HEAD`, or a modified/wrong `frappe_docker` checkout. It writes a temporary `apps.json` only in the explicit scratch directory, passes it as a BuildKit secret, removes it, and creates `internal-ledger:<40-character-git-sha>`.
 
-## Runtime secrets and TLS
+## Runtime secrets and configuration
 
 Create root-owned files outside the repository and Compose volumes:
 
-    /etc/internal-ledger/db-root-password
-    /etc/internal-ledger/site-admin-password
-    /etc/internal-ledger/fullchain.pem
-    /etc/internal-ledger/privkey.pem
+```text
+/etc/selfquanta/ledger/db-root-password
+/etc/selfquanta/ledger/site-admin-password
+/etc/selfquanta/ledger/internal-fullchain.pem
+/etc/selfquanta/ledger/internal-privkey.pem
+/etc/selfquanta/ledger/backup.key
+/etc/selfquanta/ledger/cos.yaml
+```
 
-Use long random passwords and mode 0600; use the certificate delivered by the actual DNS/TLS provider. Do not create a fake production domain or certificate.
+Use long random passwords and mode 0600. Before ICP approval, use the internal certificate generated by `infra/host/configure-private-access.sh`; do not create a fake public production certificate or domain. Install the runtime configuration at `/etc/selfquanta/ledger/runtime.env` with the actual built image SHA:
 
-Set runtime values in the service manager or a root-readable environment file outside Git:
+```dotenv
+INTERNAL_LEDGER_IMAGE=internal-ledger:<git-sha>
+SITE_NAME=ledger.selfquanta.com
+COMPOSE_PROJECT_NAME=selfquanta-ledger
+DB_ROOT_PASSWORD_FILE=/etc/selfquanta/ledger/db-root-password
+SITE_ADMIN_PASSWORD_FILE=/etc/selfquanta/ledger/site-admin-password
+TLS_CERTIFICATE_FILE=/etc/selfquanta/ledger/internal-fullchain.pem
+TLS_PRIVATE_KEY_FILE=/etc/selfquanta/ledger/internal-privkey.pem
+HTTP_BIND=10.77.0.1
+HTTPS_BIND=10.77.0.1
+HTTP_PORT=80
+HTTPS_PORT=443
+INTERNAL_LEDGER_BACKUP_DESTINATION=/var/backups/selfquanta/ledger
+BACKUP_KEY_FILE=/etc/selfquanta/ledger/backup.key
+COSCLI_CONFIG_FILE=/etc/selfquanta/ledger/cos.yaml
+COS_BACKUP_URI=cos://selfquanta-ledger-backup/production/ledger/
+```
 
-    INTERNAL_LEDGER_IMAGE=internal-ledger:<git-sha>
-    SITE_NAME=ledger.example.com
-    COMPOSE_PROJECT_NAME=internal-ledger
-    DB_ROOT_PASSWORD_FILE=/etc/internal-ledger/db-root-password
-    SITE_ADMIN_PASSWORD_FILE=/etc/internal-ledger/site-admin-password
-    TLS_CERTIFICATE_FILE=/etc/internal-ledger/fullchain.pem
-    TLS_PRIVATE_KEY_FILE=/etc/internal-ledger/privkey.pem
+Keep the runtime file root-readable and outside Git. The runtime example contains an all-zero image sentinel and must not be deployed unchanged.
 
-## Initialize and start
+## Install and operate the systemd services
 
-Run the checks before touching production:
+Copy the repository to `/srv/selfquanta/ledger`, set `/etc/selfquanta/ledger/runtime.env`, and install the named units:
 
-    pwsh -NoProfile -File infra/test-config.ps1
-    docker compose --env-file infra/versions.env -f infra/compose.yaml config --quiet
-    docker compose --env-file infra/versions.env -f infra/compose.yaml --profile init run --rm create-site
-    docker compose --env-file infra/versions.env -f infra/compose.yaml up -d
-    docker compose --env-file infra/versions.env -f infra/compose.yaml ps
+```bash
+sudo bash /srv/selfquanta/ledger/infra/host/install-systemd-units.sh
+sudo systemctl daemon-reload
+sudo systemctl enable --now selfquanta-ledger-backup.timer
+sudo systemctl start selfquanta-ledger
+sudo systemctl status selfquanta-ledger
+sudo journalctl -u selfquanta-ledger --since today
+```
 
-The one-shot create-site service refuses to overwrite an existing site. The gateway is the only service with published ports. MariaDB, Redis, backend, workers, scheduler, WebSocket, and the internal Frappe frontend remain on the internal Docker network. HTTP redirects to HTTPS.
+The unit runs `infra/test-config.ps1 -StaticOnly` before Compose startup. To apply a deliberate runtime or image change, restart and inspect the service:
 
-The long-running backend never receives the MariaDB root secret. Only MariaDB itself, the one-shot create-site service, and the isolated restore runner can read it.
+```bash
+sudo systemctl restart selfquanta-ledger
+sudo systemctl status selfquanta-ledger
+sudo journalctl -u selfquanta-ledger -n 100 --no-pager
+```
+
+The one-shot `create-site` service refuses to overwrite an existing site. The gateway is the only service with published container ports. MariaDB, Redis, backend, workers, scheduler, WebSocket, and the internal Frappe frontend remain on the internal Docker network. HTTP redirects to HTTPS. The long-running backend never receives the MariaDB root secret; only MariaDB itself, the one-shot create-site service, and the isolated restore runner can read it.
 
 After first login, set timezone Asia/Shanghai, currency CNY, the accounting year, and strong named user accounts. Disable public registration. Keep SSH key-only where possible and rate-limit login at the host/provider layer.
 
-## Upgrade
+## Upgrade and rollback
 
 1. Run and verify an encrypted database-plus-files backup.
 2. Test the new exact image and migration in a non-production project.
-3. Change INTERNAL_LEDGER_IMAGE to the new SHA image.
-4. Run bench --site <site> migrate through a one-shot backend command, then recreate services.
+3. Save the current `INTERNAL_LEDGER_IMAGE` value as the rollback image, then set it to the new SHA image in `/etc/selfquanta/ledger/runtime.env`.
+4. Run `bench --site <site> migrate` through a one-shot backend command, then restart the systemd service.
 5. Check health, login, a read-only report, and the audit log.
+
+If the upgrade must be rolled back, restore the previous SHA image value, `INTERNAL_LEDGER_IMAGE=internal-ledger:<previous-git-sha>`, in `/etc/selfquanta/ledger/runtime.env`, then run `sudo systemctl restart selfquanta-ledger` and inspect `sudo systemctl status selfquanta-ledger` and its journal. A code-image rollback does not reverse database migrations; use the verified isolated backup restore procedure when data rollback is required.
 
 Never log passwords, repository credentials, full bank numbers, or statement content. Preserve the upstream Frappe/ERPNext and application license/source notices when distributing the service or image.
 
 ## Current acceptance boundary
 
-The development checkout had no Git origin, and Docker was not installed on the host used for Task 9. Therefore no image was built and no live Compose stack was started. build_image.ps1 is intentionally required to fail before Docker when origin is absent. Live image, restart, backup, and restore acceptance remains pending until the owner supplies the real remote and a Docker host.
+No live production deployment, public cutover, or production backup/restore is verified by this runbook update. Live image, restart, backup, and restore acceptance remains pending until the owner supplies the real remote and a Docker host.
