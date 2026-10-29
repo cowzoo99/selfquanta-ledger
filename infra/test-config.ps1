@@ -22,6 +22,7 @@ function Get-ServiceBlock {
 
 $required = @(
     'versions.env',
+    'runtime.env.example',
     'compose.yaml',
     'nginx.conf',
     'build_image.ps1',
@@ -32,6 +33,15 @@ foreach ($name in $required) {
     $path = Join-Path $InfraRoot $name
     Assert-True (Test-Path -LiteralPath $path -PathType Leaf) "Missing required file: $name"
 }
+
+$runtime = Get-Content -Raw -LiteralPath (Join-Path $InfraRoot 'runtime.env.example')
+Assert-True ($runtime -match '(?m)^SITE_NAME=ledger\.selfquanta\.com$') 'Runtime site name is wrong'
+Assert-True ($runtime -match '(?m)^COMPOSE_PROJECT_NAME=selfquanta-ledger$') 'Runtime project name is wrong'
+Assert-True ($runtime -match '(?m)^HTTP_BIND=10\.77\.0\.1$') 'Private HTTP bind is wrong'
+Assert-True ($runtime -match '(?m)^HTTPS_BIND=10\.77\.0\.1$') 'Private HTTPS bind is wrong'
+Assert-True ($runtime -match '/etc/selfquanta/ledger/db-root-password') 'Database secret path is wrong'
+Assert-True ($runtime -match '/etc/selfquanta/ledger/site-admin-password') 'Admin secret path is wrong'
+Assert-True ($runtime -notmatch '(?im)(secret|password|token)=.+') 'Runtime example must not contain secret values'
 
 $repositoryRoot = (Resolve-Path (Join-Path $InfraRoot '..')).Path
 $versions = Get-Content -Raw -LiteralPath (Join-Path $InfraRoot 'versions.env')
@@ -149,6 +159,10 @@ try {
     $case = New-MutatedInfra 'embedded-secret'
     Add-Content -LiteralPath (Join-Path $case 'compose.yaml') -Value "`n  leaked_password: plaintext"
     Assert-CommandFailsLike { pwsh -NoProfile -File $PSCommandPath -InfraRoot $case -StaticOnly } 'embed secrets' 'Embedded secret test'
+
+    $case = New-MutatedInfra 'runtime-secret'
+    Add-Content -LiteralPath (Join-Path $case 'runtime.env.example') -Value "`nSITE_ADMIN_PASSWORD=plaintext"
+    Assert-CommandFailsLike { pwsh -NoProfile -File $PSCommandPath -InfraRoot $case -StaticOnly } 'Runtime example must not contain secret values' 'Runtime secret test'
 
     $case = New-MutatedInfra 'broad-cleanup'
     Add-Content -LiteralPath (Join-Path $case 'restore-check.ps1') -Value "`ndocker system prune"
