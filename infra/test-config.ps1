@@ -1,7 +1,8 @@
 [CmdletBinding()]
 param(
     [string]$InfraRoot = $PSScriptRoot,
-    [switch]$StaticOnly
+    [switch]$StaticOnly,
+    [switch]$PrivateAccessOnly
 )
 
 Set-StrictMode -Version Latest
@@ -181,6 +182,107 @@ try {
             Copy-Item -LiteralPath (Join-Path $InfraRoot $file) -Destination $destination
         }
         return $case
+    }
+
+    # Run the real firewall block against a stateful UFW boundary double. Insertion
+    # deliberately skips an existing tuple even when its action/position differs.
+    $firewallTest = Join-Path $scratch 'private-access-firewall.sh'
+    $firewallStart = $privateAccess.IndexOf('# Denials precede')
+    $firewallBlock = $privateAccess.Substring($firewallStart, $privateAccess.IndexOf('client_private=') - $firewallStart)
+    $firewallFixture = @'
+set -euo pipefail
+scenario=$1
+case "$1" in
+    public-allow) rules=('allow 443/tcp' 'allow 80/tcp');;
+    buried-deny) rules=('allow from 198.51.100.0/24' 'deny 443/tcp' 'deny 80/tcp');;
+    stale-vpn) rules=('deny in on wg0 to 10.77.0.1 port 443 proto tcp' 'deny in on wg0 to 10.77.0.1 port 80 proto tcp');;
+    bad-status|bad-v6-status) rules=();;
+esac
+ufw() {
+    local command=$1 rule existing found=0
+    shift
+    [[ $command != --force ]] || { command=$1; shift; }
+    case "$command" in
+        default|enable) return 0;;
+        delete)
+            rule="$*"; local kept=()
+            for existing in "${rules[@]}"; do [[ $existing == "$rule" ]] || kept+=("$existing"); done
+            rules=("${kept[@]}");;
+        insert|allow)
+            if [[ $command == insert ]]; then shift; rule="$*"; else rule="allow $*"; fi
+            for existing in "${rules[@]}"; do [[ ${existing#* } != "${rule#* }" ]] || found=1; done
+            if ((found == 0)); then
+                if [[ $command == insert ]]; then rules=("$rule" "${rules[@]}"); else rules+=("$rule"); fi
+            fi;;
+        status)
+            echo 'Status: active'; local number=0 destination action
+            if [[ $scenario == bad-status ]]; then echo '[ 1] 443/tcp ALLOW IN Anywhere'; return; fi
+            for existing in "${rules[@]}"; do
+                ((number+=1)); action=${existing%% *}; action=${action^^}
+                case "$existing" in
+                    *'in on wg0'*) destination="10.77.0.1 $(sed -E 's/.* port ([0-9]+) .*/\1/' <<< "$existing")/tcp on wg0";;
+                    *'80/tcp') destination=80/tcp;;
+                    *'443/tcp') destination=443/tcp;;
+                    *) destination=Anywhere;;
+                esac
+                printf '[%2d] %s %s IN Anywhere\n' "$number" "$destination" "$action"
+            done
+            if [[ $scenario == bad-v6-status ]]; then echo '[99] 443/tcp (v6) ALLOW IN Anywhere (v6)'; return; fi
+            for existing in "${rules[@]}"; do
+                [[ $existing != *'in on wg0'* ]] || continue
+                ((number+=1)); action=${existing%% *}; action=${action^^}
+                case "$existing" in
+                    *'80/tcp') destination=80/tcp;;
+                    *'443/tcp') destination=443/tcp;;
+                    *) destination=Anywhere;;
+                esac
+                printf '[%2d] %s (v6) %s IN Anywhere (v6)\n' "$number" "$destination" "$action"
+            done;;
+        *) echo "Unexpected UFW command: $command" >&2; return 90;;
+    esac
+}
+'@
+    $firewallAssertions = @'
+expected=('allow in on wg0 to 10.77.0.1 port 443 proto tcp' 'allow in on wg0 to 10.77.0.1 port 80 proto tcp' 'deny 443/tcp' 'deny 80/tcp')
+for index in 0 1 2 3; do
+    if [[ ${rules[$index]:-} != "${expected[$index]}" ]]; then
+        echo "Unsafe firewall order: ${rules[*]}" >&2
+        exit 1
+    fi
+done
+if [[ $scenario == buried-deny && ${rules[*]} != *'allow from 198.51.100.0/24'* ]]; then
+    echo 'Unrelated firewall rule was removed.' >&2
+    exit 1
+fi
+echo 'Managed firewall order verified.'
+'@
+    ($firewallFixture + "`n" + $firewallBlock + "`n" + $firewallAssertions + "`n" + $firewallBlock + "`n" + $firewallAssertions).Replace("`r`n", "`n") |
+        Set-Content -LiteralPath $firewallTest -NoNewline
+    foreach ($scenario in @('public-allow', 'buried-deny', 'stale-vpn')) {
+        $output = & bash $firewallTest $scenario 2>&1 | Out-String
+        Assert-True ($LASTEXITCODE -eq 0 -and $output -match 'Managed firewall order verified') "WireGuard firewall regression ($scenario): $output"
+    }
+    Assert-CommandFailsLike { bash $firewallTest bad-status } 'Pre-ICP public exposure: unexpected UFW rule order' 'Unsafe resulting IPv4 firewall order test'
+    Assert-CommandFailsLike { bash $firewallTest bad-v6-status } 'Pre-ICP public exposure: unexpected UFW IPv6 rule order' 'Unsafe resulting IPv6 firewall order test'
+
+    $caTest = Join-Path $scratch 'private-access-ca.sh'
+    $caStart = $privateAccess.IndexOf('ca_key=')
+    $caBlock = $privateAccess.Substring($caStart, $privateAccess.IndexOf('if [[ ! -f $tls_cert ]]') - $caStart)
+    (@'
+set -euo pipefail
+secrets=$1
+openssl() { echo 'Unexpected CA generation' >&2; exit 71; }
+'@ + "`n" + $caBlock).Replace("`r`n", "`n") | Set-Content -LiteralPath $caTest -NoNewline
+    $orphanedTls = Join-Path $scratch 'orphaned-tls'
+    [void](New-Item -ItemType Directory -Path $orphanedTls)
+    foreach ($file in @('internal-fullchain.pem', 'internal-privkey.pem')) {
+        Set-Content -LiteralPath (Join-Path $orphanedTls $file) -Value 'old-tls-fixture'
+    }
+    Assert-CommandFailsLike { bash $caTest $orphanedTls } 'Existing TLS material has no internal CA' 'Orphaned TLS certificate/key test'
+
+    if ($PrivateAccessOnly) {
+        Write-Host 'Private access behavior checks passed.'
+        exit 0
     }
 
     $case = New-MutatedInfra 'bootstrap-curl-shell'

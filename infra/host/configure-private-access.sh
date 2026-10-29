@@ -71,6 +71,10 @@ ca_cert=$secrets/internal-ca.pem
 tls_key=$secrets/internal-privkey.pem
 tls_cert=$secrets/internal-fullchain.pem
 if [[ ! -f $ca_key && ! -f $ca_cert ]]; then
+    if [[ -e $tls_cert || -e $tls_key || -e $secrets/internal-server.pem ]]; then
+        echo 'Existing TLS material has no internal CA; restore its CA before retrying.' >&2
+        exit 1
+    fi
     openssl req -x509 -newkey rsa:3072 -nodes -days 3650 -sha256 \
         -subj '/CN=SelfQuanta Ledger Internal CA' \
         -addext 'basicConstraints=critical,CA:TRUE' -addext 'keyUsage=critical,keyCertSign,cRLSign' \
@@ -98,6 +102,14 @@ fi
 chmod 0600 "$ca_key" "$ca_cert" "$tls_key" "$tls_cert"
 
 # Denials precede any existing broad allowances; only wg0 gets web ingress.
+# UFW may skip insertion for an existing tuple regardless of action/position.
+# Remove only our four managed tuples, then rebuild them in the required order.
+for action in allow deny reject limit; do
+    ufw --force delete "$action" 80/tcp >/dev/null
+    ufw --force delete "$action" 443/tcp >/dev/null
+    ufw --force delete "$action" in on wg0 to 10.77.0.1 port 80 proto tcp >/dev/null
+    ufw --force delete "$action" in on wg0 to 10.77.0.1 port 443 proto tcp >/dev/null
+done
 ufw default deny incoming >/dev/null
 ufw insert 1 deny 80/tcp >/dev/null
 ufw insert 1 deny 443/tcp >/dev/null
@@ -106,6 +118,23 @@ ufw insert 1 allow in on wg0 to 10.77.0.1 port 443 proto tcp >/dev/null
 ufw allow OpenSSH >/dev/null
 ufw allow 51820/udp >/dev/null
 ufw --force enable >/dev/null
+mapfile -t firewall_rules < <(LC_ALL=C ufw status numbered | sed -n -E 's/^\[[[:space:]]*[0-9]+\][[:space:]]+//p' | sed -E 's/[[:space:]]+/ /g; s/ $//')
+if [[ ${firewall_rules[0]:-} != '10.77.0.1 443/tcp on wg0 ALLOW IN Anywhere' ||
+      ${firewall_rules[1]:-} != '10.77.0.1 80/tcp on wg0 ALLOW IN Anywhere' ||
+      ${firewall_rules[2]:-} != '443/tcp DENY IN Anywhere' ||
+      ${firewall_rules[3]:-} != '80/tcp DENY IN Anywhere' ]]; then
+    echo 'Pre-ICP public exposure: unexpected UFW rule order.' >&2
+    exit 1
+fi
+ipv6_rules=()
+for rule in "${firewall_rules[@]}"; do
+    [[ $rule != *'(v6)'* ]] || ipv6_rules+=("$rule")
+done
+if [[ ${#ipv6_rules[@]} -gt 0 && ( ${ipv6_rules[0]:-} != '443/tcp (v6) DENY IN Anywhere (v6)' ||
+      ${ipv6_rules[1]:-} != '80/tcp (v6) DENY IN Anywhere (v6)' ) ]]; then
+    echo 'Pre-ICP public exposure: unexpected UFW IPv6 rule order.' >&2
+    exit 1
+fi
 
 client_private=$(wg genkey)
 client_public=$(printf '%s' "$client_private" | wg pubkey)
