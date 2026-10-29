@@ -23,6 +23,7 @@ function Get-ServiceBlock {
 $required = @(
     'versions.env',
     'runtime.env.example',
+    'host/bootstrap-ubuntu.sh',
     'compose.yaml',
     'nginx.conf',
     'build_image.ps1',
@@ -34,6 +35,26 @@ foreach ($name in $required) {
     Assert-True (Test-Path -LiteralPath $path -PathType Leaf) "Missing required file: $name"
 }
 
+$bootstrap = Get-Content -Raw -LiteralPath (Join-Path $InfraRoot 'host/bootstrap-ubuntu.sh')
+Assert-True ($bootstrap -match '(?m)^set -euo pipefail$') 'Bootstrap must propagate failures'
+Assert-True ($bootstrap -match 'EUID.*-ne 0' -and $bootstrap -match 'exit 1') 'Bootstrap must reject non-root execution'
+Assert-True ($bootstrap -match 'source /etc/os-release' -and $bootstrap -match '\$ID.*ubuntu' -and $bootstrap -match '\$VERSION_ID.*24\.04') 'Bootstrap must require Ubuntu 24.04'
+Assert-True ($bootstrap -match '\$#.*-ne 1' -and $bootstrap -match 'operator=\$1' -and $bootstrap -match 'id -u' -and $bootstrap -match 'useradd' -and $bootstrap -match 'usermod -aG docker') 'Bootstrap must provision exactly one non-root operator idempotently'
+foreach ($package in @('docker-ce', 'docker-ce-cli', 'containerd.io', 'docker-buildx-plugin', 'docker-compose-plugin', 'git', 'openssl', 'wireguard', 'ufw', 'fail2ban', 'powershell', 'unattended-upgrades')) {
+    Assert-True ($bootstrap -match "(?m)^apt-get install .*\b$([regex]::Escape($package))\b") "Bootstrap must install $package"
+}
+Assert-True ($bootstrap -match 'https://download\.docker\.com/linux/ubuntu' -and $bootstrap -match 'Signed-By: /etc/apt/keyrings/docker.asc' -and $bootstrap -match '/etc/apt/sources.list.d/docker.sources') 'Bootstrap must use the signed Docker apt repository'
+Assert-True ($bootstrap -match 'https://packages.microsoft.com/ubuntu/24.04/prod' -and $bootstrap -match 'signed-by=/etc/apt/keyrings/microsoft.asc' -and $bootstrap -match '/etc/apt/sources.list.d/microsoft-prod.list') 'Bootstrap must use the signed Microsoft apt repository'
+Assert-True ($bootstrap -match 'apt-get update' -and $bootstrap -match 'install -d -m 0755 /etc/apt/keyrings') 'Bootstrap must initialize apt keyrings and refresh metadata'
+Assert-True ($bootstrap -match 'systemctl enable --now docker fail2ban' -and $bootstrap -match 'systemctl enable --now unattended-upgrades apt-daily.timer apt-daily-upgrade.timer' -and $bootstrap -match 'APT::Periodic::Unattended-Upgrade "1"') 'Bootstrap must enable Docker, fail2ban and unattended security updates'
+Assert-True ($bootstrap -match 'install -d -m 0750 -o "\$operator" -g "\$\(id -gn "\$operator"\)" /srv/selfquanta') 'Bootstrap must create the operator deployment directory'
+Assert-True ($bootstrap -match 'install -d -m 0700 -o root -g root /etc/selfquanta/ledger /var/backups/selfquanta/ledger') 'Bootstrap must restrict secret and backup directories'
+Assert-True ($bootstrap -notmatch '(?im)^\s*[^#\r\n]*(sshd_config|PasswordAuthentication|PermitRootLogin)') 'Bootstrap must defer SSH policy changes until key login preflight'
+Assert-True ($bootstrap -notmatch '(?im)curl\b[^\r\n]*\|\s*(sh|bash)\b') 'Bootstrap must not pipe curl into a shell'
+Assert-True ($bootstrap -notmatch '(?im)(:latest|ERPNEXT_VERSION|FRAPPE_REF|git clone|docker (run|pull))') 'Bootstrap must not deploy floating application versions'
+Assert-True ($bootstrap -notmatch '(?im)(password|secret|token)\s*=\s*\S+' -and $bootstrap -notmatch '\b(?:\d{1,3}\.){3}\d{1,3}\b') 'Bootstrap must not embed secrets or IP addresses'
+Assert-True ($bootstrap -notmatch '(?im)(rm\s+-[a-z]*r|docker\s+(system|volume)\s+prune|apt-get\s+(purge|autoremove))') 'Bootstrap must not perform broad destructive cleanup'
+Assert-True ($bootstrap -match 'docker --version' -and $bootstrap -match 'docker compose version' -and $bootstrap -match 'pwsh.*PSVersionTable') 'Bootstrap must print a final version summary'
 $runtime = Get-Content -Raw -LiteralPath (Join-Path $InfraRoot 'runtime.env.example')
 Assert-True ($runtime -match '(?m)^SITE_NAME=ledger\.selfquanta\.com$') 'Runtime site name is wrong'
 Assert-True ($runtime -match '(?m)^COMPOSE_PROJECT_NAME=selfquanta-ledger$') 'Runtime project name is wrong'
@@ -141,11 +162,16 @@ try {
         $case = Join-Path $scratch $Name
         [void](New-Item -ItemType Directory -Path $case)
         foreach ($file in $required) {
-            Copy-Item -LiteralPath (Join-Path $InfraRoot $file) -Destination $case
+            $destination = Join-Path $case $file
+            [void](New-Item -ItemType Directory -Path (Split-Path $destination -Parent) -Force)
+            Copy-Item -LiteralPath (Join-Path $InfraRoot $file) -Destination $destination
         }
         return $case
     }
 
+    $case = New-MutatedInfra 'bootstrap-curl-shell'
+    Add-Content -LiteralPath (Join-Path $case 'host/bootstrap-ubuntu.sh') -Value "`ncurl https://example.invalid/install.sh | sh"
+    Assert-CommandFailsLike { pwsh -NoProfile -File $PSCommandPath -InfraRoot $case -StaticOnly } 'Bootstrap must not pipe curl into a shell' 'Unsafe bootstrap installer test'
     $case = New-MutatedInfra 'mutable-version'
     (Get-Content -Raw (Join-Path $case 'versions.env')).Replace('ERPNEXT_VERSION=v16.52.1', 'ERPNEXT_VERSION=latest') |
         Set-Content -LiteralPath (Join-Path $case 'versions.env')
