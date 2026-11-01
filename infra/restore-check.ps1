@@ -104,7 +104,7 @@ function Invoke-Compose {
     param([string[]]$Arguments, [switch]$Quiet)
     if ($Quiet) { & $script:DockerExecutable @script:ComposePrefix @Arguments *> $null }
     else { & $script:DockerExecutable @script:ComposePrefix @Arguments }
-    if ($LASTEXITCODE -ne 0) { throw 'Isolated restore Docker Compose operation failed.' }
+    if ($LASTEXITCODE -ne 0) { throw ("Isolated restore Docker Compose operation failed: " + ($Arguments -join " ")) }
 }
 
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
@@ -225,7 +225,7 @@ try {
     )
     Invoke-Compose -Quiet -Arguments @(
         'exec', '-T', '--user', 'root', 'backend', 'bash', '-c',
-        "set -euo pipefail; chown frappe:frappe 'sites/$restoreSite/site_config.json'; chmod 600 'sites/$restoreSite/site_config.json'"
+        "set -euo pipefail; chown frappe:root 'sites/$restoreSite/site_config.json'; chmod 600 'sites/$restoreSite/site_config.json'"
     )
 
     Invoke-Compose -Quiet -Arguments @('exec', '-T', 'backend', 'mkdir', '-p', $containerDir)

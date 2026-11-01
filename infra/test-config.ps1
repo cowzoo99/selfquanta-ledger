@@ -132,6 +132,8 @@ Assert-True ($versions -match '(?m)^REDIS_IMAGE=redis:8\.2-alpine\r?$') 'Redis i
 Assert-True ($versions -notmatch '(?im):latest\s*$') 'Mutable latest tag is forbidden'
 
 $compose = Get-Content -Raw -LiteralPath (Join-Path $InfraRoot 'compose.yaml')
+Assert-True ($compose -match 'UPSTREAM_REAL_IP_ADDRESS:\s+172\.16\.0\.0/12') 'Frontend must trust the Docker bridge CIDR without depending on the gateway service DNS name'
+Assert-True ($compose -notmatch 'UPSTREAM_REAL_IP_ADDRESS:\s+gateway') 'Frontend must not create a gateway DNS startup cycle'
 foreach ($internalService in @('db', 'redis-cache', 'redis-queue', 'configurator', 'create-site', 'backend', 'restore-runner', 'frontend', 'websocket', 'queue-short', 'queue-long', 'scheduler')) {
     Assert-True ((Get-ServiceBlock -Yaml $compose -Name $internalService) -notmatch '(?m)^\s{4}ports:\s*$') "$internalService must not publish host ports"
 }
@@ -163,6 +165,9 @@ Assert-True ($build -notmatch 'APPS_JSON_BASE64') 'apps.json must not be passed 
 Assert-True ($build -match "origin -notmatch '\^https://'") 'Build must reject unsupported SSH origins before Docker'
 
 $backup = Get-Content -Raw -LiteralPath (Join-Path $InfraRoot 'backup.ps1')
+Assert-True ($backup -match 'Get-Item -LiteralPath \$encryptedTemp -Force') 'Linux hidden backup temp files must be inspected with -Force'
+$restoreCheck = Get-Content -Raw -LiteralPath (Join-Path $InfraRoot 'restore-check.ps1')
+Assert-True ($restoreCheck -match 'chown frappe:root') 'Restore must use the image runtime group for site_config.json'
 Assert-True ($backup -match 'BACKUP_KEY_FILE') 'Backup must require an external key file'
 Assert-True ($backup -match 'openssl') 'Backup must encrypt the archive'
 Assert-True ($backup -match 'Get-FileHash') 'Backup must emit a checksum'
@@ -180,6 +185,7 @@ Assert-True ($restore -match "label=com\.docker\.compose\.project=") 'Restore mu
 Assert-True ($restore -match 'Merge-SiteConfig') 'Restore must merge the original encryption key into fresh site credentials'
 
 $deployDoc = Get-Content -Raw -LiteralPath (Join-Path $repositoryRoot 'docs/operations/deploy.md')
+Assert-True ($deployDoc -match 'db-root-password.*site-admin-password.*root:root.*0640' -and $deployDoc -match 'remaining secret files at mode 0600') 'Deploy documentation must keep container-readable passwords separate from host-only secrets'
 Assert-True ($deployDoc -match "INTERNAL_LEDGER_APP_REF = 'main'") 'Pre-release deploy example must use main as the app ref'
 Assert-True ($deployDoc -match '/srv/selfquanta/frappe_docker' -and $deployDoc -match '/srv/selfquanta/build' -and $deployDoc -notmatch '/srv/frappe_docker|/srv/selfquanta/build-tmp') 'Deploy documentation must use the approved upstream and build scratch paths'
 Assert-True ($deployDoc -match '/srv/selfquanta/ledger' -and $deployDoc -match '/etc/selfquanta/ledger/runtime\.env' -and $deployDoc -match '/etc/selfquanta/ledger/db-root-password' -and $deployDoc -match '/etc/selfquanta/ledger/internal-fullchain\.pem') 'Deploy documentation must use the approved SelfQuanta host paths'

@@ -126,7 +126,7 @@ try {
     if (Test-Path -LiteralPath $encrypted) { throw 'Final backup archive already exists.' }
     & openssl enc -aes-256-cbc -pbkdf2 -salt -in $plainArchive -out $encryptedTemp -pass "file:$keyPath" 2>$null
     if ($LASTEXITCODE -ne 0) { throw 'Backup encryption failed.' }
-    if ((Get-Item -LiteralPath $encryptedTemp).Length -le 16) { throw 'Encrypted backup validation failed.' }
+    if ((Get-Item -LiteralPath $encryptedTemp -Force).Length -le 16) { throw 'Encrypted backup validation failed.' }
     $hash = (Get-FileHash -LiteralPath $encryptedTemp -Algorithm SHA256).Hash.ToLowerInvariant()
     [IO.File]::Move($encryptedTemp, $encrypted)
     $manifest['encrypted_sha256'] = $hash
