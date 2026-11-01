@@ -1,5 +1,7 @@
 # SelfQuanta 快速生产部署设计
 
+> **当前阶段补充（2026-11-01）：** 先执行 `docs/superpowers/specs/2026-11-01-selfquanta-free-trial-pilot-design.md` 的一个月企业免费试运行。域名购买、ICP 备案、付费续费和公网开放在试运行退出评审前全部暂缓。
+
 日期：2026-10-29
 
 ## 1. 目标

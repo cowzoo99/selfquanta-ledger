@@ -1,5 +1,7 @@
 # SelfQuanta Production Deployment Implementation Plan
 
+> **Current execution overlay (2026-11-01):** Start with the one-month Tencent Cloud enterprise free-trial pilot in `docs/superpowers/plans/2026-11-01-selfquanta-free-trial-pilot.md`. Domain purchase, ICP filing, paid renewal and public cutover remain deferred until that pilot reaches its exit decision gate.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 将当前单公司、单账套协同内账系统发布到腾讯云上海轻量应用服务器，先通过 WireGuard 私网供少量人员使用，再在 ICP 备案通过后切换到 `https://ledger.selfquanta.com`，并完成重启、加密备份和隔离恢复验收。
