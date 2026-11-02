@@ -9,9 +9,17 @@ function redirectSetupHomeToLedger() {
     && window.location.pathname === "/desk/setup/home";
   if (canUseLedger && (isLegacySetupHome || isCurrentSetupHome)) {
     frappe.set_route("ledger-workbench", "dashboard");
+    return true;
   }
+  return false;
 }
 
 $(document).on("app_ready", redirectSetupHomeToLedger);
 frappe.router.on("change", redirectSetupHomeToLedger);
-setTimeout(redirectSetupHomeToLedger, 0);
+let redirectAttempts = 0;
+const redirectTimer = setInterval(() => {
+  redirectAttempts += 1;
+  if (redirectSetupHomeToLedger() || redirectAttempts >= 200) {
+    clearInterval(redirectTimer);
+  }
+}, 100);
