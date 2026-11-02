@@ -16,6 +16,7 @@ LEDGER_REPORTS = ("General Ledger", "Trial Balance", "Balance Sheet", "Profit an
 
 def ensure_roles() -> None:
     require_ledger_admin()
+    frappe.db.set_single_value("System Settings", "language", "zh")
     before = _permission_state()
     create_custom_fields({"User": [{
         "fieldname": "internal_ledger_must_change_password",

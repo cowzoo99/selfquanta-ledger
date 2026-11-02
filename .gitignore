@@ -10,3 +10,5 @@ build/
 *.egg-info/
 .env
 *.log
+laptop-cao.conf
+site-admin-password.txt
