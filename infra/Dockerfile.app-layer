@@ -8,5 +8,5 @@ COPY --chown=frappe:frappe internal_ledger /home/frappe/frappe-bench/apps/intern
 USER frappe
 WORKDIR /home/frappe/frappe-bench
 RUN bench build --app internal_ledger \
-    && cp sites/assets/assets*.json assets/
+    && python -c "import json; from pathlib import Path; built=Path('sites/assets/assets.json'); runtime=Path('assets/assets.json'); entries=json.loads(runtime.read_text()); entries['ledger_workbench.bundle.js']=json.loads(built.read_text())['ledger_workbench.bundle.js']; runtime.write_text(json.dumps(entries, indent=4) + '\\n'); missing=[value for value in entries.values() if not (Path('/home/frappe/frappe-bench') / value.lstrip('/')).is_file()]; assert len(entries) > 1 and not missing, f'invalid runtime asset manifest: {missing}'"
 LABEL org.opencontainers.image.revision=${APP_COMMIT}
