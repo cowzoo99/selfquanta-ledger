@@ -21,6 +21,20 @@
       "parent_account_number": "1002"
     },
     {
+      "account_number": "100202",
+      "account_name": "微信零钱",
+      "root_type": "Asset",
+      "report_type": "Balance Sheet",
+      "parent_account_number": "1002"
+    },
+    {
+      "account_number": "100203",
+      "account_name": "支付宝余额",
+      "root_type": "Asset",
+      "report_type": "Balance Sheet",
+      "parent_account_number": "1002"
+    },
+    {
       "account_number": "1122",
       "account_name": "应收账款",
       "root_type": "Asset",
