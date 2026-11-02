@@ -10,7 +10,7 @@ from unittest.mock import patch
 import frappe
 
 from internal_ledger.tests.test_install import make_company
-from internal_ledger.tests.test_classifier import account, add_rule, set_up as classification_set_up
+from internal_ledger.tests.test_classifier import account, add_rule
 
 
 def fixture(source):
@@ -29,6 +29,14 @@ def rejects(call, message):
         assert message in str(exc), str(exc)
     else:
         raise AssertionError("Expected explicit rejection: " + message)
+
+
+def set_up_import_classification():
+    from internal_ledger.install import install_chart
+
+    company = frappe.get_single("Internal Ledger Settings").company
+    install_chart(company)
+    frappe.flags.classification_company = company
 
 
 def test_bank_contract():
@@ -217,7 +225,7 @@ def test_confirm_import_auto_processes_normal_rows_and_returns_summary():
     from internal_ledger.api.import_api import preview_import, confirm_import
     from internal_ledger.accounting.batch_workflow import process_transactions
 
-    classification_set_up()
+    set_up_import_classification()
     add_rule(kind="keyword", value="办公")
     encoded = base64.b64encode(fixture("bank")).decode()
     preview = preview_import("bank", encoded, account("1001"))
@@ -244,7 +252,7 @@ def test_confirm_import_preserves_batch_attachment_and_later_rows_after_draft_fa
     from internal_ledger.api.import_api import preview_import, confirm_import
     from internal_ledger.accounting import batch_workflow
 
-    classification_set_up()
+    set_up_import_classification()
     add_rule(kind="keyword", value="办公")
     add_rule(kind="keyword", value="交通")
     encoded = base64.b64encode(fixture("bank")).decode()
