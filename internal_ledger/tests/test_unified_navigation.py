@@ -164,6 +164,7 @@ def test_setup_home_is_redirected_inside_desk_for_ledger_users():
     assert 'route[0] === "setup" && route[1] === "home"' in script
     assert 'route[0] === "Workspaces" && route[1] === "Home"' in script
     assert 'window.location.pathname === "/desk" && route[0] === ""' in script
+    assert 'window.location.assign("/desk/ledger-workbench/dashboard")' in script
     assert '(frappe.user_roles || []).some' in script
     assert 'frappe.set_route("ledger-workbench", "dashboard")' in script
     assert "setInterval" in script and "clearInterval" in script

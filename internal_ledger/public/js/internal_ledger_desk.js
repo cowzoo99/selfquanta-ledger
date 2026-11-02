@@ -8,7 +8,11 @@ function redirectSetupHomeToLedger() {
   const isCurrentSetupHome = route[0] === "Workspaces" && route[1] === "Home"
     && window.location.pathname === "/desk/setup/home";
   const isDeskLauncher = window.location.pathname === "/desk" && route[0] === "";
-  if (canUseLedger && (isLegacySetupHome || isCurrentSetupHome || isDeskLauncher)) {
+  if (canUseLedger && isDeskLauncher) {
+    window.location.assign("/desk/ledger-workbench/dashboard");
+    return true;
+  }
+  if (canUseLedger && (isLegacySetupHome || isCurrentSetupHome)) {
     frappe.set_route("ledger-workbench", "dashboard");
     return true;
   }
