@@ -1,13 +1,14 @@
 <script setup>
-import {ref, computed} from 'vue';
+import {ref, computed, watch} from 'vue';
 import DraftLines from '../components/DraftLines.vue';
 import ManualClassificationForm from '../components/ManualClassificationForm.vue';
 import {call, errorMessage} from '../api';
-const props = defineProps({items: Array, canWrite: Boolean, loading: Boolean});
+const props = defineProps({items: Array, canWrite: Boolean, loading: Boolean, initialFilter: String});
 const emit = defineEmits(['refresh']);
 const selected = ref([]), active = ref(null), busy = ref(false), error = ref(''), outcomes = ref([]), reason = ref('');
 const savedVersion = ref(''), filter = ref('待分类'), selectedTransactions = ref([]), confirmation = ref('');
 const filters = ['疑似重复', '待分类', '待审核', '待过账', '已过账'];
+watch(() => props.initialFilter, value => { filter.value = filters.includes(value) ? value : '待分类'; }, {immediate: true});
 const statuses = {Draft: '待审核', Rejected: '已驳回', Approved: '待过账', Posted: '已过账'};
 const resultStatuses = {created: '已生成', skipped: '已跳过', failed: '失败'};
 function duplicate(item) {
@@ -155,7 +156,7 @@ async function postBatch() {
             <button v-if="active.draft.status === 'Rejected'" :disabled="busy" @click="act('reopen_draft', {name: active.draft.name})">重开为草稿</button>
           </template>
         </template>
-        <a v-else-if="duplicate(active)" :href="`/app/imported-transaction/${encodeURIComponent(active.transaction.name)}`">前往重复审核（只读查看重复证据）</a>
+        <a v-else-if="duplicate(active)" href="/app/ledger-workbench/duplicates">前往重复流水复核</a>
         <ManualClassificationForm v-else-if="canWrite && ['unmatched', 'conflict'].includes(active.classification?.status)" :transaction="active.transaction" :disabled="busy" @classified="classified" />
         <button v-else-if="canWrite" :disabled="busy || !!active.error" @click="act('prepare_draft', {tx_name: active.transaction.name})">分类并生成待审核草稿</button>
       </div>

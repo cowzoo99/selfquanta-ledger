@@ -1,16 +1,20 @@
 <script setup>
-import {ref, onMounted} from 'vue';
+import {ref, computed, onMounted} from 'vue';
 import Dashboard from './pages/Dashboard.vue';
 import ImportPreview from './pages/ImportPreview.vue';
 import ReviewCenter from './pages/ReviewCenter.vue';
 import EnterpriseMembers from './pages/EnterpriseMembers.vue';
+import DuplicateReview from './pages/DuplicateReview.vue';
 import {call, errorMessage, setLanguage} from './api';
-const page = ref('dashboard'), month = ref(frappe.datetime.get_today().slice(0, 7));
+const props = defineProps({view: {type: String, default: 'dashboard'}, filter: {type: String, default: ''}});
+const month = ref(frappe.datetime.get_today().slice(0, 7));
 const counts = ref(null), items = ref([]), loading = ref(false), error = ref('');
 const language = ref((frappe.boot?.lang || '').startsWith('zh') ? 'zh' : 'en');
 const savingLanguage = ref(false);
 const canWrite = frappe.session.user === 'Administrator' || frappe.user_roles.includes('账套管理员');
-const navigation = [['dashboard', '工作台'], ['import', '文件智能导入'], ['review', '审核中心'], ...(canWrite ? [['members', '企业成员']] : [])];
+const navigation = [['dashboard', '业务总览'], ['import', '文件智能导入'], ['duplicates', '重复流水复核'], ['classification', '智能分类'], ['review', '凭证中心'], ...(canWrite ? [['members', '企业成员']] : [])];
+const page = computed(() => navigation.some(entry => entry[0] === props.view) ? props.view : 'dashboard');
+const reviewFilter = computed(() => page.value === 'classification' ? '待分类' : (props.filter || '待审核'));
 async function refresh() {
   loading.value = true; error.value = '';
   try {
@@ -34,32 +38,35 @@ onMounted(refresh);
 
 <template>
   <div class="ledger-app">
-    <nav aria-label="内账工作台导航"><h2>协同内账</h2>
+    <main>
+      <header>
+      <h2>{{ navigation.find(entry => entry[0] === page)?.[1] }}</h2>
+      <div class="ledger-tabs" role="group" aria-label="智能内账视图">
+        <a v-for="entry in navigation" :key="entry[0]" :href="`/app/ledger-workbench/${entry[0]}`" :aria-current="page === entry[0] ? 'page' : undefined">{{ entry[1] }}</a>
+      </div>
       <label class="language-switch" for="ledger-language">界面语言
         <select id="ledger-language" v-model="language" :disabled="savingLanguage" @change="changeLanguage">
           <option value="zh">简体中文</option><option value="en">English</option>
         </select>
       </label>
-      <button v-for="entry in navigation" :key="entry[0]" :aria-current="page === entry[0] ? 'page' : undefined" @click="page = entry[0]">{{ entry[1] }}</button>
       <a v-if="canWrite" href="/app/classification-rule">维护分类规则</a>
-    </nav>
-    <main>
-      <header><label for="ledger-month">月度摘要</label><input id="ledger-month" v-model="month" type="month" @change="refresh"><button :disabled="loading" @click="refresh">刷新</button>
-        <dl v-if="counts" class="ledger-counts"><div><dt>收入</dt><dd>{{ counts.income }}</dd></div><div><dt>支出</dt><dd>{{ counts.expense }}</dd></div><div><dt>待分类</dt><dd>{{ counts.pending_classification }}</dd></div><div><dt>待审核</dt><dd>{{ counts.pending_review }}</dd></div><div><dt>已过账</dt><dd>{{ counts.posted }}</dd></div></dl>
+      <label for="ledger-month">月度摘要</label><input id="ledger-month" v-model="month" type="month" @change="refresh"><button :disabled="loading" @click="refresh">刷新</button>
       </header>
       <p v-if="error" role="alert">{{ error }}</p>
-      <Dashboard v-if="page === 'dashboard' || (page === 'members' && !canWrite)" :items="items" :loading="loading" @navigate="page = $event" />
+      <Dashboard v-if="page === 'dashboard'" :items="items" :counts="counts" :month="month" :can-write="canWrite" :loading="loading" />
       <ImportPreview v-else-if="page === 'import'" :can-write="canWrite" @imported="refresh" />
+      <DuplicateReview v-else-if="page === 'duplicates'" :can-write="canWrite" @refresh="refresh" />
       <EnterpriseMembers v-else-if="page === 'members' && canWrite" :active="page === 'members'" />
-      <ReviewCenter v-else :items="items" :loading="loading" :can-write="canWrite" @refresh="refresh" />
+      <ReviewCenter v-else :items="items" :loading="loading" :can-write="canWrite" :initial-filter="reviewFilter" @refresh="refresh" />
     </main>
   </div>
 </template>
 
 <style>
-.ledger-app { display: grid; grid-template-columns: 160px minmax(0, 1fr); gap: 24px; padding: 20px; color: var(--text-color, #222); }
-.ledger-app nav { display: flex; flex-direction: column; gap: 12px; }
-.language-switch { display: grid; gap: 4px; font-size: 13px; }
+.ledger-app { padding: 20px; color: var(--text-color, #222); }
+.ledger-tabs { display: flex; flex-wrap: wrap; gap: 16px; margin-bottom: 12px; }
+.ledger-tabs [aria-current="page"] { font-weight: bold; text-decoration: underline; }
+.language-switch { display: inline-flex; gap: 8px; align-items: center; margin-right: 16px; font-size: 13px; }
 .ledger-app main, .ledger-detail { min-width: 0; }
 .ledger-app header, .ledger-app section { padding: 16px; border: 1px solid var(--border-color, #ddd); border-radius: 8px; margin-bottom: 20px; }
 .ledger-app button { padding: 8px 12px; margin: 4px; border: 1px solid #66788a; border-radius: 5px; background: var(--card-bg, white); color: inherit; }
@@ -71,6 +78,9 @@ onMounted(refresh);
 .ledger-app label { margin-top: 8px; }
 .ledger-counts { display: flex; flex-wrap: wrap; gap: 24px; margin: 16px 0 0; }
 .ledger-counts dd { font-size: 20px; margin: 0; }
+.ledger-cards, .duplicate-evidence { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); gap: 16px; }
+.ledger-card { display: block; padding: 16px; border: 1px solid var(--border-color, #ddd); border-radius: 8px; }
+.ledger-card strong, .ledger-card span { display: block; margin-bottom: 8px; }
 .ledger-review { display: grid; grid-template-columns: minmax(180px, 1fr) minmax(0, 2fr); gap: 20px; }
 .ledger-items { list-style: none; padding: 0; max-height: 650px; overflow-y: auto; }
 .ledger-items li { border-bottom: 1px solid #ddd; padding: 12px 0; display: grid; gap: 6px; overflow-wrap: anywhere; }
@@ -81,5 +91,5 @@ onMounted(refresh);
 .ledger-detail dl { display: grid; grid-template-columns: minmax(90px, 120px) minmax(0, 1fr); gap: 6px 10px; }
 .ledger-detail dd { margin: 0; overflow-wrap: anywhere; }
 .ledger-app [role="alert"] { color: #a12621; }
-@media (max-width: 800px) { .ledger-app, .ledger-review { grid-template-columns: minmax(0, 1fr); } .ledger-app { padding: 6px; gap: 10px; } .ledger-app nav { flex-direction: row; flex-wrap: wrap; align-items: center; } }
+@media (max-width: 800px) { .ledger-review { grid-template-columns: minmax(0, 1fr); } .ledger-app { padding: 6px; } }
 </style>

@@ -30,6 +30,7 @@ def ensure_roles() -> None:
     for role in ROLE_PERMISSIONS:
         if not frappe.db.exists("Role", role):
             frappe.get_doc({"doctype": "Role", "role_name": role}).insert()
+    ensure_workspace()
     from frappe.permissions import add_permission, rights
     from internal_ledger.permissions import LEDGER_DOCTYPES
 
@@ -54,6 +55,15 @@ def ensure_roles() -> None:
     frappe.clear_cache()
     if before != _permission_state():
         audit_install_change("ensure_roles", "Internal Ledger Settings", "Internal Ledger Settings")
+
+
+def ensure_workspace() -> None:
+    require_ledger_admin()
+    if not frappe.db.exists("Workspace", "SelfLedger 企业经营与智能内账"):
+        from frappe.modules.import_file import import_file_by_path
+
+        path = Path(__file__).parent / "internal_ledger/workspace/selfledger/selfledger.json"
+        import_file_by_path(str(path))
 
 
 def _permission_state():
