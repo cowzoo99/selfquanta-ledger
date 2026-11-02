@@ -39,9 +39,12 @@ def redirect_temporary_password(login_manager) -> None:
     if frappe.db.get_value("User", user, "internal_ledger_must_change_password"):
         url = frappe.get_doc("User", user)._reset_password(send_email=False)
         frappe.cache.hset("redirect_after_login", user, url)
+        frappe.cache.hdel("home_page", user)
+        frappe.local.flags.home_page = url
         return
     if user == "Administrator" or LEDGER_ROLES.intersection(frappe.get_roles(user)):
-        frappe.cache.hset("redirect_after_login", user, LEDGER_HOME)
+        frappe.cache.hdel("home_page", user)
+        frappe.local.flags.home_page = LEDGER_HOME
 
 
 def _request_command():

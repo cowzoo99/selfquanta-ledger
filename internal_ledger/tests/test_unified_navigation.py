@@ -144,13 +144,17 @@ def test_ledger_login_redirects_to_unified_home_without_overriding_password_rese
     from internal_ledger.tests.test_permissions import user
 
     actor = user("账务查看者")
-    frappe.cache.hdel("redirect_after_login", actor)
+    frappe.cache.hset("home_page", actor, "app/setup/home")
     redirect_temporary_password(SimpleNamespace(user=actor))
-    assert frappe.cache.hget("redirect_after_login", actor) == "/app/ledger-workbench/dashboard"
+    assert frappe.local.flags.home_page == "/app/ledger-workbench/dashboard"
+    assert not frappe.cache.hget("home_page", actor)
 
     frappe.db.set_value("User", actor, "internal_ledger_must_change_password", 1)
     redirect_temporary_password(SimpleNamespace(user=actor))
-    assert "/update-password?key=" in frappe.cache.hget("redirect_after_login", actor)
+    reset = frappe.cache.hget("redirect_after_login", actor)
+    assert "/update-password?key=" in reset
+    assert frappe.local.flags.home_page == reset
+    frappe.local.flags.pop("home_page", None)
 
 
 def test_duplicate_page_contract_and_dedicated_review_link():
