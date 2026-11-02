@@ -1,6 +1,7 @@
 import json
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 import frappe
 
@@ -136,6 +137,20 @@ def test_default_workspace_patch_sets_only_blank_ledger_users():
     assert frappe.db.get_value("User", manager, "default_workspace") == "Selling"
     execute()
     assert frappe.db.get_value("User", viewer, "default_workspace") == TITLE
+
+
+def test_ledger_login_redirects_to_unified_home_without_overriding_password_reset():
+    from internal_ledger.member_security import redirect_temporary_password
+    from internal_ledger.tests.test_permissions import user
+
+    actor = user("账务查看者")
+    frappe.cache.hdel("redirect_after_login", actor)
+    redirect_temporary_password(SimpleNamespace(user=actor))
+    assert frappe.cache.hget("redirect_after_login", actor) == "/app/ledger-workbench/dashboard"
+
+    frappe.db.set_value("User", actor, "internal_ledger_must_change_password", 1)
+    redirect_temporary_password(SimpleNamespace(user=actor))
+    assert "/update-password?key=" in frappe.cache.hget("redirect_after_login", actor)
 
 
 def test_duplicate_page_contract_and_dedicated_review_link():

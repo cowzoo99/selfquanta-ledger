@@ -11,6 +11,8 @@ ALLOWED_RESET_COMMANDS = {
     "frappe.auth.logout",
 }
 ALLOWED_RESET_PATHS = {"/update-password"}
+LEDGER_HOME = "/app/ledger-workbench/dashboard"
+LEDGER_ROLES = {"账套管理员", "账务查看者"}
 
 
 def validate_temporary_password(password: str, confirm_password: str, user_data: tuple | None = None) -> None:
@@ -37,6 +39,9 @@ def redirect_temporary_password(login_manager) -> None:
     if frappe.db.get_value("User", user, "internal_ledger_must_change_password"):
         url = frappe.get_doc("User", user)._reset_password(send_email=False)
         frappe.cache.hset("redirect_after_login", user, url)
+        return
+    if user == "Administrator" or LEDGER_ROLES.intersection(frappe.get_roles(user)):
+        frappe.cache.hset("redirect_after_login", user, LEDGER_HOME)
 
 
 def _request_command():
