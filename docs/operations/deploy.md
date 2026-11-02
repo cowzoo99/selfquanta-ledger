@@ -23,20 +23,52 @@ sudo env WIREGUARD_ENDPOINT='SERVER_PUBLIC_IP_OR_HOSTNAME' bash /srv/selfquanta/
 
 ## Build the immutable image
 
-Place the application checkout at `/srv/selfquanta/ledger` and the pinned upstream checkout at `/srv/selfquanta/frappe_docker`. Do not put credentials in either remote URL. Build the pre-release from `main`:
+Place the application checkout at `/srv/selfquanta/ledger` and the pinned upstream checkout at `/srv/selfquanta/frappe_docker`. Do not put credentials in either remote URL. Set `RELEASE_COMMIT` to the reviewed full 40-character commit from the release report and `INTERNAL_LEDGER_APP_REF` to its published release tag. Retain that tag; never build a release by following a moving `main` head. The build script also verifies that the remote ref points to the exact checkout:
 
 ```powershell
-git -C /srv/selfquanta/ledger checkout main
+$releaseCommit = $env:RELEASE_COMMIT
+if ($releaseCommit -notmatch '^[0-9a-f]{40}$' -or $releaseCommit -eq ('0' * 40)) { throw 'Set the reviewed RELEASE_COMMIT' }
+if (-not $env:INTERNAL_LEDGER_APP_REF) { throw 'Set the published release tag' }
+git -C /srv/selfquanta/ledger checkout --detach $releaseCommit
+if ($LASTEXITCODE -ne 0) { throw 'Release checkout failed' }
 git -C /srv/selfquanta/frappe_docker checkout v4.1.1
+if ($LASTEXITCODE -ne 0) { throw 'Upstream checkout failed' }
 git -C /srv/selfquanta/frappe_docker rev-parse HEAD
 
 $env:FRAPPE_DOCKER_DIR = '/srv/selfquanta/frappe_docker'
-$env:INTERNAL_LEDGER_APP_REF = 'main'
 $env:INTERNAL_LEDGER_BUILD_TEMP = '/srv/selfquanta/build'
 pwsh -NoProfile -File /srv/selfquanta/ledger/infra/build_image.ps1
+if ($LASTEXITCODE -ne 0) { throw 'Application image build failed' }
+docker build --tag "internal-ledger-ocr:$releaseCommit" /srv/selfquanta/ledger/ocr_service
+if ($LASTEXITCODE -ne 0) { throw 'OCR image build failed' }
 ```
 
 The script refuses a dirty worktree, a missing/non-network origin, an app ref that does not point to `HEAD`, or a modified/wrong `frappe_docker` checkout. It writes a temporary `apps.json` only in the explicit scratch directory, passes it as a BuildKit secret, removes it, and creates `internal-ledger:<40-character-git-sha>`.
+
+Do not overwrite either SHA tag. Record the commit, both image IDs/digests and the prior release's image IDs in the restricted release record. For an incremental build, use `infra/Dockerfile.app-layer` with `APP_COMMIT` equal to this exact commit and `BASE_IMAGE` equal to a previously verified image digest; verify the resulting revision label before promotion. A successful Docker build alone is insufficient: run this read-only gate against the candidate app image before attaching any site volumes:
+
+```bash
+set -euo pipefail
+: "${RELEASE_COMMIT:?Set the reviewed full commit}"
+candidate_image="internal-ledger:${RELEASE_COMMIT}"
+docker image inspect "$candidate_image" --format '{{.Id}} {{index .Config.Labels "org.opencontainers.image.revision"}}'
+docker image inspect "internal-ledger-ocr:${RELEASE_COMMIT}" --format '{{.Id}}'
+docker run --rm --entrypoint python "$candidate_image" -c '
+import json
+from pathlib import Path
+root = Path("/home/frappe/frappe-bench")
+entries = json.loads((root / "assets/assets.json").read_text())
+assert isinstance(entries, dict) and len(entries) >= 57, "at least 57 runtime asset entries required"
+for bundle in ("desk.bundle.js", "ledger_workbench.bundle.js"):
+    assert bundle in entries and entries[bundle].endswith(".js"), bundle
+for value in entries.values():
+    assert isinstance(value, str) and value.startswith("/assets/"), "invalid asset path"
+    path = (root / value.lstrip("/")).resolve()
+    assert path.is_relative_to(root) and path.is_file(), "missing or unsafe runtime asset"
+print("PASS: runtime assets", len(entries), "entries; zero missing; Desk and ledger present")'
+```
+
+Use the runtime `assets/assets.json`, not only the app's generated `sites/assets/assets.json`: a ledger-only manifest can hide missing Desk bundles. The deterministic PowerShell equivalent accepts an exported image filesystem: `pwsh -NoProfile -File infra/test-config.ps1 -StaticOnly -AssetManifestPath <exported-bench>/assets/assets.json -AssetRoot <exported-bench>`. Both arguments are required together. Run document-parser tests in the candidate image on an isolated test site before approval; keep the full test log, manifest gate output and image IDs with the release record. Never run synthetic acceptance against the production site.
 
 ## Runtime secrets and configuration
 
@@ -55,6 +87,7 @@ Use long random passwords. Keep `db-root-password` and `site-admin-password` own
 
 ```dotenv
 INTERNAL_LEDGER_IMAGE=internal-ledger:<git-sha>
+OCR_IMAGE=internal-ledger-ocr:<same-git-sha>
 SITE_NAME=ledger.selfquanta.com
 COMPOSE_PROJECT_NAME=selfquanta-ledger
 DB_ROOT_PASSWORD_FILE=/etc/selfquanta/ledger/db-root-password
@@ -71,7 +104,7 @@ COSCLI_CONFIG_FILE=/etc/selfquanta/ledger/cos.yaml
 COS_BACKUP_URI=cos://selfquanta-ledger-backup/production/ledger/
 ```
 
-Keep the runtime file root-readable and outside Git. The runtime example contains an all-zero image sentinel and must not be deployed unchanged.
+Replace both placeholders with the same reviewed full 40-character commit. Keep the runtime file root-readable and outside Git. The runtime example contains an all-zero image sentinel and must not be deployed unchanged. The static gate rejects a configured mutable app/OCR image; explicitly configure `OCR_IMAGE` rather than accepting Compose's development `local` default.
 
 ## Install and operate the systemd services
 
@@ -97,7 +130,7 @@ sudo systemctl status selfquanta-ledger
 sudo journalctl -u selfquanta-ledger --since today
 ```
 
-The unit runs `infra/test-config.ps1 -StaticOnly` before Compose startup. To apply a deliberate runtime or image change, restart and inspect the service:
+The unit runs `infra/test-config.ps1 -StaticOnly` before Compose startup. For a deliberate runtime or image change, first complete the backup/migrate/switch sequence below; then restart and inspect the service:
 
 ```bash
 sudo systemctl restart selfquanta-ledger
@@ -111,16 +144,48 @@ After first login, set timezone Asia/Shanghai, currency CNY, the accounting year
 
 ## Upgrade and rollback
 
-1. Run and verify an encrypted database-plus-files backup.
-2. Test the new exact image and migration in a non-production project.
-3. Save the current `INTERNAL_LEDGER_IMAGE` value as the rollback image, then set it to the new SHA image in `/etc/selfquanta/ledger/runtime.env`.
-4. Run `bench --site <site> migrate` through a one-shot backend command, then restart the systemd service.
-5. Check health, login, a read-only report, and the audit log.
+Use a maintenance window. Before stopping any service, test the exact candidate images and migration in an isolated project, complete a restore drill, and retain the protected current runtime configuration and previous SHA image IDs. Keep the existing private bindings, TLS/secret paths and Compose project name. These operator commands require the normal authorized production change approval; this document does not execute them.
 
-If the upgrade must be rolled back, restore the previous SHA image value, `INTERNAL_LEDGER_IMAGE=internal-ledger:<previous-git-sha>`, in `/etc/selfquanta/ledger/runtime.env`, then run `sudo systemctl restart selfquanta-ledger` and inspect `sudo systemctl status selfquanta-ledger` and its journal. A code-image rollback does not reverse database migrations; use the verified isolated backup restore procedure when data rollback is required.
+1. Stop new writes and background jobs for a consistent backup. Load the existing runtime and run `infra/backup-and-upload.ps1`; require process exit 0 and verify the archive checksum/manifest and COS copy. A backup/upload failure ends the release before migration. Never print or copy the runtime secrets into the release log.
+2. Stop the old app services while keeping the database, Redis and volumes. Use the candidate image only for a one-shot migration; leave the persistent `INTERNAL_LEDGER_IMAGE` and `OCR_IMAGE` settings unchanged until this exits 0.
+3. On migration failure, stop here. Do not start the candidate services or edit the persistent image values. Diagnose against the retained backup; partially applied schema/data changes may require restore rather than restarting the old code.
+4. Only after migration exit 0, set the two reviewed SHA image values in the protected runtime file and restart the systemd service. Run the read-only smoke below before admitting users or restarting the backup timer.
+
+Example maintenance sequence (run as root with the approved release commit already exported; the helper is local to this shell):
+
+```bash
+set -euo pipefail
+set -a; . /etc/selfquanta/ledger/runtime.env; set +a
+: "${RELEASE_COMMIT:?Set the reviewed full commit}"
+[[ "$RELEASE_COMMIT" =~ ^[0-9a-f]{40}$ && ! "$RELEASE_COMMIT" =~ ^0{40}$ ]]
+candidate_image="internal-ledger:${RELEASE_COMMIT}"
+dc() { docker compose --env-file /srv/selfquanta/ledger/infra/versions.env -f /srv/selfquanta/ledger/infra/compose.yaml "$@"; }
+sudo systemctl stop selfquanta-ledger-backup.timer
+dc exec -T backend bench --site "$SITE_NAME" set-maintenance-mode on
+dc exec -T backend bench --site "$SITE_NAME" disable-scheduler
+dc stop scheduler queue-short queue-long
+pwsh -NoProfile -File /srv/selfquanta/ledger/infra/backup-and-upload.ps1
+# set -e stops here unless backup and upload returned 0. Verify its matching manifest/checksum.
+dc stop gateway frontend websocket backend
+INTERNAL_LEDGER_IMAGE="$candidate_image" dc run --rm --no-deps --entrypoint bench \
+  backend --site "$SITE_NAME" migrate
+# Stop on nonzero migration; do not switch the persistent runtime before this point.
+```
+
+The final `migrate` command runs the candidate image through a temporary environment override, preserving the current runtime file for rollback. Keep maintenance enabled on failure. Save the current root-owned runtime to a unique restricted backup path before editing it; record that path in the release record. After successful migration, edit only `INTERNAL_LEDGER_IMAGE` and `OCR_IMAGE` to the reviewed SHA values, reload the environment, run `sudo systemctl restart selfquanta-ledger`, and inspect health before clearing maintenance. After read-only smoke succeeds, enable the site's scheduler, disable maintenance, and restart `selfquanta-ledger-backup.timer`.
+
+For rollback, restore the previous SHA image values and the saved configuration, then run `sudo systemctl restart selfquanta-ledger` and inspect `sudo systemctl status selfquanta-ledger` and its journal. Keep maintenance enabled until checks pass. A code-image rollback does not reverse database migrations. If schema/data compatibility is uncertain, keep services stopped and restore the selected encrypted database-plus-files backup using the verified [isolated restore procedure](backup-restore.md#isolated-restore-drill), including the original encryption key. Do not use `down --volumes`, remove production volumes, or run Docker-wide prune during rollback.
+
+Run a restore drill before promotion using the backup manifest's exact image and a unique `ledger-restore-*` project. `infra/restore-check.ps1 -ValidateOnly` must succeed before the actual drill; then require a durable `status: PASS` report matching Company, Journal Entry and File counts. A failed drill retains its isolated project for diagnosis and blocks promotion. The drill verifies recovery in separate fresh volumes; production restoration remains a deliberate operator action using the selected verified backup, never an automatic rollback script.
+
+## Read-only release smoke and real-file acceptance
+
+While still on WireGuard, verify service/container health and `/api/method/ping`. Read the deployed runtime asset manifest and GET its exact Desk and ledger bundle URLs; both must return HTTP 200 with JavaScript content. Check the authenticated unified `SelfLedger 企业经营与智能内账` Workspace, the configured company and its enabled leaf accounts, workbench counts, a read-only report and audit history. Check Compose's published ports and ensure `ocr` has none; only the gateway may publish ports. OCR health is internal (`http://ocr:8765/health`), with no public OCR route. Do not print source IDs, bank details or statement contents in smoke logs. Keep fixture imports and automated posting on `test.localhost`, where tests roll back database and source-file fixtures.
+
+Real accounting acceptance remains an administrator decision: the administrator selects an approved real statement file, uploads it through the UI, reviews Pending/Confirmed duplicate exclusions, supplies a release note where appropriate, manually classifies an unmatched row and checks each debit/credit line and company. The administrator must explicitly click the UI approval/posting confirmation before any real Journal Entry is created. Record only the resulting real Journal Entry reference and acceptance result in restricted evidence. Automated smoke must never upload a fabricated statement or approve/post entries in the production company. Public access without WireGuard is separately gated Task 7 and is not part of this release-readiness task.
 
 Never log passwords, repository credentials, full bank numbers, or statement content. Preserve the upstream Frappe/ERPNext and application license/source notices when distributing the service or image.
 
 ## Current acceptance boundary
 
-No live production deployment, public cutover, or production backup/restore is verified by this runbook update. Live image, restart, backup, and restore acceptance remains pending until the owner supplies the real remote and a Docker host.
+No live production deployment, public cutover, or production backup/restore is verified by this readiness task. Record live image, restart, backup/restore and administrator real-file acceptance separately from local automated evidence; public cutover remains Task 7.

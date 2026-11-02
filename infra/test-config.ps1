@@ -1,6 +1,8 @@
 [CmdletBinding()]
 param(
     [string]$InfraRoot = $PSScriptRoot,
+    [string]$AssetManifestPath,
+    [string]$AssetRoot,
     [switch]$StaticOnly,
     [switch]$PrivateAccessOnly,
     [switch]$BackupUploadOnly
@@ -20,6 +22,32 @@ function Get-ServiceBlock {
     $match = [regex]::Match($Yaml, $pattern)
     Assert-True $match.Success "Missing Compose service: $Name"
     return $match.Groups['body'].Value
+}
+
+foreach ($imageVariable in @('INTERNAL_LEDGER_IMAGE', 'OCR_IMAGE')) {
+    $image = [Environment]::GetEnvironmentVariable($imageVariable)
+    if ($image) {
+        Assert-True ($image -match '^[a-zA-Z0-9][a-zA-Z0-9._/:-]*(?::[0-9a-f]{40}|@sha256:[0-9a-f]{64})$' -and
+                     $image -notmatch ':0{40}$|@sha256:0{64}$') "$imageVariable must use an immutable image digest or exact nonzero 40-character commit tag"
+    }
+}
+
+Assert-True ([bool]$AssetManifestPath -eq [bool]$AssetRoot) 'AssetManifestPath and AssetRoot must be supplied together'
+if ($AssetManifestPath) {
+    $assetBase = (Resolve-Path -LiteralPath $AssetRoot).Path
+    $manifest = Get-Content -Raw -LiteralPath $AssetManifestPath | ConvertFrom-Json -AsHashtable
+    Assert-True ($manifest -is [System.Collections.IDictionary] -and $manifest.Count -ge 57) 'Asset manifest requires at least 57 entries'
+    foreach ($bundle in @('desk.bundle.js', 'ledger_workbench.bundle.js')) {
+        Assert-True ($manifest.Contains($bundle) -and $manifest[$bundle] -is [string] -and
+                     $manifest[$bundle] -match '\.js$') "Asset manifest requires $bundle"
+    }
+    foreach ($entry in $manifest.Values) {
+        Assert-True ($entry -is [string] -and $entry.StartsWith('/assets/')) 'Asset manifest paths must start with /assets/'
+        $assetFile = [IO.Path]::GetFullPath((Join-Path $assetBase $entry.TrimStart('/')))
+        Assert-True ($assetFile.StartsWith($assetBase + [IO.Path]::DirectorySeparatorChar, [StringComparison]::Ordinal)) 'Asset manifest path escapes AssetRoot'
+        Assert-True (Test-Path -LiteralPath $assetFile -PathType Leaf) "Asset manifest missing file: $entry"
+    }
+    Write-Host "Asset manifest gate passed: $($manifest.Count) entries; zero missing files; Desk and ledger bundles present."
 }
 
 $required = @(
@@ -119,8 +147,16 @@ Assert-True ($runtime -match '(?m)^HTTP_BIND=10\.77\.0\.1\r?$') 'Pre-ICP public 
 Assert-True ($runtime -match '(?m)^HTTPS_BIND=10\.77\.0\.1\r?$') 'Pre-ICP public exposure: HTTPS must bind only to WireGuard'
 $runtimeCrlf = $runtime.Replace("`r`n", "`n").Replace("`n", "`r`n")
 Assert-True ($runtimeCrlf -match '(?m)^SITE_NAME=ledger\.selfquanta\.com\r?$' -and $runtimeCrlf -match '(?m)^COMPOSE_PROJECT_NAME=selfquanta-ledger\r?$') 'Runtime identity values must accept CRLF line endings'
-Assert-True ($runtime -match '/etc/selfquanta/ledger/db-root-password') 'Database secret path is wrong'
-Assert-True ($runtime -match '/etc/selfquanta/ledger/site-admin-password') 'Admin secret path is wrong'
+Assert-True ($runtime -match '(?m)^DB_ROOT_PASSWORD_FILE=/etc/selfquanta/ledger/db-root-password\r?$') 'Database secret path is wrong'
+Assert-True ($runtime -match '(?m)^SITE_ADMIN_PASSWORD_FILE=/etc/selfquanta/ledger/site-admin-password\r?$') 'Admin secret path is wrong'
+Assert-True ($runtime -match '(?m)^INTERNAL_LEDGER_IMAGE=internal-ledger:[0-9a-f]{40}\r?$') 'Runtime image must use an exact 40-character commit tag'
+foreach ($secretSetting in @(
+    'TLS_CERTIFICATE_FILE=/etc/selfquanta/ledger/internal-fullchain.pem',
+    'TLS_PRIVATE_KEY_FILE=/etc/selfquanta/ledger/internal-privkey.pem',
+    'BACKUP_KEY_FILE=/etc/selfquanta/ledger/backup.key'
+)) {
+    Assert-True ($runtime -match "(?m)^$([regex]::Escape($secretSetting))\r?$") "Runtime secret/TLS path is wrong: $secretSetting"
+}
 Assert-True ($runtime -notmatch '(?im)(secret|password|token)=.+') 'Runtime example must not contain secret values'
 
 $repositoryRoot = (Resolve-Path (Join-Path $InfraRoot '..')).Path
@@ -132,9 +168,10 @@ Assert-True ($versions -match '(?m)^REDIS_IMAGE=redis:8\.2-alpine\r?$') 'Redis i
 Assert-True ($versions -notmatch '(?im):latest\s*$') 'Mutable latest tag is forbidden'
 
 $compose = Get-Content -Raw -LiteralPath (Join-Path $InfraRoot 'compose.yaml')
+Assert-True ($compose.Contains('image: ${INTERNAL_LEDGER_IMAGE:?set INTERNAL_LEDGER_IMAGE to internal-ledger:<git-sha>}')) 'Compose must require INTERNAL_LEDGER_IMAGE'
 Assert-True ($compose -match 'UPSTREAM_REAL_IP_ADDRESS:\s+172\.16\.0\.0/12') 'Frontend must trust the Docker bridge CIDR without depending on the gateway service DNS name'
 Assert-True ($compose -notmatch 'UPSTREAM_REAL_IP_ADDRESS:\s+gateway') 'Frontend must not create a gateway DNS startup cycle'
-foreach ($internalService in @('db', 'redis-cache', 'redis-queue', 'configurator', 'create-site', 'backend', 'restore-runner', 'frontend', 'websocket', 'queue-short', 'queue-long', 'scheduler')) {
+foreach ($internalService in @('db', 'redis-cache', 'redis-queue', 'configurator', 'create-site', 'backend', 'ocr', 'restore-runner', 'frontend', 'websocket', 'queue-short', 'queue-long', 'scheduler')) {
     Assert-True ((Get-ServiceBlock -Yaml $compose -Name $internalService) -notmatch '(?m)^\s{4}ports:\s*$') "$internalService must not publish host ports"
 }
 $backend = Get-ServiceBlock -Yaml $compose -Name 'backend'
@@ -149,9 +186,14 @@ $gateway = Get-ServiceBlock -Yaml $compose -Name 'gateway'
 Assert-True ($gateway -match '(?m)^\s{4}ports:\s*$') 'Gateway must publish HTTP/HTTPS ports'
 Assert-True ($gateway -match 'HTTP_PORT:-80}:8080') 'HTTP port 80 must map to the gateway'
 Assert-True ($gateway -match 'HTTPS_PORT:-443}:8443') 'HTTPS port 443 must map to the gateway'
+Assert-True ($gateway.Contains('${HTTP_BIND:-0.0.0}:${HTTP_PORT:-80}:8080') -and $gateway.Contains('${HTTPS_BIND:-0.0.0}:${HTTPS_PORT:-443}:8443')) 'Gateway must respect the configured private HTTP/HTTPS bindings'
 Assert-True ($compose -notmatch '(?im)(password|secret|token)[ \t]*:[ \t]*[^$\r\n{][^\r\n]*') 'Compose must not embed secrets'
 Assert-True ($compose -match '(?m)^\s{4}restart:\s+unless-stopped\s*$') 'Long-running services need restart policies'
 Assert-True ($compose -match '(?m)^\s{4}healthcheck:\s*$') 'Compose needs health checks'
+foreach ($healthyService in @('db', 'redis-cache', 'redis-queue', 'backend', 'ocr', 'frontend', 'gateway')) {
+    $service = Get-ServiceBlock -Yaml $compose -Name $healthyService
+    Assert-True ($service -match '(?m)^    healthcheck:\r?$' -and $service -match '(?m)^      test:') "$healthyService requires its own health check"
+}
 Assert-True ($compose -match '(?m)^volumes:\s*$') 'Compose needs named volumes'
 Assert-True ($compose -match '(?ms)^  internal:\r?\n    internal: true\s*$') 'Application data services need an isolated internal network'
 Assert-True ($compose -notmatch '(?im)network_mode:\s*host') 'Host networking is forbidden'
@@ -186,7 +228,6 @@ Assert-True ($restore -match 'Merge-SiteConfig') 'Restore must merge the origina
 
 $deployDoc = Get-Content -Raw -LiteralPath (Join-Path $repositoryRoot 'docs/operations/deploy.md')
 Assert-True ($deployDoc -match 'db-root-password.*site-admin-password.*root:root.*0640' -and $deployDoc -match 'remaining secret files at mode 0600') 'Deploy documentation must keep container-readable passwords separate from host-only secrets'
-Assert-True ($deployDoc -match "INTERNAL_LEDGER_APP_REF = 'main'") 'Pre-release deploy example must use main as the app ref'
 Assert-True ($deployDoc -match '/srv/selfquanta/frappe_docker' -and $deployDoc -match '/srv/selfquanta/build' -and $deployDoc -notmatch '/srv/frappe_docker|/srv/selfquanta/build-tmp') 'Deploy documentation must use the approved upstream and build scratch paths'
 Assert-True ($deployDoc -match '/srv/selfquanta/ledger' -and $deployDoc -match '/etc/selfquanta/ledger/runtime\.env' -and $deployDoc -match '/etc/selfquanta/ledger/db-root-password' -and $deployDoc -match '/etc/selfquanta/ledger/internal-fullchain\.pem') 'Deploy documentation must use the approved SelfQuanta host paths'
 Assert-True ($deployDoc -match "sudo env WIREGUARD_ENDPOINT='SERVER_PUBLIC_IP_OR_HOSTNAME' bash /srv/selfquanta/ledger/infra/host/configure-private-access\.sh laptop-cao" -and $deployDoc -match 'no scheme, port, or credentials' -and $deployDoc -match 'Do not run this placeholder verbatim') 'Deploy documentation must show the safe WireGuard endpoint invocation without a real endpoint'
@@ -248,6 +289,43 @@ try {
             Copy-Item -LiteralPath (Join-Path $InfraRoot $file) -Destination $destination
         }
         return $case
+    }
+
+    $savedAppImage, $savedOcrImage = $env:INTERNAL_LEDGER_IMAGE, $env:OCR_IMAGE
+    try {
+        $env:INTERNAL_LEDGER_IMAGE = 'internal-ledger:latest'
+        Assert-CommandFailsLike { pwsh -NoProfile -File $PSCommandPath -StaticOnly } 'INTERNAL_LEDGER_IMAGE.*immutable' 'Mutable app image test'
+        $env:INTERNAL_LEDGER_IMAGE = 'internal-ledger:' + ('1' * 40)
+        $env:OCR_IMAGE = 'internal-ledger-ocr:local'
+        Assert-CommandFailsLike { pwsh -NoProfile -File $PSCommandPath -StaticOnly } 'OCR_IMAGE.*immutable' 'Mutable OCR image test'
+        $env:OCR_IMAGE = 'internal-ledger-ocr:' + ('1' * 40)
+        $assetFixture = Join-Path $scratch 'asset-gate'
+        [void](New-Item -ItemType Directory -Path (Join-Path $assetFixture 'assets') -Force)
+        $assetManifest = @{}
+        foreach ($index in 1..57) {
+            $key = if ($index -eq 1) { 'desk.bundle.js' } elseif ($index -eq 2) { 'ledger_workbench.bundle.js' } else { "fixture-$index.js" }
+            $assetManifest[$key] = "/assets/fixture-$index.js"
+            Set-Content -LiteralPath (Join-Path $assetFixture "assets/fixture-$index.js") -Value '/* fixture */'
+        }
+        $manifestPath = Join-Path $assetFixture 'assets.json'
+        $assetManifest | ConvertTo-Json | Set-Content -LiteralPath $manifestPath
+        & $PSCommandPath -StaticOnly -AssetManifestPath $manifestPath -AssetRoot $assetFixture
+        Assert-True ($LASTEXITCODE -eq 0) 'Valid 57-entry runtime manifest was rejected'
+        $assetManifest.Remove('fixture-57.js')
+        $assetManifest | ConvertTo-Json | Set-Content -LiteralPath $manifestPath
+        Assert-CommandFailsLike { pwsh -NoProfile -File $PSCommandPath -StaticOnly -AssetManifestPath $manifestPath -AssetRoot $assetFixture } '57' 'Incomplete runtime manifest test'
+        $assetManifest['fixture-57.js'] = '/assets/missing.js'
+        $assetManifest | ConvertTo-Json | Set-Content -LiteralPath $manifestPath
+        Assert-CommandFailsLike { pwsh -NoProfile -File $PSCommandPath -StaticOnly -AssetManifestPath $manifestPath -AssetRoot $assetFixture } 'missing' 'Missing mapped asset test'
+        $assetManifest['fixture-57.js'] = '/assets/fixture-57.js'
+        $assetManifest.Remove('ledger_workbench.bundle.js')
+        $assetManifest['extra.js'] = '/assets/fixture-2.js'
+        $assetManifest | ConvertTo-Json | Set-Content -LiteralPath $manifestPath
+        Assert-CommandFailsLike { pwsh -NoProfile -File $PSCommandPath -StaticOnly -AssetManifestPath $manifestPath -AssetRoot $assetFixture } 'ledger_workbench' 'Missing ledger bundle test'
+        Assert-CommandFailsLike { pwsh -NoProfile -File $PSCommandPath -StaticOnly -AssetManifestPath $manifestPath } 'together' 'Unpaired runtime manifest input test'
+    }
+    finally {
+        $env:INTERNAL_LEDGER_IMAGE, $env:OCR_IMAGE = $savedAppImage, $savedOcrImage
     }
 
     # Copy the real wrapper beside a backup boundary double: no Docker or network.
