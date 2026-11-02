@@ -202,6 +202,20 @@ def test_manual_classification_chinese_catalog_contract():
         assert text in form
 
 
+def test_import_duplicate_and_task_center_expose_one_continuous_workflow():
+    root = ROOT / "public/frontend/src"
+    imported = (root / "pages/ImportPreview.vue").read_text(encoding="utf-8")
+    duplicate = (root / "pages/DuplicateReview.vue").read_text(encoding="utf-8")
+    review = (root / "pages/ReviewCenter.vue").read_text(encoding="utf-8")
+    app = (root / "App.vue").read_text(encoding="utf-8")
+    for text in ("自动生成凭证草稿", "疑似重复", "待人工分类", "处理剩余事项"):
+        assert text in imported
+    assert "processing" in duplicate and "已自动分类并生成凭证草稿" in duplicate
+    assert "待办中心" in app
+    assert "directions" in review and "sources" in review
+    assert "确认审核并过账" in review
+
+
 def load_tests(loader, tests, pattern):
     return unittest.TestSuite(unittest.FunctionTestCase(test, setUp=set_up, tearDown=tear_down)
                               for name, test in sorted(globals().items()) if name.startswith("test_"))

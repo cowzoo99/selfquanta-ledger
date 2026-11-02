@@ -1,5 +1,6 @@
 <script setup>
 import {ref, watch, computed} from 'vue';
+import {directions, sources, transactionTypes, draftStatuses, classificationStatuses} from '../labels';
 const props = defineProps({lines: Array, editable: Boolean, company: String, draft: Object, transaction: Object});
 const accounts = ref([]);
 watch(() => [props.company, props.editable], async ([company, editable]) => {
@@ -12,7 +13,6 @@ watch(() => [props.company, props.editable], async ([company, editable]) => {
 const debitTotal = computed(() => (props.lines || []).reduce((sum, row) => sum + Number(row.debit || 0), 0));
 const creditTotal = computed(() => (props.lines || []).reduce((sum, row) => sum + Number(row.credit || 0), 0));
 const balanced = computed(() => Math.abs(debitTotal.value - creditTotal.value) < 0.000000001);
-const statuses = {Draft: '待审核', Rejected: '已驳回', Approved: '待过账', Posted: '已过账'};
 const amount = value => Number(value || 0).toLocaleString('zh-CN', {minimumFractionDigits: 2, maximumFractionDigits: 9});
 function accountFor(line) {
   return accounts.value.find(account => account.name === line.account) ||
@@ -25,8 +25,10 @@ function accountFor(line) {
     <dl v-if="draft" class="voucher-metadata">
       <dt>记账日期</dt><dd>{{ draft.posting_date }}</dd><dt>草稿编号</dt><dd>{{ draft.name }}</dd>
       <dt>来源流水</dt><dd>{{ draft.imported_transaction }}</dd><dt>摘要</dt><dd>{{ draft.summary || transaction?.summary || '—' }}</dd>
-      <dt>分类原因</dt><dd>{{ draft.classification_reason }}</dd><dt>操作人</dt><dd>{{ draft.manual_override_by || draft.modified_by || draft.owner }}</dd>
-      <dt>状态</dt><dd>{{ statuses[draft.status] || draft.status }}</dd>
+      <dt>来源 / 方向</dt><dd>{{ sources[transaction?.source] || '未知来源' }} / {{ directions[transaction?.direction] || '未知方向' }}</dd>
+      <dt>业务类型</dt><dd>{{ transactionTypes[draft.transaction_type] || '待核对' }}</dd>
+      <dt>分类原因</dt><dd>{{ classificationStatuses[draft.classification_reason] || draft.classification_reason }}</dd><dt>操作人</dt><dd>{{ draft.manual_override_by || draft.modified_by || draft.owner }}</dd>
+      <dt>状态</dt><dd>{{ draftStatuses[draft.status] || '待核对' }}</dd>
     </dl>
     <div class="ledger-table">
       <table>

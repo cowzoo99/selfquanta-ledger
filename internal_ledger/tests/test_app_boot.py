@@ -18,7 +18,7 @@ def test_member_page_is_admin_only_in_the_workbench_source():
     assert re.search(r"canWrite\s*\?\s*\[\['members',\s*'企业成员'\]\]\s*:\s*\[\]", app)
     assert 'v-for="entry in navigation"' in app
     assert re.search(r'<EnterpriseMembers\s+v-else-if="page === \'members\' && canWrite"', app)
-    assert re.search(r"const page = computed\(\(\) => navigation.some\(entry => entry\[0\] === props.view\) \? props.view : 'dashboard'\)", app)
+    assert re.search(r"const page = computed\(\(\) => navigation.some\(entry => entry\[0\] === props.view\) \|\| \['duplicates', 'classification'\].includes\(props.view\) \? props.view : 'dashboard'\)", app)
     assert "export async function memberCall(method, args = {})" in api
     assert "internal_ledger.api.member_api.${method}" in api
 

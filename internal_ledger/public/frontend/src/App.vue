@@ -12,8 +12,9 @@ const counts = ref(null), items = ref([]), loading = ref(false), error = ref('')
 const language = ref((frappe.boot?.lang || '').startsWith('zh') ? 'zh' : 'en');
 const savingLanguage = ref(false);
 const canWrite = frappe.session.user === 'Administrator' || frappe.user_roles.includes('账套管理员');
-const navigation = [['dashboard', '业务总览'], ['import', '文件智能导入'], ['duplicates', '重复流水复核'], ['classification', '智能分类'], ['review', '凭证中心'], ...(canWrite ? [['members', '企业成员']] : [])];
-const page = computed(() => navigation.some(entry => entry[0] === props.view) ? props.view : 'dashboard');
+const navigation = [['dashboard', '业务总览'], ['import', '文件智能导入'], ['review', '待办中心'], ...(canWrite ? [['members', '企业成员']] : [])];
+const page = computed(() => navigation.some(entry => entry[0] === props.view) || ['duplicates', 'classification'].includes(props.view) ? props.view : 'dashboard');
+const taskPage = computed(() => ['duplicates', 'classification'].includes(page.value) ? 'review' : page.value);
 const reviewFilter = computed(() => page.value === 'classification' ? '待分类' : (props.filter || '待审核'));
 async function refresh() {
   loading.value = true; error.value = '';
@@ -40,9 +41,9 @@ onMounted(refresh);
   <div class="ledger-app">
     <main>
       <header>
-      <h2>{{ navigation.find(entry => entry[0] === page)?.[1] }}</h2>
+      <h2>{{ navigation.find(entry => entry[0] === taskPage)?.[1] }}</h2>
       <div class="ledger-tabs" role="group" aria-label="智能内账视图">
-        <a v-for="entry in navigation" :key="entry[0]" :href="`/app/ledger-workbench/${entry[0]}`" :aria-current="page === entry[0] ? 'page' : undefined">{{ entry[1] }}</a>
+        <a v-for="entry in navigation" :key="entry[0]" :href="`/app/ledger-workbench/${entry[0]}`" :aria-current="taskPage === entry[0] ? 'page' : undefined">{{ entry[1] }}</a>
       </div>
       <label class="language-switch" for="ledger-language">界面语言
         <select id="ledger-language" v-model="language" :disabled="savingLanguage" @change="changeLanguage">
