@@ -132,6 +132,11 @@ foreach ($property in @('company', 'journal_entry', 'file')) {
 if ($env:INTERNAL_LEDGER_IMAGE -ne "internal-ledger:$($expected.git_sha)") {
     throw 'INTERNAL_LEDGER_IMAGE must exactly match the Git SHA recorded in the manifest.'
 }
+if ([string]::IsNullOrWhiteSpace($env:OCR_IMAGE) -or
+    $env:OCR_IMAGE -notmatch '^[a-zA-Z0-9][a-zA-Z0-9._/:-]*(?::[0-9a-f]{40}|@sha256:[0-9a-f]{64})$' -or
+    $env:OCR_IMAGE -match ':0{40}$|@sha256:0{64}$') {
+    throw 'OCR_IMAGE must be explicit and use an immutable image digest or exact nonzero 40-character commit tag.'
+}
 if (-not (Get-Command openssl -ErrorAction SilentlyContinue)) { throw 'openssl is required.' }
 $archiveHash = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
 if ($archiveHash -ne $expected.encrypted_sha256) { throw 'Encrypted backup checksum does not match the manifest.' }

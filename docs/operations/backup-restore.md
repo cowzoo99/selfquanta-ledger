@@ -68,9 +68,9 @@ Download the matching encrypted archive and manifest to a restricted restore dir
 
 ## Isolated restore drill
 
-The image named in `INTERNAL_LEDGER_IMAGE` must already exist locally and exactly match `git_sha` in the chosen manifest. Set absolute paths to the downloaded archive, its manifest, a unique isolated project name, and a report directory outside the repository:
+Both the app image and a compatible OCR image must already exist locally before the drill. `INTERNAL_LEDGER_IMAGE` must exactly match `git_sha` in the chosen manifest. Select `OCR_IMAGE` from that release's approved image record: an explicit nonzero 40-character commit tag or `@sha256:<64-hex-digest>`, never a missing/empty value, `local`, `latest` or an all-zero sentinel. `restore-check.ps1 -ValidateOnly` rejects those invalid OCR values before any Docker operation. Set absolute paths to the downloaded archive, its manifest, a unique isolated project name, and a report directory outside the repository:
 
-Replace `<manifest-git-sha>` with the 40-character `git_sha` value from the selected manifest. The image value is quoted so Bash treats the angle-bracket placeholder as text.
+Replace `<manifest-git-sha>` with the 40-character `git_sha` value from the selected manifest and `<ocr-release-git-sha>` with the compatible approved OCR image commit. The image values are quoted so Bash treats the angle-bracket placeholders as text. Stop if either image is unavailable locally; do not silently select or build a replacement during recovery.
 
 ```bash
 export INTERNAL_LEDGER_BACKUP_ARCHIVE=/mnt/restore/daily/internal-ledger-ledger.selfquanta.com-20261030-023000.zip.enc
@@ -79,10 +79,12 @@ export BACKUP_KEY_FILE=/etc/selfquanta/ledger/backup.key
 export INTERNAL_LEDGER_RESTORE_PROJECT=ledger-restore-drill-20261030
 export INTERNAL_LEDGER_RESTORE_REPORT_DIR=/mnt/restore/restore-reports
 export INTERNAL_LEDGER_IMAGE='internal-ledger:<manifest-git-sha>'
+export OCR_IMAGE='internal-ledger-ocr:<ocr-release-git-sha>'
+sudo docker image inspect "$INTERNAL_LEDGER_IMAGE" "$OCR_IMAGE" >/dev/null
 
-sudo --preserve-env=INTERNAL_LEDGER_BACKUP_ARCHIVE,INTERNAL_LEDGER_BACKUP_MANIFEST,BACKUP_KEY_FILE,INTERNAL_LEDGER_RESTORE_PROJECT,INTERNAL_LEDGER_RESTORE_REPORT_DIR,INTERNAL_LEDGER_IMAGE \
+sudo --preserve-env=INTERNAL_LEDGER_BACKUP_ARCHIVE,INTERNAL_LEDGER_BACKUP_MANIFEST,BACKUP_KEY_FILE,INTERNAL_LEDGER_RESTORE_PROJECT,INTERNAL_LEDGER_RESTORE_REPORT_DIR,INTERNAL_LEDGER_IMAGE,OCR_IMAGE \
   pwsh -NoProfile -File /srv/selfquanta/ledger/infra/restore-check.ps1 -ValidateOnly
-sudo --preserve-env=INTERNAL_LEDGER_BACKUP_ARCHIVE,INTERNAL_LEDGER_BACKUP_MANIFEST,BACKUP_KEY_FILE,INTERNAL_LEDGER_RESTORE_PROJECT,INTERNAL_LEDGER_RESTORE_REPORT_DIR,INTERNAL_LEDGER_IMAGE \
+sudo --preserve-env=INTERNAL_LEDGER_BACKUP_ARCHIVE,INTERNAL_LEDGER_BACKUP_MANIFEST,BACKUP_KEY_FILE,INTERNAL_LEDGER_RESTORE_PROJECT,INTERNAL_LEDGER_RESTORE_REPORT_DIR,INTERNAL_LEDGER_IMAGE,OCR_IMAGE \
   pwsh -NoProfile -File /srv/selfquanta/ledger/infra/restore-check.ps1
 ```
 
@@ -95,7 +97,14 @@ The encrypted archive records the actual Frappe v16 site-config backup filename.
 After diagnosing a failed drill, an operator may remove only the reported project:
 
 ```bash
-docker compose --env-file /srv/selfquanta/ledger/infra/versions.env -f /srv/selfquanta/ledger/infra/compose.yaml --project-name ledger-restore-drill-20261030 down --volumes --remove-orphans
+sudo --preserve-env=INTERNAL_LEDGER_IMAGE,OCR_IMAGE,INTERNAL_LEDGER_RESTORE_PROJECT bash -c '
+set -euo pipefail
+restore_app_image=$INTERNAL_LEDGER_IMAGE
+restore_ocr_image=$OCR_IMAGE
+set -a; . /etc/selfquanta/ledger/runtime.env; set +a
+export INTERNAL_LEDGER_IMAGE="$restore_app_image" OCR_IMAGE="$restore_ocr_image"
+docker compose --env-file /srv/selfquanta/ledger/infra/versions.env -f /srv/selfquanta/ledger/infra/compose.yaml --project-name "$INTERNAL_LEDGER_RESTORE_PROJECT" down --volumes --remove-orphans
+'
 ```
 
 Do not use `docker system prune` or `docker volume prune`. Run a full restore drill before launch, after backup-script changes, and before every production upgrade. This runbook update does not claim that a live backup or restore has been verified.

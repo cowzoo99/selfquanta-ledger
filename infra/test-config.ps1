@@ -275,6 +275,7 @@ function Assert-CommandFailsLike {
 $scratch = Join-Path $repositoryRoot '.infra-test-scratch'
 $externalScratch = Join-Path (Split-Path $repositoryRoot -Parent) '.internal-ledger-infra-test'
 $oldImage = $env:INTERNAL_LEDGER_IMAGE
+$oldOcrImage = $env:OCR_IMAGE
 try {
     foreach ($path in @($scratch, $externalScratch)) {
         if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force }
@@ -602,6 +603,7 @@ openssl() { echo 'Unexpected CA generation' >&2; exit 71; }
     Set-Content -LiteralPath $key -Value ('x' * 40) -NoNewline
     $sha = '1111111111111111111111111111111111111111'
     $env:INTERNAL_LEDGER_IMAGE = "internal-ledger:$sha"
+    $env:OCR_IMAGE = "internal-ledger-ocr:$sha"
     $plain = Join-Path $externalScratch 'plain.txt'
     $cipher = Join-Path $externalScratch 'cipher.bin'
     $roundTrip = Join-Path $externalScratch 'round-trip.txt'
@@ -630,6 +632,22 @@ openssl() { echo 'Unexpected CA generation' >&2; exit 71; }
         encrypted_sha256 = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
         counts = [ordered]@{ company = 1; journal_entry = 2; file = 3 }
     } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $manifest
+
+    $restoreInputs = @{ Archive = $archive; Manifest = $manifest; KeyFile = $key;
+        Project = 'ledger-restore-image-validation'; ReportDirectory = (Join-Path $externalScratch 'reports') }
+    foreach ($invalidOcr in @($null, '', 'internal-ledger-ocr:local',
+            ('internal-ledger-ocr:' + ('0' * 40)), ('internal-ledger-ocr@sha256:' + ('0' * 64)))) {
+        $env:OCR_IMAGE = $invalidOcr
+        Assert-CommandFailsLike {
+            pwsh -NoProfile -File (Join-Path $InfraRoot 'restore-check.ps1') @restoreInputs -ValidateOnly
+        } 'OCR_IMAGE.*explicit.*immutable' 'Missing, empty, mutable or zero restore OCR image test'
+    }
+    foreach ($validOcr in @("internal-ledger-ocr:$sha", ('internal-ledger-ocr@sha256:' + ('2' * 64)))) {
+        $env:OCR_IMAGE = $validOcr
+        & (Join-Path $InfraRoot 'restore-check.ps1') @restoreInputs -ValidateOnly
+        Assert-True ($LASTEXITCODE -eq 0) 'Valid immutable restore OCR image was rejected'
+    }
+    $env:OCR_IMAGE = "internal-ledger-ocr:$sha"
 
     $backupConfig = Join-Path $externalScratch 'backup-site-config.json'
     $freshConfig = Join-Path $externalScratch 'fresh-site-config.json'
@@ -686,6 +704,7 @@ exit 0
 finally {
     Remove-Item Env:UPLOAD_TEST_LOG, Env:UPLOAD_TEST_BACKUP_EXIT, Env:UPLOAD_TEST_COS_EXIT -ErrorAction SilentlyContinue
     $env:INTERNAL_LEDGER_IMAGE = $oldImage
+    $env:OCR_IMAGE = $oldOcrImage
     foreach ($path in @($scratch, $externalScratch)) {
         if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force }
     }

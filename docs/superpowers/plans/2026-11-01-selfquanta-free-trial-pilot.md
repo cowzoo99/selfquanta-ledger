@@ -243,16 +243,18 @@
   read -r -p 'Absolute encrypted archive path: ' archive_path
   read -r -p 'Absolute manifest path: ' manifest_path
   image_ref=$(sudo sed -n 's/^INTERNAL_LEDGER_IMAGE=//p' /etc/selfquanta/ledger/runtime.env)
-  sudo env INTERNAL_LEDGER_IMAGE="$image_ref" pwsh -NoProfile -File /srv/selfquanta/ledger/infra/restore-check.ps1 \
+  ocr_image_ref=$(sudo sed -n 's/^OCR_IMAGE=//p' /etc/selfquanta/ledger/runtime.env)
+  sudo docker image inspect "$image_ref" "$ocr_image_ref" >/dev/null
+  sudo env INTERNAL_LEDGER_IMAGE="$image_ref" OCR_IMAGE="$ocr_image_ref" pwsh -NoProfile -File /srv/selfquanta/ledger/infra/restore-check.ps1 \
     -Archive "$archive_path" \
     -Manifest "$manifest_path" \
     -KeyFile /etc/selfquanta/ledger/backup.key \
     -Project "ledger-restore-$(date +%Y%m%d%H%M%S)" \
     -ReportDirectory /var/backups/selfquanta/ledger/restore-reports
-  unset archive_path manifest_path image_ref
+  unset archive_path manifest_path image_ref ocr_image_ref
   ```
 
-  确认加密归档校验和以及 Company、Journal Entry、File 三类记录计数通过。当前脚本不验证附件二进制内容或管理员登录，不得把报告描述为完整业务恢复验收。
+  先确认应用镜像与所选 manifest 的提交一致，OCR 镜像是该版本发布记录中的非零 40 位提交标签或 SHA-256 digest，且两者已在本地可用；否则停止并按 `docs/operations/backup-restore.md` 选择对应版本。失败后的隔离项目清理也按该 runbook 传递应用和 OCR 镜像环境。确认加密归档校验和以及 Company、Journal Entry、File 三类记录计数通过。当前脚本不验证附件二进制内容或管理员登录，不得把报告描述为完整业务恢复验收。
 
 - [ ] **Step 5: Keep the real-data gate closed**
 
