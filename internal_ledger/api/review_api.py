@@ -52,7 +52,12 @@ def get_review_item(name: str):
         doc.validate()
     except frappe.ValidationError as exc:
         error = str(exc)
-    return {"draft": doc.as_dict(), "transaction": _transaction_values(tx), "error": error,
+    values = doc.as_dict()
+    for line in values["lines"]:
+        account = frappe.get_doc("Account", line["account"])
+        account.check_permission("read")
+        line.update(account_number=account.account_number, account_name=account.account_name)
+    return {"draft": values, "transaction": _transaction_values(tx), "error": error,
             "can_approve": doc.status == "Draft" and error is None}
 
 
@@ -61,9 +66,13 @@ def list_review_items():
     items = [get_review_item(row.name) for row in frappe.get_list(
         "Voucher Draft", fields=["name"], order_by="creation desc", limit_page_length=0)]
     drafted = {item["transaction"]["name"] for item in items}
-    for tx in frappe.get_list("Imported Transaction", filters={"status": "Imported"},
+    for tx in frappe.get_list("Imported Transaction", filters={"status": ["in", ["Imported", "Duplicate"]]},
                               fields=["*"], order_by="occurred_at desc", limit_page_length=0):
         if tx.name in drafted:
+            continue
+        if tx.status == "Duplicate" or tx.duplicate_review_status in {"Pending", "Confirmed"}:
+            items.append({"draft": None, "transaction": _transaction_values(tx), "classification": None,
+                          "error": "重复流水只读，请前往重复审核", "can_approve": False})
             continue
         try:
             result = asdict(classify(tx.name))
@@ -84,7 +93,9 @@ def get_dashboard_counts(month: str | None = None):
     start = getdate(month + "-01")
     end = add_months(start, 1)
     rows = list_review_items()
-    monthly = [row for row in rows if start <= getdate(row["transaction"]["occurred_at"]) < end]
+    monthly = [row for row in rows if row["transaction"]["status"] == "Imported"
+               and row["transaction"].get("duplicate_review_status") not in {"Pending", "Confirmed"}
+               and start <= getdate(row["transaction"]["occurred_at"]) < end]
     return {"month": month, "income": str(sum((Decimal(str(row["transaction"]["amount"]))
             for row in monthly if row["transaction"]["direction"] == "income"), Decimal("0"))),
             "expense": str(sum((Decimal(str(row["transaction"]["amount"]))
@@ -152,3 +163,9 @@ def reject_draft(name: str, reason: str):
 @frappe.whitelist(methods=["POST"])
 def reopen_draft(name: str):
     return _transition(name, "Draft")
+
+
+@frappe.whitelist(methods=["POST"])
+def prepare_matched_transactions(tx_names):
+    from internal_ledger.accounting.batch_workflow import prepare_matched_transactions as prepare
+    return prepare(frappe.parse_json(tx_names) if isinstance(tx_names, str) else tx_names)
