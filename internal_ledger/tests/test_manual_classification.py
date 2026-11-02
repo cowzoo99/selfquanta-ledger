@@ -250,6 +250,69 @@ def test_manual_snapshot_revalidates_amount_company_and_period():
     with unittest.TestCase().assertRaises(frappe.ValidationError):
         doc.validate()
 
+def test_existing_keyword_draft_learns_exact_rule_and_reuses_draft():
+    from internal_ledger.accounting.classifier import classify
+    from internal_ledger.api.review_api import prepare_draft
+
+    keyword = add_rule(kind="keyword", value="办公")
+    name = transaction()
+    original = prepare_draft(name)
+    assert original.classification_rule == keyword.name
+    doc = classify_manual(name, summary="")
+    rule = frappe.get_doc("Classification Rule", doc.classification_rule)
+    assert doc.name == original.name
+    assert (rule.kind, rule.value, rule.direction, rule.company, rule.enabled) == (
+        "counterparty", "测试商户", "expense", frappe.flags.classification_company, 1)
+    assert classify(name).rule_name == rule.name
+    assert doc.classification_reason == "交易对象精确匹配"
+    assert frappe.db.count("Voucher Draft", {"imported_transaction": name}) == 1
+    assert classify_manual(name, summary="").name == doc.name
+    assert frappe.db.count("Classification Rule", {"company": frappe.flags.classification_company}) == 2
+    doc.validate()
+
+
+def test_existing_keyword_draft_reuses_identical_exact_rule():
+    from internal_ledger.api.review_api import prepare_draft
+
+    add_rule(kind="keyword", value="办公")
+    name = transaction()
+    original = prepare_draft(name)
+    exact = add_rule()
+    doc = classify_manual(name, summary="")
+    assert (doc.name, doc.classification_rule) == (original.name, exact.name)
+    assert frappe.db.count("Classification Rule", {"company": frappe.flags.classification_company}) == 2
+    assert frappe.db.count("Voucher Draft", {"imported_transaction": name}) == 1
+    doc.validate()
+
+
+def test_existing_keyword_draft_rejects_reverse_direction_exact_conflict():
+    from internal_ledger.api.review_api import prepare_draft
+
+    add_rule(kind="keyword", value="办公")
+    name = transaction()
+    original = prepare_draft(name)
+    add_rule(direction="income", transaction_type="income", debit_account=account("1001"),
+             credit_account=account("5001"))
+    before = original.as_dict()
+    with unittest.TestCase().assertRaisesRegex(frappe.ValidationError, "冲突"):
+        classify_manual(name, summary="")
+    assert frappe.get_doc("Voucher Draft", original.name).as_dict() == before
+    assert frappe.db.count("Classification Rule", {"company": frappe.flags.classification_company}) == 2
+
+
+def test_existing_exact_draft_checks_new_conflicting_rules_before_return():
+    name = transaction()
+    doc = classify_manual(name)
+    for values in ({"debit_account": account("560202")},
+                   {"direction": "income", "transaction_type": "income", "debit_account": account("1001"),
+                    "credit_account": account("5001")}):
+        conflict = add_rule(**values)
+        before = frappe.get_doc("Voucher Draft", doc.name).as_dict()
+        with unittest.TestCase().assertRaisesRegex(frappe.ValidationError, "冲突"):
+            classify_manual(name)
+        assert frappe.get_doc("Voucher Draft", doc.name).as_dict() == before
+        frappe.delete_doc("Classification Rule", conflict.name)
+
 def load_tests(loader, tests, pattern):
     return unittest.TestSuite(unittest.FunctionTestCase(test, setUp=set_up, tearDown=tear_down)
                               for name, test in sorted(globals().items()) if name.startswith("test_"))

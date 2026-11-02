@@ -46,8 +46,10 @@ def classify_manually(tx_name, transaction_type, debit_account, credit_account, 
                 or [(row.account, Decimal(str(row.debit or 0)), Decimal(str(row.credit or 0))) for row in doc.lines]
                 != [(row.account, row.debit, row.credit) for row in lines]):
             frappe.throw("已有草稿与本次分类冲突，请使用草稿审核编辑")
-        doc.validate()
-        return doc
+        if not remember:
+            doc.validate()
+            return doc
+    changed = not existing
     savepoint = "ledger_manual_" + uuid4().hex
     frappe.db.savepoint(savepoint)
     try:
@@ -67,10 +69,23 @@ def classify_manually(tx_name, transaction_type, debit_account, credit_account, 
                     "kind": "counterparty", "value": tx.counterparty, "direction": tx.direction,
                     "transaction_type": transaction_type, "debit_account": debit_account,
                     "credit_account": credit_account, "enabled": 1}).insert()
-            doc = frappe.get_doc("Voucher Draft", create_draft(tx_name, classify(tx_name)))
-            from internal_ledger.api.review_api import update_draft
+            current = classify(tx_name)
+            if existing:
+                if (doc.classification_rule, doc.classification_reason) != (current.rule_name, current.reason):
+                    if doc.status != "Draft":
+                        frappe.throw("已有草稿已审核或驳回，不可更换分类规则")
+                    doc.classification_rule = current.rule_name
+                    doc.classification_reason = current.reason
+                    doc.save()
+                    changed = True
+                else:
+                    doc.validate()
+            else:
+                doc = frappe.get_doc("Voucher Draft", create_draft(tx_name, current))
+            if changed:
+                from internal_ledger.api.review_api import update_draft
 
-            doc = update_draft(doc.name, [row.as_dict() for row in doc.lines], summary, str(doc.posting_date))
+                doc = update_draft(doc.name, [row.as_dict() for row in doc.lines], summary, str(doc.posting_date))
         else:
             doc = frappe.get_doc({"doctype": "Voucher Draft", "imported_transaction": tx_name,
                 "company": batch.company, "base_currency": batch.base_currency,
@@ -80,7 +95,8 @@ def classify_manually(tx_name, transaction_type, debit_account, credit_account, 
                 "lines": [asdict(line) for line in lines]})
             doc.flags.manual_classification = _MANUAL_CLASSIFICATION
             doc.insert()
-        record_audit("classify_manually", "Voucher Draft", doc.name, "success")
+        if changed:
+            record_audit("classify_manually", "Voucher Draft", doc.name, "success")
     except frappe.QueryDeadlockError:
         raise
     except Exception:
