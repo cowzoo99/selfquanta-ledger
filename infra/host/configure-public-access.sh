@@ -72,7 +72,7 @@ try:
     privileged = {"Administrator"}
     privileged.update(frappe.get_all("Has Role", filters={"parenttype": "User", "role": ["in", ["System Manager", "账套管理员"]]}, pluck="parent"))
     for user in privileged:
-        if frappe.db.get_value("User", user, "enabled"):
+        if user == "Administrator" or frappe.db.get_value("User", user, "enabled"):
             require(not frappe.db.get_value("User", user, "bypass_restrict_ip_check_if_2fa_enabled"), "privileged IP bypass must be disabled")
             roles = [row.role for row in frappe.get_doc("User", user).roles] + ["All"]
             require(frappe.get_all("Role", filters={"name": ["in", roles], "two_factor_auth": 1}, pluck="name"), "privileged role must require 2FA")

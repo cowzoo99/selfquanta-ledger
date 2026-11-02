@@ -223,7 +223,7 @@ Assert-True ($gateway -match 'HTTPS_PORT:-443}:8443') 'HTTPS port 443 must map t
 Assert-True ($gateway.Contains('${HTTP_BIND:-10.77.0.1}:${HTTP_PORT:-80}:8080') -and $gateway.Contains('${HTTPS_BIND:-10.77.0.1}:${HTTPS_PORT:-443}:8443')) 'Gateway must default to private HTTP/HTTPS bindings'
 $nginx = Get-Content -Raw -LiteralPath (Join-Path $InfraRoot 'nginx.conf')
 Assert-True ($nginx -match 'proxy_cookie_flags sid secure httponly samesite=lax' -and $nginx -match 'proxy_set_header X-Forwarded-Proto https') 'Gateway must enforce secure session cookies and HTTPS proxy scheme'
-Assert-True ($nginx -match 'limit_req_zone' -and $nginx -match 'location = /api/method/login' -and $nginx -match 'limit_req_status 429') 'Gateway must rate-limit password login'
+Assert-True ($nginx -match 'limit_req_zone' -and $nginx -match 'location = /api/method/login' -and $nginx -match 'limit_req_status 429') 'Gateway must rate-limit canonical password login'
 Assert-True ($nginx -match 'Strict-Transport-Security' -and $nginx -match 'X-Content-Type-Options' -and $nginx -match 'X-Frame-Options') 'Gateway requires HTTPS security headers'
 Assert-True ($nginx -notmatch 'proxy_add_x_forwarded_for' -and $nginx -match 'proxy_set_header X-Forwarded-For \$remote_addr') 'Public gateway must replace untrusted forwarded client IPs'
 Assert-True ($compose -notmatch '(?im)(password|secret|token)[ \t]*:[ \t]*[^$\r\n{][^\r\n]*') 'Compose must not embed secrets'
@@ -266,6 +266,7 @@ Assert-True ($restore -match "label=com\.docker\.compose\.project=") 'Restore mu
 Assert-True ($restore -match 'Merge-SiteConfig') 'Restore must merge the original encryption key into fresh site credentials'
 
 $deployDoc = Get-Content -Raw -LiteralPath (Join-Path $repositoryRoot 'docs/operations/deploy.md')
+Assert-True ($deployDoc -match 'cmd=login' -and $deployDoc -match 'LoginAttemptTracker' -and $deployDoc -match 'canonical endpoint only') 'Deploy documentation must distinguish native all-entrypoint IP/user lockout from canonical-only gateway throttling'
 Assert-True ($deployDoc -match 'db-root-password.*site-admin-password.*root:root.*0640' -and $deployDoc -match 'remaining secret files at mode 0600') 'Deploy documentation must keep container-readable passwords separate from host-only secrets'
 Assert-True ($deployDoc -match '/srv/selfquanta/frappe_docker' -and $deployDoc -match '/srv/selfquanta/build' -and $deployDoc -notmatch '/srv/frappe_docker|/srv/selfquanta/build-tmp') 'Deploy documentation must use the approved upstream and build scratch paths'
 Assert-True ($deployDoc -match '/srv/selfquanta/ledger' -and $deployDoc -match '/etc/selfquanta/ledger/runtime\.env' -and $deployDoc -match '/etc/selfquanta/ledger/db-root-password' -and $deployDoc -match '/etc/selfquanta/ledger/internal-fullchain\.pem') 'Deploy documentation must use the approved SelfQuanta host paths'

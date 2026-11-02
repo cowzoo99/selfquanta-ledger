@@ -263,6 +263,23 @@ class PublicAccessSecurityTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 exec(policy, {})
 
+    def test_disabled_administrator_still_requires_two_factor_role(self):
+        policy = SCRIPT.read_text().split("<<'PY'\n", 1)[1].split("\nPY", 1)[0]
+        settings = {"disable_signup": 1, "allow_consecutive_login_attempts": 5,
+                    "allow_login_after_fail": 60, "enable_two_factor_auth": 1}
+        fake = types.ModuleType("frappe")
+        fake.init = lambda **kwargs: None
+        fake.connect = lambda: None
+        fake.destroy = lambda: None
+        fake.conf = {"rate_limit": {"limit": 120, "window": 60}}
+        fake.get_all = lambda doctype, **kwargs: []
+        fake.get_doc = lambda doctype, user: types.SimpleNamespace(roles=[])
+        fake.db = types.SimpleNamespace(get_single_value=lambda doctype, field: settings.get(field, 0),
+                                        get_value=lambda doctype, name, field: 0)
+        with patch.dict("sys.modules", frappe=fake), patch("sys.argv", ["security", "test.localhost"]):
+            with self.assertRaises(RuntimeError):
+                exec(policy, {})
+
 
 if __name__ == "__main__":
     unittest.main()
