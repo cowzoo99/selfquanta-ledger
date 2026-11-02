@@ -58,6 +58,8 @@ def validate_transaction_accounts(debit, credit, payment, kind, direction, compa
         roots = {"Expense"}
     elif kind == "income" and direction == "income":
         roots = {"Income"}
+    elif kind == "capital" and direction == "income":
+        roots = {"Equity"}
     elif kind == "transfer":
         roots = {"Asset"}
     elif kind == "refund":
@@ -89,7 +91,7 @@ def fee_lines(amount, fee, payment):
 
 def build_lines(amount: Decimal, result: "ClassificationResult", kind: str) -> list[DraftLine]:
     """Generate and validate the complete lines without database reads or writes."""
-    builders = {"expense": expense_lines, "income": income_lines, "transfer": transfer_lines,
+    builders = {"expense": expense_lines, "income": income_lines, "capital": income_lines, "transfer": transfer_lines,
                 "refund": refund_lines, "fee": fee_lines}
     lines = builders[kind](amount, result.debit_account, result.credit_account)
     validate_balanced(lines)

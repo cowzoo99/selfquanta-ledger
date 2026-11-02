@@ -128,6 +128,16 @@ def test_duplicate_transaction_is_not_classified():
         classify(name)
 
 
+def test_capital_income_credits_equity_account():
+    from internal_ledger.accounting.classifier import classify
+
+    add_rule(kind="keyword", value="投资款", direction="income", transaction_type="capital",
+             debit_account=None, credit_account=account("3001"))
+    result = classify(transaction(direction="income", summary="股东投资款"))
+    assert result.status == "matched"
+    assert (result.debit_account, result.credit_account) == (account("1001"), account("3001"))
+
+
 def test_different_explicit_funding_accounts_are_also_a_conflict():
     from internal_ledger.accounting.classifier import classify
 

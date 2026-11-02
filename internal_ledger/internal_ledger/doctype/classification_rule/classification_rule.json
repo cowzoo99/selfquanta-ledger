@@ -10,7 +10,7 @@
   {"fieldname": "kind", "label": "Kind", "fieldtype": "Select", "options": "counterparty\nkeyword\nconfirmed_history", "reqd": 1},
   {"fieldname": "value", "label": "Value", "fieldtype": "Data", "reqd": 1},
   {"fieldname": "direction", "label": "Direction", "fieldtype": "Select", "options": "income\nexpense", "default": "expense", "reqd": 1},
-  {"fieldname": "transaction_type", "label": "Transaction Type", "fieldtype": "Select", "options": "expense\nincome\ntransfer\nrefund\nfee", "reqd": 1},
+  {"fieldname": "transaction_type", "label": "Transaction Type", "fieldtype": "Select", "options": "expense\nincome\ncapital\ntransfer\nrefund\nfee", "reqd": 1},
   {"fieldname": "debit_account", "label": "Debit Account", "fieldtype": "Link", "options": "Account"},
   {"fieldname": "credit_account", "label": "Credit Account", "fieldtype": "Link", "options": "Account"},
   {"fieldname": "priority", "label": "Priority", "fieldtype": "Int", "default": "0", "description": "Informational only; never resolves conflicts within a matching layer."},

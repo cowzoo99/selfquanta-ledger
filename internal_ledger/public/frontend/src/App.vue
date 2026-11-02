@@ -10,7 +10,7 @@ const counts = ref(null), items = ref([]), loading = ref(false), error = ref('')
 const language = ref((frappe.boot?.lang || '').startsWith('zh') ? 'zh' : 'en');
 const savingLanguage = ref(false);
 const canWrite = frappe.session.user === 'Administrator' || frappe.user_roles.includes('账套管理员');
-const navigation = [['dashboard', '工作台'], ['import', '导入预览'], ['review', '审核中心'], ...(canWrite ? [['members', '企业成员']] : [])];
+const navigation = [['dashboard', '工作台'], ['import', '文件智能导入'], ['review', '审核中心'], ...(canWrite ? [['members', '企业成员']] : [])];
 async function refresh() {
   loading.value = true; error.value = '';
   try {

@@ -11,7 +11,8 @@ from frappe import ValidationError
 from internal_ledger.importing.models import NormalizedTransaction
 
 
-MAX_FILE_BYTES = 2 * 1024 * 1024
+MAX_CSV_BYTES = 2 * 1024 * 1024
+MAX_FILE_BYTES = 10 * 1024 * 1024
 AMOUNT_PATTERN = re.compile(r"[+-]?(?:[0-9]+|[0-9]{1,3}(?:,[0-9]{3})+)(?:\.[0-9]+)?")
 PREAMBLES = {"wechat": "微信支付账单明细（脱敏测试）", "alipay": "支付宝交易记录（脱敏测试）"}
 
@@ -21,6 +22,7 @@ class ParseResult:
     rows: list[NormalizedTransaction]
     errors: list[dict]
     file_hash: str
+    source: str | None = None
 
 
 def _amount(value):
@@ -47,7 +49,7 @@ def _datetime(value):
 
 
 def _parse_csv(source, content, payment_account, columns):
-    if not isinstance(content, bytes) or not content or len(content) > MAX_FILE_BYTES:
+    if not isinstance(content, bytes) or not content or len(content) > MAX_CSV_BYTES:
         raise ValidationError("文件大小必须为 1 字节至 2 MiB")
     if not isinstance(payment_account, str) or not payment_account.strip():
         raise ValidationError("资金账户不能为空")
@@ -110,15 +112,31 @@ def _parse_csv(source, content, payment_account, columns):
             errors.append({"raw_row": raw_row, "reason": str(exc)})
     if header is None:
         raise ValidationError("未识别的账单表头，请使用支持的 CSV 表头")
-    return ParseResult(rows, errors, hashlib.sha256(content).hexdigest())
+    return ParseResult(rows, errors, hashlib.sha256(content).hexdigest(), source)
 
 
-def parse_statement(source: str, content: bytes, payment_account: str) -> ParseResult:
+def parse_statement(source: str, content: bytes, payment_account: str, company: str = "") -> ParseResult:
     from internal_ledger.importing.bank import parse_bank
     from internal_ledger.importing.wechat import parse_wechat
     from internal_ledger.importing.alipay import parse_alipay
 
     parsers = {"bank": parse_bank, "wechat": parse_wechat, "alipay": parse_alipay}
-    if not isinstance(source, str) or source not in parsers:
+    if not isinstance(source, str) or source not in (*parsers, "auto"):
         raise ValidationError(f"不支持的账单来源: {source}")
+    if content.startswith(b"%PDF-") or content.startswith((b"\x89PNG\r\n\x1a\n", b"\xff\xd8\xff")):
+        if not payment_account.strip():
+            raise ValidationError("资金账户不能为空")
+        if not company:
+            raise ValidationError("账套公司不能为空")
+        if not content or len(content) > MAX_FILE_BYTES:
+            raise ValidationError("文件大小必须为 1 字节至 10 MiB")
+        from internal_ledger.importing.document_parser import parse_ocr_pages
+        from internal_ledger.importing.ocr_client import extract_pages
+        try:
+            result = parse_ocr_pages(source, extract_pages(content), payment_account.strip(), company)
+        except ValueError as exc:
+            raise ValidationError(str(exc)) from exc
+        return ParseResult(result.rows, result.errors, hashlib.sha256(content).hexdigest(), result.source)
+    if source == "auto":
+        raise ValidationError("CSV 文件请手动选择银行、微信或支付宝")
     return parsers[source](content, payment_account)

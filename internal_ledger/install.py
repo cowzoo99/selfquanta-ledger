@@ -119,3 +119,38 @@ def install_chart(company: str) -> None:
             installed[values["account_number"]] = name
     if created:
         audit_install_change("install_chart", "Company", company)
+
+
+def install_default_rules(company: str) -> None:
+    """Install a small, reviewable starter set without overwriting user rules."""
+    require_ledger_admin()
+    accounts = {
+        number: frappe.db.get_value("Account", {"company": company, "account_number": number}, "name")
+        for number in ("560201", "560202", "3001")
+    }
+    if not all(accounts.values()):
+        frappe.throw("请先安装小企业中文会计科目")
+    rules = [
+        ("打车", "expense", "expense", "560202"),
+        ("交通", "expense", "expense", "560202"),
+        ("出行", "expense", "expense", "560202"),
+        ("采购", "expense", "expense", "560201"),
+        ("货款", "expense", "expense", "560201"),
+        ("办公", "expense", "expense", "560201"),
+        ("硬盘", "expense", "expense", "560201"),
+        ("记账", "expense", "expense", "560201"),
+        ("投资款", "income", "capital", "3001"),
+    ]
+    for value, direction, transaction_type, number in rules:
+        filters = {"company": company, "kind": "keyword", "value": value, "direction": direction}
+        if frappe.db.exists("Classification Rule", filters):
+            continue
+        fields = {
+            "doctype": "Classification Rule", **filters, "transaction_type": transaction_type,
+            "enabled": 1,
+        }
+        if direction == "expense":
+            fields["debit_account"] = accounts[number]
+        else:
+            fields["credit_account"] = accounts[number]
+        frappe.get_doc(fields).insert()
