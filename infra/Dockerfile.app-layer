@@ -1,0 +1,11 @@
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+
+ARG APP_COMMIT
+USER root
+COPY --chown=frappe:frappe pyproject.toml README.md /home/frappe/frappe-bench/apps/internal_ledger/
+COPY --chown=frappe:frappe internal_ledger /home/frappe/frappe-bench/apps/internal_ledger/internal_ledger
+USER frappe
+WORKDIR /home/frappe/frappe-bench
+RUN bench build --app internal_ledger
+LABEL org.opencontainers.image.revision=${APP_COMMIT}
