@@ -69,7 +69,7 @@ def create_enterprise_member(first_name: str, email: str, temporary_password: st
     frappe.db.savepoint(savepoint)
     try:
         user = frappe.get_doc({"doctype": "User", "email": email, "first_name": first_name,
-            "enabled": 1, "send_welcome_email": 0, "user_type": "System User",
+            "enabled": 1, "send_welcome_email": 0, "user_type": "System User", "language": "zh",
             "roles": [{"role": "账务查看者"}], "new_password": temporary_password,
             "internal_ledger_must_change_password": 1})
         try:

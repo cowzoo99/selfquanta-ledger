@@ -4,9 +4,11 @@ import Dashboard from './pages/Dashboard.vue';
 import ImportPreview from './pages/ImportPreview.vue';
 import ReviewCenter from './pages/ReviewCenter.vue';
 import EnterpriseMembers from './pages/EnterpriseMembers.vue';
-import {call, errorMessage} from './api';
+import {call, errorMessage, setLanguage} from './api';
 const page = ref('dashboard'), month = ref(frappe.datetime.get_today().slice(0, 7));
 const counts = ref(null), items = ref([]), loading = ref(false), error = ref('');
+const language = ref((frappe.boot?.lang || '').startsWith('zh') ? 'zh' : 'en');
+const savingLanguage = ref(false);
 const canWrite = frappe.session.user === 'Administrator' || frappe.user_roles.includes('账套管理员');
 const navigation = [['dashboard', '工作台'], ['import', '导入预览'], ['review', '审核中心'], ...(canWrite ? [['members', '企业成员']] : [])];
 async function refresh() {
@@ -17,12 +19,27 @@ async function refresh() {
   } catch (e) { error.value = errorMessage(e); }
   finally { loading.value = false; }
 }
+async function changeLanguage() {
+  savingLanguage.value = true; error.value = '';
+  try {
+    await setLanguage(language.value);
+    window.location.reload();
+  } catch (e) {
+    error.value = errorMessage(e);
+    savingLanguage.value = false;
+  }
+}
 onMounted(refresh);
 </script>
 
 <template>
   <div class="ledger-app">
     <nav aria-label="内账工作台导航"><h2>协同内账</h2>
+      <label class="language-switch" for="ledger-language">界面语言
+        <select id="ledger-language" v-model="language" :disabled="savingLanguage" @change="changeLanguage">
+          <option value="zh">简体中文</option><option value="en">English</option>
+        </select>
+      </label>
       <button v-for="entry in navigation" :key="entry[0]" :aria-current="page === entry[0] ? 'page' : undefined" @click="page = entry[0]">{{ entry[1] }}</button>
       <a v-if="canWrite" href="/app/classification-rule">维护分类规则</a>
     </nav>
@@ -42,6 +59,7 @@ onMounted(refresh);
 <style>
 .ledger-app { display: grid; grid-template-columns: 160px minmax(0, 1fr); gap: 24px; padding: 20px; color: var(--text-color, #222); }
 .ledger-app nav { display: flex; flex-direction: column; gap: 12px; }
+.language-switch { display: grid; gap: 4px; font-size: 13px; }
 .ledger-app main, .ledger-detail { min-width: 0; }
 .ledger-app header, .ledger-app section { padding: 16px; border: 1px solid var(--border-color, #ddd); border-radius: 8px; margin-bottom: 20px; }
 .ledger-app button { padding: 8px 12px; margin: 4px; border: 1px solid #66788a; border-radius: 5px; background: var(--card-bg, white); color: inherit; }

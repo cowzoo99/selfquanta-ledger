@@ -1,0 +1,68 @@
+Internal Ledger,协同内账
+Internal Ledger Settings,内账设置
+Internal Ledger Audit Event,内账审计事件
+Internal Ledger Source File,内账源文件
+Import Batch,导入批次
+Imported Transaction,导入流水
+Classification Rule,分类规则
+Voucher Draft,凭证草稿
+Voucher Draft Line,凭证分录行
+Posting Link,过账关联
+Account,科目
+Action,操作
+Actor,操作人
+Amount,金额
+Base Currency,本位币
+Classification Reason,分类原因
+Company,企业
+Confirmed History,已确认历史
+Counterparty,交易对方
+Credit,贷方
+Credit Account,贷方科目
+Debit,借方
+Debit Account,借方科目
+Dedupe Key,去重键
+Direction,收支方向
+Duplicate Of,重复于
+Enabled,启用
+File Hash,文件哈希
+Fiscal Year Start,会计年度开始日
+Journal Entry,会计分录
+Kind,规则类型
+Lines,分录行
+Manual Override,人工覆盖
+Manual Override By,人工覆盖人
+Occurred At,交易时间
+Original File,原始文件
+Payment Account,支付科目
+Posting Date,过账日期
+Priority,优先级
+Raw Row,原始数据行
+Reference DocType,关联单据类型
+Reference Name,关联名称
+Rejection Reason,驳回原因
+Result,结果
+Reversal Journal Entry,冲销分录
+Reversal Reason,冲销原因
+Source,来源
+Source ID,来源编号
+Status,状态
+Summary,摘要
+Timestamp,时间戳
+Transaction Type,交易类型
+Value,匹配值
+income,收入
+expense,支出
+transfer,转账
+refund,退款
+fee,手续费
+Imported,已导入
+Duplicate,重复
+Draft,草稿
+Approved,已批准
+Rejected,已驳回
+Posted,已过账
+Reversed,已冲销
+counterparty,交易对方
+keyword,关键词
+confirmed_history,已确认历史

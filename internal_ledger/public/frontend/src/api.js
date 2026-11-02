@@ -9,6 +9,12 @@ export async function memberCall(method, args = {}) {
   return response.message;
 }
 
+export async function setLanguage(language) {
+  const response = await frappe.call({method: 'internal_ledger.api.language_api.set_language',
+    args: {language}, type: 'POST'});
+  return response.message;
+}
+
 export function errorMessage(error) {
   try {
     const messages = JSON.parse(error._server_messages || error.responseJSON?._server_messages || '[]');
