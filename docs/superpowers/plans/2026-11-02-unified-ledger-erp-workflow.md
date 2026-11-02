@@ -20,6 +20,7 @@
 - Every batch operation reports success, failure and skipped rows explicitly.
 - Journal Entries are created only through `internal_ledger.accounting.posting.post_draft`.
 - Use TDD for every behavior change and preserve existing production data.
+- Public access requires a real hostname, Tencent Cloud ICP approval, matching public TLS certificate and explicit opt-in; absent prerequisites must leave WireGuard-only bindings unchanged.
 
 ---
 
@@ -406,3 +407,69 @@ git push origin HEAD
 ```
 
 Merge only after automated checks and production smoke verification pass.
+
+---
+
+### Task 7: Public HTTPS Access Without User WireGuard
+
+**Files:**
+- Modify: `infra/compose.yaml`
+- Modify: `infra/nginx.conf`
+- Modify: `infra/runtime.env.example`
+- Create: `infra/host/configure-public-access.sh`
+- Modify: `infra/host/configure-private-access.sh`
+- Modify: `infra/test-config.ps1`
+- Modify: `docs/operations/deploy.md`
+- Create: `internal_ledger/tests/test_public_access_security.py`
+
+**Interfaces:**
+- Produces: `configure-public-access.sh <hostname>` with a fail-closed prerequisite check.
+- Consumes: existing `HTTP_BIND`, `HTTPS_BIND`, TLS secret files, UFW and systemd deployment.
+
+- [ ] **Step 1: Write failing configuration and security tests**
+
+Add tests proving public mode refuses an IP address, missing certificate, hostname/certificate mismatch or absent explicit ICP confirmation; private mode keeps `10.77.0.1` bindings. Assert Compose publishes only gateway ports and never publishes database, Redis, OCR, backend, workers or WebSocket ports.
+
+- [ ] **Step 2: Run tests and verify RED**
+
+```bash
+bench --site test.localhost run-tests --app internal_ledger --module internal_ledger.tests.test_public_access_security
+pwsh -NoProfile -File infra/test-config.ps1 -StaticOnly
+```
+
+Expected: FAIL because public-access configuration and prerequisite checks do not exist.
+
+- [ ] **Step 3: Add explicit public runtime mode**
+
+Add required values with safe defaults:
+
+```dotenv
+PUBLIC_ACCESS_ENABLED=0
+PUBLIC_HOSTNAME=
+ICP_APPROVED=0
+```
+
+When public mode is disabled, require `HTTP_BIND=HTTPS_BIND=10.77.0.1`. When enabled, require `PUBLIC_HOSTNAME` to be a DNS hostname, `ICP_APPROVED=1`, certificate/key files to exist, and bind gateway HTTPS to `0.0.0.0:443`. Do not add host port mappings to any other service.
+
+- [ ] **Step 4: Implement fail-closed host configuration**
+
+`configure-public-access.sh` validates root execution, hostname syntax, certificate SAN coverage with `openssl x509 -checkhost`, DNS resolution to the server public IPv4, and the literal `ICP_APPROVED=1` runtime flag. It then backs up runtime/UFW state, allows public 443, optionally allows 80 only for a documented redirect/certificate requirement, preserves WireGuard and SSH management rules, runs `infra/test-config.ps1`, and restarts only after checks pass. On failure it restores the previous runtime and UFW state.
+
+- [ ] **Step 5: Harden public login exposure**
+
+Keep registration disabled; require secure cookies and HTTPS proxy headers; configure Frappe rate limiting and login-attempt lockout; require System Manager/账套管理员 users to enable two-factor authentication before public cutover. Document one named account per person and prohibit shared Administrator use.
+
+- [ ] **Step 6: Verify public and rollback modes**
+
+On a staging hostname, verify HTTPS certificate/hostname, login, WebSocket, file upload and logout without WireGuard. From an external network confirm only 443 is reachable. Run the rollback path and confirm the service again binds only to `10.77.0.1`, remains healthy over WireGuard, and preserves all database volumes.
+
+- [ ] **Step 7: Production cutover gate**
+
+Do not execute production public cutover until the owner supplies the exact registered hostname, Tencent Cloud ICP approval is visible, DNS resolves to `42.193.189.93`, and a matching public certificate is installed. Once supplied, run backup, public configuration, external login acceptance with a non-admin account, firewall scan and rollback drill.
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add infra internal_ledger/tests/test_public_access_security.py docs/operations/deploy.md
+git commit -m "feat: add gated public HTTPS access"
+```
