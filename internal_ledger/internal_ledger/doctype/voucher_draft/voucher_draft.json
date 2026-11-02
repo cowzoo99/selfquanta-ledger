@@ -16,7 +16,7 @@
   {"fieldname": "rejection_reason", "label": "Rejection Reason", "fieldtype": "Small Text", "read_only": 1},
   {"fieldname": "is_manual_override", "label": "Manual Override", "fieldtype": "Check", "default": "0", "read_only": 1},
   {"fieldname": "manual_override_by", "label": "Manual Override By", "fieldtype": "Link", "options": "User", "read_only": 1},
-  {"fieldname": "classification_rule", "label": "Classification Rule", "fieldtype": "Link", "options": "Classification Rule", "reqd": 1},
+  {"fieldname": "classification_rule", "label": "Classification Rule", "fieldtype": "Link", "options": "Classification Rule"},
   {"fieldname": "classification_reason", "label": "Classification Reason", "fieldtype": "Small Text", "reqd": 1},
   {"fieldname": "lines", "label": "Lines", "fieldtype": "Table", "options": "Voucher Draft Line", "reqd": 1}
  ],

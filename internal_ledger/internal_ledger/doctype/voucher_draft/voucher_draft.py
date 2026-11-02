@@ -38,7 +38,13 @@ class VoucherDraft(Document):
                    and self.status == "Posted")
         if self.docstatus != 0 or (self.status not in {"Draft", "Approved", "Rejected"} and not posting):
             frappe.throw("当前状态不可保存；过账须使用专用服务")
-        if not previous and (self.status != "Draft" or self.is_manual_override or self.manual_override_by):
+        from internal_ledger.accounting.manual_classification import _MANUAL_CLASSIFICATION
+
+        manual_insert = (not previous and self.is_new()
+                         and self.flags.manual_classification is _MANUAL_CLASSIFICATION
+                         and self.status == "Draft" and self.is_manual_override and self.manual_override_by == frappe.session.user
+                         and not self.classification_rule and self.classification_reason == "人工分类")
+        if not previous and not manual_insert and (self.status != "Draft" or self.is_manual_override or self.manual_override_by):
             frappe.throw("自动草稿只能处于 Draft 状态，不得伪造人工覆盖")
         if previous and self.imported_transaction != previous.imported_transaction:
             frappe.throw("草稿原流水不可更换")
@@ -61,6 +67,9 @@ class VoucherDraft(Document):
         lines = [DraftLine(row.account, Decimal(str(row.debit or 0)), Decimal(str(row.credit or 0)))
                  for row in self.lines]
         validate_balanced(lines)
+        if manual_insert or (previous and previous.is_manual_override and not previous.classification_rule):
+            self.validate_manual_classification(previous, lines)
+            return
         _, expected = current_draft(self.imported_transaction)
         fields = ("classification_rule", "transaction_type", "classification_reason", "company", "base_currency")
         if any(self.get(field) != expected[field] for field in fields):
@@ -86,3 +95,30 @@ class VoucherDraft(Document):
             frappe.throw("草稿日期必须与流水一致；请使用人工审核编辑")
         if lines != [DraftLine(**row) for row in expected["lines"]]:
             frappe.throw("草稿完整借贷科目及金额必须与当前分类规则一致")
+
+
+    def validate_manual_classification(self, previous, lines):
+        if previous and any(self.get(field) != previous.get(field) for field in (
+                "classification_rule", "classification_reason", "transaction_type")):
+            frappe.throw("人工分类快照不可更换")
+        tx = frappe.get_doc("Imported Transaction", self.imported_transaction, for_update=True)
+        tx.check_permission("read")
+        batch = frappe.get_doc("Import Batch", tx.import_batch, for_update=True)
+        batch.check_permission("read")
+        if tx.status != "Imported":
+            frappe.throw("重复流水不得分类或生成草稿")
+        if self.company != batch.company or self.base_currency != batch.base_currency:
+            frappe.throw("草稿公司与本位币必须与原流水一致")
+        debit = next(line.account for line in lines if line.debit)
+        credit = next(line.account for line in lines if line.credit)
+        for line in lines:
+            validate_transaction_accounts(line.account if line.debit else debit,
+                line.account if line.credit else credit, tx.payment_account,
+                self.transaction_type, tx.direction, self.company)
+        if sum((line.debit for line in lines), Decimal("0")) != Decimal(str(tx.amount)):
+            frappe.throw("人工分录总金额必须等于原流水金额")
+        if not previous and getdate(self.posting_date) != getdate(tx.occurred_at):
+            frappe.throw("初始草稿日期必须与流水一致")
+        from internal_ledger.accounting.posting import validate_period
+
+        validate_period(self.company, self.posting_date)
