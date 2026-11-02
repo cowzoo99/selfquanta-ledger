@@ -46,7 +46,7 @@ def save_batch(source: str, file_hash: str, rows: list[NormalizedTransaction]) -
         for row in rows:
             values = {
                 "doctype": "Imported Transaction", **asdict(row), "import_batch": batch.name,
-                "status": "Imported", "dedupe_key": build_dedupe_key(row),
+                "status": "Imported", "dedupe_key": build_dedupe_key(row), "duplicate_review_status": "",
             }
             frappe.db.savepoint(row_point)
             try:
@@ -60,7 +60,9 @@ def save_batch(source: str, file_hash: str, rows: list[NormalizedTransaction]) -
                 )
                 if not canonical:
                     raise
-                values.update(status="Duplicate", dedupe_key=None, duplicate_of=canonical)
+                values.update(status="Duplicate", dedupe_key=None, duplicate_of=canonical,
+                              duplicate_review_status="Pending", candidate_dedupe_key=values["dedupe_key"],
+                              duplicate_match_reason="来源流水号相同" if row.source_id else "交易字段指纹相同")
                 doc = frappe.get_doc(values)
                 doc.flags.ledger_import_write = _IMPORT_WRITE
                 doc.insert()

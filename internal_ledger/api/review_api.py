@@ -36,7 +36,7 @@ def _draft(name, write=False):
 def _transaction_values(tx):
     values = dict(tx) if isinstance(tx, dict) else tx.as_dict()
     if frappe.session.user != "Administrator" and "账套管理员" not in frappe.get_roles():
-        for field in ("source_id", "dedupe_key"):
+        for field in ("source_id", "dedupe_key", "candidate_dedupe_key"):
             values.pop(field, None)
     return values
 

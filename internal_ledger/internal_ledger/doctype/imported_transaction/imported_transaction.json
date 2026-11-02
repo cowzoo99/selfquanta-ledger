@@ -6,7 +6,8 @@
  "engine": "InnoDB",
  "field_order": [
   "import_batch", "source", "source_id", "occurred_at", "amount", "direction",
-  "counterparty", "summary", "payment_account", "raw_row", "status", "dedupe_key", "duplicate_of"
+  "counterparty", "summary", "payment_account", "raw_row", "status", "dedupe_key", "duplicate_of",
+  "duplicate_review_status", "candidate_dedupe_key", "duplicate_match_reason", "duplicate_reviewed_by", "duplicate_reviewed_at", "duplicate_review_note"
  ],
  "fields": [
   {"fieldname": "import_batch", "label": "Import Batch", "fieldtype": "Link", "options": "Import Batch", "reqd": 1},
@@ -21,7 +22,13 @@
   {"fieldname": "raw_row", "label": "Raw Row", "fieldtype": "Int", "reqd": 1},
   {"fieldname": "status", "label": "Status", "fieldtype": "Select", "options": "Imported\nDuplicate", "default": "Imported", "reqd": 1, "read_only": 1},
   {"fieldname": "dedupe_key", "label": "Dedupe Key", "fieldtype": "Data", "unique": 1, "read_only": 1, "permlevel": 1},
-  {"fieldname": "duplicate_of", "label": "Duplicate Of", "fieldtype": "Link", "options": "Imported Transaction", "read_only": 1}
+  {"fieldname": "duplicate_of", "label": "Duplicate Of", "fieldtype": "Link", "options": "Imported Transaction", "read_only": 1},
+  {"fieldname": "duplicate_review_status", "label": "Duplicate Review Status", "fieldtype": "Select", "options": "Pending\nConfirmed\nReleased", "read_only": 1},
+  {"fieldname": "candidate_dedupe_key", "label": "Candidate Dedupe Key", "fieldtype": "Data", "read_only": 1, "permlevel": 1},
+  {"fieldname": "duplicate_match_reason", "label": "Duplicate Match Reason", "fieldtype": "Data", "read_only": 1},
+  {"fieldname": "duplicate_reviewed_by", "label": "Duplicate Reviewed By", "fieldtype": "Link", "options": "User", "read_only": 1},
+  {"fieldname": "duplicate_reviewed_at", "label": "Duplicate Reviewed At", "fieldtype": "Datetime", "read_only": 1},
+  {"fieldname": "duplicate_review_note", "label": "Duplicate Review Note", "fieldtype": "Small Text", "read_only": 1}
  ],
  "permissions": [
   {"role": "账套管理员", "read": 1, "write": 1, "create": 1, "report": 1},
