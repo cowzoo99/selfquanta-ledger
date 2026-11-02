@@ -7,5 +7,6 @@ COPY --chown=frappe:frappe pyproject.toml README.md /home/frappe/frappe-bench/ap
 COPY --chown=frappe:frappe internal_ledger /home/frappe/frappe-bench/apps/internal_ledger/internal_ledger
 USER frappe
 WORKDIR /home/frappe/frappe-bench
-RUN bench build --app internal_ledger
+RUN bench build --app internal_ledger \
+    && cp sites/assets/assets*.json assets/
 LABEL org.opencontainers.image.revision=${APP_COMMIT}
