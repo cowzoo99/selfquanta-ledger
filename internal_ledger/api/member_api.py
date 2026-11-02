@@ -9,6 +9,7 @@ from internal_ledger.permissions import record_member_audit, require_ledger_admi
 
 
 MANAGEMENT_ROLES = ("账套管理员", "System Manager")
+SELFLEDGER_WORKSPACE = "SelfLedger 企业经营与智能内账"
 
 
 def _company(for_update=False):
@@ -70,6 +71,7 @@ def create_enterprise_member(first_name: str, email: str, temporary_password: st
     try:
         user = frappe.get_doc({"doctype": "User", "email": email, "first_name": first_name,
             "enabled": 1, "send_welcome_email": 0, "user_type": "System User", "language": "zh",
+            "default_workspace": SELFLEDGER_WORKSPACE,
             "roles": [{"role": "账务查看者"}], "new_password": temporary_password,
             "internal_ledger_must_change_password": 1})
         try:

@@ -22,17 +22,32 @@ const cards = computed(() => [
 
 <template>
   <section aria-labelledby="dashboard-title">
-    <h2 id="dashboard-title">业务总览</h2>
-    <p>导入账单 → 重复复核 → 智能分类 → 凭证审核 → 正式过账。</p>
-    <a class="ledger-card" href="/app/ledger-workbench/import"><strong>文件智能导入</strong><span>上传银行、微信或支付宝账单，先预览再确认导入。</span>{{ canWrite ? '上传账单' : '查看导入说明（只读）' }}</a>
+    <div class="ledger-hero">
+      <div>
+        <p class="ledger-eyebrow">SelfLedger 智能内账</p>
+        <h2 id="dashboard-title">从一张流水开始，完成专业借贷记账</h2>
+        <p>银行回单、银行流水、微信或支付宝截图，都在本网站完成识别、复核、分类、制证和过账。</p>
+      </div>
+      <a class="ledger-primary-action" href="/app/ledger-workbench/import">
+        <strong>{{ canWrite ? '开始导入并自动识别' : '查看文件智能导入' }}</strong>
+        <span>支持 PDF、JPG、PNG、CSV · 先预览，确认后才入账</span>
+      </a>
+    </div>
+    <ol class="ledger-flow" aria-label="智能内账处理流程">
+      <li><strong>1 导入识别</strong><span>提取时间、交易对象、摘要和金额</span></li>
+      <li><strong>2 重复复核</strong><span>疑似重复不参与统计，等待人工确认</span></li>
+      <li><strong>3 分类学习</strong><span>人工选科目后，可保存为后续分类规则</span></li>
+      <li><strong>4 凭证审核</strong><span>检查专业借方、贷方和金额平衡</span></li>
+      <li><strong>5 正式过账</strong><span>批量确认后生成 ERPNext 会计凭证</span></li>
+    </ol>
     <dl v-if="counts" class="ledger-counts"><div><dt>本月收入</dt><dd>{{ counts.income }}</dd></div><div><dt>本月支出</dt><dd>{{ counts.expense }}</dd></div></dl>
     <p>收入、支出和账务统计不包含待确认或已确认的重复流水。</p>
-    <h3>智能内账</h3>
+    <h3>内账处理中心</h3>
     <div class="ledger-cards"><a v-for="card in cards" :key="card[0]" class="ledger-card" :href="`/app/ledger-workbench/${card[0]}`"><strong>{{ card[1] }} · {{ card[2] }}</strong><span>{{ card[3] }}</span>查看{{ card[1] }}</a></div>
     <p><a href="/app/query-report/General%20Ledger">账簿与报表</a></p>
-    <h3>经营管理</h3>
-    <p>进入 ERPNext 原生业务页面，按现有角色权限操作。</p>
-    <div class="ledger-cards"><a v-for="entry in erpLinks" :key="entry[0]" class="ledger-card" :href="`/app/${entry[0]}`">{{ entry[1] }}</a></div>
+    <h3>企业经营管理</h3>
+    <p>销售、采购、库存和制造保留为同一网站内的功能分支，继续使用同一账号和权限。</p>
+    <div class="ledger-cards"><a v-for="entry in erpLinks" :key="entry[0]" class="ledger-card ledger-module-card" :href="`/app/${entry[0]}`"><strong>{{ entry[1] }}</strong><span>进入{{ entry[1] }}模块</span></a></div>
     <h3>异常优先</h3>
     <p v-if="loading" role="status">正在载入流水…</p>
     <p v-else-if="!items.length">尚无流水，请先导入银行卡、微信或支付宝账单。</p>

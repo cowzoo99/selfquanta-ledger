@@ -2,3 +2,4 @@
 
 [post_model_sync]
 internal_ledger.patches.backfill_duplicate_review
+internal_ledger.patches.set_selfledger_default_workspace

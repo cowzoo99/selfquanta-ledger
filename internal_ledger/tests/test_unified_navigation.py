@@ -113,6 +113,31 @@ def test_page_mount_is_route_aware_and_reacts_to_cached_desk_routes():
     assert "DuplicateReview" in app
 
 
+def test_unified_home_makes_import_primary_and_keeps_erp_modules_in_one_site():
+    dashboard = (ROOT / "public/frontend/src/pages/Dashboard.vue").read_text()
+    assert "开始导入并自动识别" in dashboard
+    assert 'class="ledger-primary-action"' in dashboard
+    for route in ("/app/ledger-workbench/import", "selling", "buying", "stock", "manufacturing"):
+        assert route in dashboard
+
+
+def test_default_workspace_patch_sets_only_blank_ledger_users():
+    from internal_ledger.patches.set_selfledger_default_workspace import execute
+    from internal_ledger.tests.test_permissions import user
+
+    viewer = user("账务查看者")
+    manager = user("账套管理员")
+    frappe.db.set_value("User", "Administrator", "default_workspace", None)
+    frappe.db.set_value("User", viewer, "default_workspace", None)
+    frappe.db.set_value("User", manager, "default_workspace", "Selling")
+    execute()
+    assert frappe.db.get_value("User", "Administrator", "default_workspace") == TITLE
+    assert frappe.db.get_value("User", viewer, "default_workspace") == TITLE
+    assert frappe.db.get_value("User", manager, "default_workspace") == "Selling"
+    execute()
+    assert frappe.db.get_value("User", viewer, "default_workspace") == TITLE
+
+
 def test_duplicate_page_contract_and_dedicated_review_link():
     path = ROOT / "public/frontend/src/pages/DuplicateReview.vue"
     assert path.exists(), "Dedicated duplicate-review component is missing"

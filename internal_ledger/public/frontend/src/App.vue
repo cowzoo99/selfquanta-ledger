@@ -69,6 +69,18 @@ onMounted(refresh);
 .language-switch { display: inline-flex; gap: 8px; align-items: center; margin-right: 16px; font-size: 13px; }
 .ledger-app main, .ledger-detail { min-width: 0; }
 .ledger-app header, .ledger-app section { padding: 16px; border: 1px solid var(--border-color, #ddd); border-radius: 8px; margin-bottom: 20px; }
+.ledger-hero { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(260px, .8fr); gap: 24px; align-items: center; padding: 28px; margin: -4px -4px 20px; border-radius: 12px; background: linear-gradient(135deg, #eef7fb, #f6f2ff); border: 1px solid #c7dbe7; }
+.ledger-eyebrow { color: #155775; font-weight: 700; letter-spacing: .04em; margin: 0 0 6px; }
+.ledger-hero h2 { margin: 0 0 10px; font-size: clamp(24px, 3vw, 36px); line-height: 1.25; }
+.ledger-primary-action { display: flex; flex-direction: column; gap: 8px; padding: 22px; border-radius: 10px; background: #155775; color: #fff !important; text-decoration: none !important; box-shadow: 0 8px 20px rgba(21, 87, 117, .22); }
+.ledger-primary-action strong { font-size: 20px; }
+.ledger-primary-action span { color: #e5f4fa; line-height: 1.5; }
+.ledger-primary-action:hover { background: #0f4863; }
+.ledger-flow { list-style: none; padding: 0; margin: 0 0 20px; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; }
+.ledger-flow li { padding: 14px; border-radius: 8px; background: var(--card-bg, #fff); border: 1px solid var(--border-color, #ddd); }
+.ledger-flow strong, .ledger-flow span { display: block; }
+.ledger-flow strong { color: #155775; margin-bottom: 6px; }
+.ledger-flow span { font-size: 12px; line-height: 1.45; }
 .ledger-app button { padding: 8px 12px; margin: 4px; border: 1px solid #66788a; border-radius: 5px; background: var(--card-bg, white); color: inherit; }
 .ledger-app button[aria-current="page"] { background: #155775; color: white; }
 .ledger-app button:disabled { opacity: .55; cursor: default; }
@@ -80,6 +92,7 @@ onMounted(refresh);
 .ledger-counts dd { font-size: 20px; margin: 0; }
 .ledger-cards, .duplicate-evidence { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); gap: 16px; }
 .ledger-card { display: block; padding: 16px; border: 1px solid var(--border-color, #ddd); border-radius: 8px; }
+.ledger-module-card { border-top: 4px solid #7a6c9d; }
 .ledger-card strong, .ledger-card span { display: block; margin-bottom: 8px; }
 .ledger-review { display: grid; grid-template-columns: minmax(180px, 1fr) minmax(0, 2fr); gap: 20px; }
 .ledger-items { list-style: none; padding: 0; max-height: 650px; overflow-y: auto; }
@@ -91,5 +104,7 @@ onMounted(refresh);
 .ledger-detail dl { display: grid; grid-template-columns: minmax(90px, 120px) minmax(0, 1fr); gap: 6px 10px; }
 .ledger-detail dd { margin: 0; overflow-wrap: anywhere; }
 .ledger-app [role="alert"] { color: #a12621; }
+@media (max-width: 900px) { .ledger-hero { grid-template-columns: minmax(0, 1fr); padding: 20px; } .ledger-flow { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 800px) { .ledger-review { grid-template-columns: minmax(0, 1fr); } .ledger-app { padding: 6px; } }
+@media (max-width: 480px) { .ledger-flow { grid-template-columns: minmax(0, 1fr); } }
 </style>

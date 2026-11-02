@@ -321,6 +321,7 @@ def test_member_creation_is_normalized_read_only_and_secret_free():
                                                 "for_value": frappe.flags.classification_company})
     doc = frappe.get_doc("User", email)
     assert doc.user_type == "System User" and not doc.send_welcome_email
+    assert doc.default_workspace == "SelfLedger 企业经营与智能内账"
     assert doc.internal_ledger_must_change_password == 1
     events = frappe.get_all("Internal Ledger Audit Event", filters={"reference_name": email}, fields=["*"])
     assert len(events) == 1
