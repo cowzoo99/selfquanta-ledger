@@ -60,6 +60,46 @@ def test_workspace_install_is_idempotent_and_rejects_viewer():
         frappe.set_user("Administrator")
 
 
+def test_workspace_reconciles_stale_app_document_and_preserves_site_customizations():
+    from internal_ledger.install import ensure_workspace
+    from internal_ledger.tests.test_permissions import user
+
+    actor = user("账务查看者")
+    personal = frappe.get_doc({"doctype": "Workspace", "label": "_Test Personal Ledger",
+        "title": "_Test Personal Ledger", "module": "Internal Ledger", "type": "Workspace",
+        "standard": 0, "public": 0, "for_user": actor, "content": "[]"}).insert()
+    custom = frappe.get_doc({"doctype": "Custom Workspace", "workspace": TITLE,
+        "visibility": "Hidden", "icon": "star", "override_sequence": 1, "sequence_id": 42,
+        "content": "[]", "widgets": "{}"}).insert()
+    frappe.db.set_value("User", actor, "default_workspace", "Selling")
+    preserved = [frappe.get_doc(doc.doctype, doc.name).as_dict()
+                 for doc in (personal, custom, frappe.get_doc("User", actor))]
+    workspace = frappe.get_doc("Workspace", TITLE)
+    frappe.db.set_value("Workspace", TITLE, {"title": "Stale app title", "sequence_id": 999,
+        "content": "[]", "modified": "2099-01-01 00:00:00"}, update_modified=False)
+    frappe.db.set_value("Workspace Shortcut", workspace.shortcuts[0].name, "url", "/app/missing")
+    frappe.db.set_value("Has Role", workspace.roles[0].name, "role", "Guest")
+    ensure_workspace()
+    test_installed_workspace_shortcuts_and_content()
+    repaired = frappe.get_doc("Workspace", TITLE).as_dict()
+    assert repaired["sequence_id"] == 0.1
+    assert [row["role"] for row in repaired["roles"]] == ["账套管理员", "账务查看者", "System Manager"]
+    ensure_workspace()
+    assert frappe.get_doc("Workspace", TITLE).as_dict() == repaired
+    assert [frappe.get_doc(doc.doctype, doc.name).as_dict() for doc in (personal, custom, frappe.get_doc("User", actor))] == preserved
+
+
+def test_workspace_reconcile_does_not_take_over_nonstandard_same_name():
+    from internal_ledger.install import ensure_workspace
+
+    for values in ({"standard": 0, "title": "Site-owned workspace"},
+                   {"standard": 1, "module": "Selling", "title": "Other app workspace"}):
+        frappe.db.set_value("Workspace", TITLE, values)
+        before = frappe.get_doc("Workspace", TITLE).as_dict()
+        ensure_workspace()
+        assert frappe.get_doc("Workspace", TITLE).as_dict() == before
+
+
 def test_page_mount_is_route_aware_and_reacts_to_cached_desk_routes():
     script = (ROOT / "internal_ledger/page/ledger_workbench/ledger_workbench.js").read_text()
     assert "frappe.get_route()" in script

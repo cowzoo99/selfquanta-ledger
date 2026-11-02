@@ -6,6 +6,11 @@ const pendingDuplicates = computed(() => monthly.value.filter(item => item.trans
 const pendingPosting = computed(() => monthly.value.filter(item => item.transaction.status === 'Imported' && !['Pending', 'Confirmed'].includes(item.transaction.duplicate_review_status) && item.draft?.status === 'Approved').length);
 const exceptions = computed(() => props.items.filter(item => item.error || item.draft?.status === 'Rejected'));
 const erpLinks = [['selling', '销售'], ['buying', '采购'], ['stock', '库存'], ['manufacturing', '制造']];
+function exceptionRoute(item) {
+  if (item.transaction.status === 'Duplicate' || ['Pending', 'Confirmed'].includes(item.transaction.duplicate_review_status)) return '/app/ledger-workbench/duplicates';
+  const stages = {Draft: '待审核', Rejected: '待审核', Approved: '待过账', Posted: '已过账'};
+  return `/app/ledger-workbench/review/${item.draft ? stages[item.draft.status] : '待分类'}`;
+}
 const cards = computed(() => [
   ['duplicates', '疑似重复', pendingDuplicates.value, '核对重复候选与原流水'],
   ['classification', '待分类', props.counts?.pending_classification ?? '—', '补充科目并学习交易对象规则'],
@@ -36,7 +41,7 @@ const cards = computed(() => [
       <li v-for="item in exceptions" :key="item.transaction.name">
         <strong>{{ item.error || item.draft?.rejection_reason || '已驳回' }}</strong>
         <span>{{ item.transaction.occurred_at }} · {{ item.transaction.counterparty }} · {{ item.transaction.amount }}</span>
-        <a :href="item.transaction.status === 'Duplicate' ? '/app/ledger-workbench/duplicates' : `/app/ledger-workbench/review/${item.draft ? '待审核' : '待分类'}`">查看并处理</a>
+        <a :href="exceptionRoute(item)">查看并处理</a>
       </li>
     </ul>
   </section>

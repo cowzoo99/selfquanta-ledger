@@ -59,11 +59,32 @@ def ensure_roles() -> None:
 
 def ensure_workspace() -> None:
     require_ledger_admin()
-    if not frappe.db.exists("Workspace", "SelfLedger 企业经营与智能内账"):
-        from frappe.modules.import_file import import_file_by_path
+    from frappe.modules.import_file import import_file_by_path
 
-        path = Path(__file__).parent / "internal_ledger/workspace/selfledger/selfledger.json"
-        import_file_by_path(str(path))
+    path = Path(__file__).parent / "internal_ledger/workspace/selfledger/selfledger.json"
+    expected = json.loads(path.read_text(encoding="utf-8"))
+    if frappe.db.exists("Workspace", expected["name"]):
+        current = frappe.get_doc("Workspace", expected["name"])
+        if not current.standard or current.module != expected["module"]:
+            return
+        for field, value in expected.items():
+            # Native fixture imports preserve site visibility; metadata is not product state.
+            if field in {"doctype", "name", "creation", "modified", "modified_by", "is_hidden"}:
+                continue
+            actual = current.get(field)
+            if isinstance(value, list):
+                actual = ([{key: row.get(key) for key in template}
+                           for row, template in zip(actual, value)] if len(actual) == len(value) else None)
+            elif field == "content":
+                actual, value = json.loads(actual), json.loads(value)
+            elif value == "" and actual is None:
+                actual = ""
+            if actual != value:
+                break
+        else:
+            return
+    # Frappe's reload import keeps Custom Workspace and personal navigation layers intact.
+    import_file_by_path(str(path), force=True)
 
 
 def _permission_state():
