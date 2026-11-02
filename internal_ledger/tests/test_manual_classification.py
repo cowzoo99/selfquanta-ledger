@@ -160,14 +160,33 @@ def test_document_permissions_apply_to_transaction_and_batch():
 
 def test_leaf_accounts_are_enabled_current_company_with_only_public_fields():
     from internal_ledger.api.classification_api import list_leaf_accounts
+    from internal_ledger.install import load_chart_fixture
 
     frappe.db.set_value("Account", account("560202"), "disabled", 1)
+    allowed = [row["account_number"] for group in load_chart_fixture().values()
+               for row in group if row.get("is_group") != 1]
     rows = list_leaf_accounts()
     expected = set(frappe.db.get_values("Account", {"company": frappe.flags.classification_company,
-        "is_group": 0, "disabled": 0}, "name", pluck=True))
+        "is_group": 0, "disabled": 0, "account_number": ["in", allowed]}, "name", pluck=True))
     assert {row["name"] for row in rows} == expected
-    assert all(set(row) == {"name", "account_number", "account_name", "root_type"} for row in rows)
+    assert all(set(row) == {"name", "account_number", "account_name", "root_type", "root_label"} for row in rows)
     assert account("560202") not in expected
+
+
+def test_leaf_accounts_only_expose_numbered_chinese_chart_accounts():
+    from internal_ledger.api.classification_api import list_leaf_accounts
+
+    english = frappe.get_doc({"doctype": "Account", "account_name": "Travel Expenses",
+        "company": frappe.flags.classification_company, "root_type": "Expense",
+        "report_type": "Profit and Loss", "is_group": 0,
+        "parent_account": frappe.db.get_value("Account", account("560201"), "parent_account")}).insert()
+    rows = list_leaf_accounts()
+    assert english.name not in {row["name"] for row in rows}
+    assert all(row["account_number"] and row["account_name"] for row in rows)
+    assert {"1001", "100201", "560201", "560202", "5001", "5603", "3001"} <= {
+        row["account_number"] for row in rows}
+    assert {row["root_label"] for row in rows} <= {"资产", "负债", "所有者权益", "收入", "成本费用"}
+    assert frappe.get_doc("Account", english.name).account_name == "Travel Expenses"
 
 
 def test_api_accepts_only_six_fields_and_is_post_only():

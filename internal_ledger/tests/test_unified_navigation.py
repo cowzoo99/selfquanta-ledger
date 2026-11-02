@@ -186,6 +186,22 @@ def test_duplicate_page_contract_and_dedicated_review_link():
     assert "/app/imported-transaction/" not in review
 
 
+def test_manual_classification_chinese_catalog_contract():
+    labels = (ROOT / "public/frontend/src/labels.js").read_text(encoding="utf-8")
+    for name in ("directions", "sources", "transactionTypes", "transactionStatuses", "draftStatuses",
+                 "processingStatuses", "classificationStatuses", "ACCOUNT_PRESETS"):
+        assert f"export const {name} =" in labels
+    for text in ("支出", "收入", "银行卡", "微信支付", "支付宝", "费用支出", "经营收入", "账户转账",
+                 "退款", "手续费", "股东投入", "办公费", "差旅费", "采购支出", "其他"):
+        assert text in labels
+    form = (ROOT / "public/frontend/src/components/ManualClassificationForm.vue").read_text(encoding="utf-8")
+    for text in ("ACCOUNT_PRESETS", "transactionTypes", "preset.direction !== transaction.direction", "更多中文科目",
+                 'v-if="showAccounts"', ':value="account.name"', " · ",
+                 "account.account_number === preset.accountNumber", "account.root_type === 'Asset'",
+                 "account.name !== props.transaction.payment_account"):
+        assert text in form
+
+
 def load_tests(loader, tests, pattern):
     return unittest.TestSuite(unittest.FunctionTestCase(test, setUp=set_up, tearDown=tear_down)
                               for name, test in sorted(globals().items()) if name.startswith("test_"))
