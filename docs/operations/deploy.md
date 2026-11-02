@@ -104,7 +104,7 @@ COSCLI_CONFIG_FILE=/etc/selfquanta/ledger/cos.yaml
 COS_BACKUP_URI=cos://selfquanta-ledger-backup/production/ledger/
 ```
 
-Replace both placeholders with the same reviewed full 40-character commit. Keep the runtime file root-readable and outside Git. The runtime example contains an all-zero image sentinel and must not be deployed unchanged. The static gate rejects a configured mutable app/OCR image; explicitly configure `OCR_IMAGE` rather than accepting Compose's development `local` default.
+Replace both placeholders with the same reviewed full 40-character commit. Keep the runtime file root-readable and outside Git. The runtime example contains all-zero app and OCR image sentinels and must not be deployed unchanged. The static gate rejects configured mutable/sentinel images and requires both exact image template values. Compose rejects a missing or empty `OCR_IMAGE`; there is no development image fallback. Run `docker compose --env-file /srv/selfquanta/ledger/infra/versions.env -f /srv/selfquanta/ledger/infra/compose.yaml config --quiet` with the protected runtime environment loaded before startup. Bare `infra/test-config.ps1 -StaticOnly` remains usable for repository checks without a production environment.
 
 ## Install and operate the systemd services
 
@@ -149,7 +149,7 @@ Use a maintenance window. Before stopping any service, test the exact candidate 
 1. Stop new writes and background jobs for a consistent backup. Load the existing runtime and run `infra/backup-and-upload.ps1`; require process exit 0 and verify the archive checksum/manifest and COS copy. A backup/upload failure ends the release before migration. Never print or copy the runtime secrets into the release log.
 2. Stop the old app services while keeping the database, Redis and volumes. Use the candidate image only for a one-shot migration; leave the persistent `INTERNAL_LEDGER_IMAGE` and `OCR_IMAGE` settings unchanged until this exits 0.
 3. On migration failure, stop here. Do not start the candidate services or edit the persistent image values. Diagnose against the retained backup; partially applied schema/data changes may require restore rather than restarting the old code.
-4. Only after migration exit 0, set the two reviewed SHA image values in the protected runtime file and restart the systemd service. Run the read-only smoke below before admitting users or restarting the backup timer.
+4. Only after migration exit 0, set the two reviewed SHA image values in the protected runtime file and restart the systemd service. Keep maintenance enabled for the container/static/bench checks below; then disable maintenance and restart while access remains WireGuard-only, and perform HTTP/authenticated read-only smoke before admitting users or restarting the backup timer.
 
 Example maintenance sequence (run as root with the approved release commit already exported; the helper is local to this shell):
 
@@ -172,7 +172,7 @@ INTERNAL_LEDGER_IMAGE="$candidate_image" dc run --rm --no-deps --entrypoint benc
 # Stop on nonzero migration; do not switch the persistent runtime before this point.
 ```
 
-The final `migrate` command runs the candidate image through a temporary environment override, preserving the current runtime file for rollback. Keep maintenance enabled on failure. Save the current root-owned runtime to a unique restricted backup path before editing it; record that path in the release record. After successful migration, edit only `INTERNAL_LEDGER_IMAGE` and `OCR_IMAGE` to the reviewed SHA values, reload the environment, run `sudo systemctl restart selfquanta-ledger`, and inspect health before clearing maintenance. After read-only smoke succeeds, enable the site's scheduler, disable maintenance, and restart `selfquanta-ledger-backup.timer`.
+The final `migrate` command runs the candidate image through a temporary environment override, preserving the current runtime file for rollback. Keep maintenance enabled on failure. Save the current root-owned runtime to a unique restricted backup path before editing it; record that path in the release record. After successful migration, edit only `INTERNAL_LEDGER_IMAGE` and `OCR_IMAGE` to the reviewed SHA values, reload the environment, validate Compose configuration and run `sudo systemctl restart selfquanta-ledger`. Complete phase 1 below with maintenance still enabled. Complete phase 2 only through the existing WireGuard/private firewall access. After both phases succeed, enable the site's scheduler and restart `selfquanta-ledger-backup.timer`.
 
 For rollback, restore the previous SHA image values and the saved configuration, then run `sudo systemctl restart selfquanta-ledger` and inspect `sudo systemctl status selfquanta-ledger` and its journal. Keep maintenance enabled until checks pass. A code-image rollback does not reverse database migrations. If schema/data compatibility is uncertain, keep services stopped and restore the selected encrypted database-plus-files backup using the verified [isolated restore procedure](backup-restore.md#isolated-restore-drill), including the original encryption key. Do not use `down --volumes`, remove production volumes, or run Docker-wide prune during rollback.
 
@@ -180,7 +180,21 @@ Run a restore drill before promotion using the backup manifest's exact image and
 
 ## Read-only release smoke and real-file acceptance
 
-While still on WireGuard, verify service/container health and `/api/method/ping`. Read the deployed runtime asset manifest and GET its exact Desk and ledger bundle URLs; both must return HTTP 200 with JavaScript content. Check the authenticated unified `SelfLedger 企业经营与智能内账` Workspace, the configured company and its enabled leaf accounts, workbench counts, a read-only report and audit history. Check Compose's published ports and ensure `ocr` has none; only the gateway may publish ports. OCR health is internal (`http://ocr:8765/health`), with no public OCR route. Do not print source IDs, bank details or statement contents in smoke logs. Keep fixture imports and automated posting on `test.localhost`, where tests roll back database and source-file fixtures.
+Phase 1, maintenance enabled: verify container health, the deployed runtime asset manifest and the exact static Desk/ledger bundle URLs (HTTP 200 and JavaScript content). Check Compose's published ports and ensure `ocr` has none; only the private gateway may publish ports. OCR health is internal (`http://ocr:8765/health`), with no public OCR route. Use container-local `bench execute` for database connectivity, the unified Workspace, the configured company and enabled leaf accounts; these reads bypass the HTTP request maintenance gate without changing its configuration. For example, using the `dc` helper above:
+
+```bash
+dc ps
+dc exec -T backend bench --site "$SITE_NAME" execute 'frappe.db.sql("select 1")'
+dc exec -T backend bench --site "$SITE_NAME" execute 'frappe.db.exists("Workspace", "SelfLedger 企业经营与智能内账")'
+dc exec -T backend bench --site "$SITE_NAME" execute 'frappe.db.exists("Company", frappe.db.get_single_value("Internal Ledger Settings", "company"))'
+dc exec -T backend bench --site "$SITE_NAME" execute internal_ledger.api.classification_api.list_leaf_accounts
+```
+
+Require a successful database read, the named Workspace, the configured Company and the expected enabled leaf accounts before proceeding. Do not attempt `/api/method/ping`, login or authenticated HTTP API checks in this phase: normal Frappe requests are stopped by maintenance mode.
+
+Phase 2, WireGuard/private firewall access retained: disable maintenance through `dc exec -T backend bench --site "$SITE_NAME" set-maintenance-mode off`, then run `sudo systemctl restart selfquanta-ledger` to refresh web-process configuration. Now verify `/api/method/ping`, login, the authenticated unified Workspace, company/accounts, workbench counts, a read-only report and audit history. Do not admit ordinary users during this check. If any check fails, immediately run `dc exec -T backend bench --site "$SITE_NAME" set-maintenance-mode on` and restart the service to close HTTP access, then restore the previous image/configuration using the rollback procedure above. If backend cannot execute the maintenance command, stop the gateway before diagnosis and rollback. If the failed release changed database state incompatibly, keep maintenance enabled and use the selected backup plus the verified restore-drill procedure to recover database and files before retrying. Keep the scheduler disabled and backup timer stopped until smoke succeeds; add no maintenance read-bypass setting and open no public access.
+
+Do not print source IDs, bank details or statement contents in smoke logs. Keep fixture imports and automated posting on `test.localhost`, where tests roll back database and source-file fixtures.
 
 Real accounting acceptance remains an administrator decision: the administrator selects an approved real statement file, uploads it through the UI, reviews Pending/Confirmed duplicate exclusions, supplies a release note where appropriate, manually classifies an unmatched row and checks each debit/credit line and company. The administrator must explicitly click the UI approval/posting confirmation before any real Journal Entry is created. Record only the resulting real Journal Entry reference and acceptance result in restricted evidence. Automated smoke must never upload a fabricated statement or approve/post entries in the production company. Public access without WireGuard is separately gated Task 7 and is not part of this release-readiness task.
 

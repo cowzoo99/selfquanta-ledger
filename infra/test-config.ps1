@@ -150,6 +150,7 @@ Assert-True ($runtimeCrlf -match '(?m)^SITE_NAME=ledger\.selfquanta\.com\r?$' -a
 Assert-True ($runtime -match '(?m)^DB_ROOT_PASSWORD_FILE=/etc/selfquanta/ledger/db-root-password\r?$') 'Database secret path is wrong'
 Assert-True ($runtime -match '(?m)^SITE_ADMIN_PASSWORD_FILE=/etc/selfquanta/ledger/site-admin-password\r?$') 'Admin secret path is wrong'
 Assert-True ($runtime -match '(?m)^INTERNAL_LEDGER_IMAGE=internal-ledger:[0-9a-f]{40}\r?$') 'Runtime image must use an exact 40-character commit tag'
+Assert-True ($runtime -match '(?m)^OCR_IMAGE=internal-ledger-ocr:[0-9a-f]{40}\r?$') 'Runtime OCR_IMAGE must use an exact 40-character commit tag'
 foreach ($secretSetting in @(
     'TLS_CERTIFICATE_FILE=/etc/selfquanta/ledger/internal-fullchain.pem',
     'TLS_PRIVATE_KEY_FILE=/etc/selfquanta/ledger/internal-privkey.pem',
@@ -169,6 +170,7 @@ Assert-True ($versions -notmatch '(?im):latest\s*$') 'Mutable latest tag is forb
 
 $compose = Get-Content -Raw -LiteralPath (Join-Path $InfraRoot 'compose.yaml')
 Assert-True ($compose.Contains('image: ${INTERNAL_LEDGER_IMAGE:?set INTERNAL_LEDGER_IMAGE to internal-ledger:<git-sha>}')) 'Compose must require INTERNAL_LEDGER_IMAGE'
+Assert-True ($compose.Contains('image: ${OCR_IMAGE:?set OCR_IMAGE to internal-ledger-ocr:<git-sha>}')) 'Compose must require OCR_IMAGE without a development fallback'
 Assert-True ($compose -match 'UPSTREAM_REAL_IP_ADDRESS:\s+172\.16\.0\.0/12') 'Frontend must trust the Docker bridge CIDR without depending on the gateway service DNS name'
 Assert-True ($compose -notmatch 'UPSTREAM_REAL_IP_ADDRESS:\s+gateway') 'Frontend must not create a gateway DNS startup cycle'
 foreach ($internalService in @('db', 'redis-cache', 'redis-queue', 'configurator', 'create-site', 'backend', 'ocr', 'restore-runner', 'frontend', 'websocket', 'queue-short', 'queue-long', 'scheduler')) {
@@ -299,6 +301,20 @@ try {
         $env:OCR_IMAGE = 'internal-ledger-ocr:local'
         Assert-CommandFailsLike { pwsh -NoProfile -File $PSCommandPath -StaticOnly } 'OCR_IMAGE.*immutable' 'Mutable OCR image test'
         $env:OCR_IMAGE = 'internal-ledger-ocr:' + ('1' * 40)
+        foreach ($state in @('missing', 'empty', 'mutable')) {
+            $case = New-MutatedInfra "ocr-image-$state"
+            $runtimeFile = Join-Path $case 'runtime.env.example'
+            $invalidRuntime = [regex]::Replace((Get-Content -Raw -LiteralPath $runtimeFile), '(?m)^OCR_IMAGE=.*\r?\n?', '')
+            if ($state -eq 'empty') { $invalidRuntime += "`nOCR_IMAGE=`n" }
+            if ($state -eq 'mutable') { $invalidRuntime += "`nOCR_IMAGE=internal-ledger-ocr:local`n" }
+            Set-Content -LiteralPath $runtimeFile -Value $invalidRuntime
+            Assert-CommandFailsLike { pwsh -NoProfile -File $PSCommandPath -InfraRoot $case -StaticOnly } 'Runtime OCR_IMAGE' "$state OCR image template test"
+        }
+        $case = New-MutatedInfra 'ocr-image-fallback'
+        $composeFile = Join-Path $case 'compose.yaml'
+        (Get-Content -Raw -LiteralPath $composeFile).Replace('${OCR_IMAGE:?set OCR_IMAGE to internal-ledger-ocr:<git-sha>}', '${OCR_IMAGE:-internal-ledger-ocr:local}') |
+            Set-Content -LiteralPath $composeFile
+        Assert-CommandFailsLike { pwsh -NoProfile -File $PSCommandPath -InfraRoot $case -StaticOnly } 'Compose must require OCR_IMAGE' 'OCR image development fallback test'
         $assetFixture = Join-Path $scratch 'asset-gate'
         [void](New-Item -ItemType Directory -Path (Join-Path $assetFixture 'assets') -Force)
         $assetManifest = @{}

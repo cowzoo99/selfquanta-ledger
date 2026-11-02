@@ -146,7 +146,7 @@ services:
   ocr:
     build:
       context: ../ocr_service
-    image: ${OCR_IMAGE:-internal-ledger-ocr:local}
+    image: ${OCR_IMAGE:?set OCR_IMAGE to internal-ledger-ocr:<git-sha>}
     restart: unless-stopped
     networks:
       - internal
