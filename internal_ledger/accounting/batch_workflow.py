@@ -64,3 +64,60 @@ def prepare_matched_transactions(tx_names: list[str]) -> list[dict]:
                              "message": "生成失败，请检查流水权限、科目及会计期间后重试"})
         frappe.db.release_savepoint(point)
     return outcomes
+
+
+def approve_and_post(draft_names: list[str]) -> list[dict]:
+    from internal_ledger.accounting import posting
+    from internal_ledger.api.review_api import approve_draft
+
+    require_ledger_admin()
+    frappe.has_permission("Voucher Draft", ptype="read", throw=True)
+    frappe.has_permission("Voucher Draft", ptype="write", throw=True)
+    if not isinstance(draft_names, list):
+        frappe.throw("凭证必须为编号列表")
+    outcomes = []
+    for name in draft_names:
+        point = "ledger_post_" + uuid4().hex
+        frappe.db.savepoint(point)
+        reference = None
+        outcome_name = name if isinstance(name, str) else ""
+        message_count = len(frappe.local.message_log or [])
+        try:
+            if not isinstance(name, str) or not name.strip():
+                frappe.throw("凭证编号无效")
+            doc = frappe.get_doc("Voucher Draft", name, for_update=True)
+            doc.check_permission("read")
+            doc.check_permission("write")
+            reference = doc.name
+            existing = frappe.db.get_value("Posting Link", {"voucher_draft": doc.name}, "name", for_update=True)
+            was_posted = doc.status == "Posted"
+            if bool(existing) != was_posted:
+                frappe.throw("草稿与过账关联状态不一致")
+            if doc.status == "Draft":
+                approve_draft(doc.name)
+            elif doc.status not in {"Approved", "Posted"}:
+                frappe.throw("当前状态不可审核过账")
+            journal_name = posting.post_draft(doc.name)
+            link_name = existing or frappe.db.get_value("Posting Link", {"voucher_draft": doc.name}, "name", for_update=True)
+            link = frappe.get_doc("Posting Link", link_name, for_update=True)
+            link.check_permission("read")
+            journal = frappe.get_doc("Journal Entry", journal_name, for_update=True)
+            journal.check_permission("read")
+            if link.voucher_draft != doc.name or link.journal_entry != journal.name or journal.docstatus != 1 or journal.company != doc.company:
+                frappe.throw("过账关联与正式凭证不一致")
+            outcomes.append({"name": outcome_name, "status": "skipped" if was_posted else "created",
+                "draft": doc.name, "journal_entry": journal.name, "posting_link": link.name,
+                "message": "已过账，返回既有正式凭证" if was_posted else "已审核并过账"})
+        except frappe.QueryDeadlockError:
+            # MariaDB rolls back the whole transaction and invalidates all savepoints.
+            raise
+        except Exception:
+            frappe.db.rollback(save_point=point)
+            frappe.local.message_log = (frappe.local.message_log or [])[:message_count]
+            record_audit("approve_and_post", "Voucher Draft" if reference else "Internal Ledger Settings",
+                         reference or "Internal Ledger Settings", "failed")
+            outcomes.append({"name": outcome_name, "status": "failed", "draft": reference,
+                "journal_entry": None, "posting_link": None,
+                "message": "审核过账失败，请检查权限、草稿分录、科目及会计期间后重试"})
+        frappe.db.release_savepoint(point)
+    return outcomes

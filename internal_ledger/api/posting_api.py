@@ -14,3 +14,9 @@ def post_draft(draft_name: str) -> str:
 def reverse_posting(posting_link: str, reason: str) -> str:
     require_ledger_admin()
     return reversal.reverse_posting(posting_link, reason)
+
+
+@frappe.whitelist(methods=["POST"])
+def approve_and_post(draft_names):
+    from internal_ledger.accounting.batch_workflow import approve_and_post as post_batch
+    return post_batch(frappe.parse_json(draft_names) if isinstance(draft_names, str) else draft_names)

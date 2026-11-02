@@ -6,7 +6,7 @@ import {call, errorMessage} from '../api';
 const props = defineProps({items: Array, canWrite: Boolean, loading: Boolean});
 const emit = defineEmits(['refresh']);
 const selected = ref([]), active = ref(null), busy = ref(false), error = ref(''), outcomes = ref([]), reason = ref('');
-const savedVersion = ref(''), filter = ref('待分类'), selectedTransactions = ref([]);
+const savedVersion = ref(''), filter = ref('待分类'), selectedTransactions = ref([]), confirmation = ref('');
 const filters = ['疑似重复', '待分类', '待审核', '待过账', '已过账'];
 const statuses = {Draft: '待审核', Rejected: '已驳回', Approved: '待过账', Posted: '已过账'};
 const resultStatuses = {created: '已生成', skipped: '已跳过', failed: '失败'};
@@ -48,17 +48,46 @@ async function prepareBatch() {
   } catch (e) { error.value = errorMessage(e); }
   finally { busy.value = false; }
 }
-async function bulk() {
-  busy.value = true; outcomes.value = []; error.value = '';
+const postEligible = item => !duplicate(item) && item.transaction.status === 'Imported' && !item.error &&
+  (item.draft?.status === 'Approved' || (item.draft?.status === 'Draft' && item.can_approve));
+const postingSummary = computed(() => {
+  const summary = {count: selected.value.length, income: 0, expense: 0, debit: 0, credit: 0, anomalies: 0};
   for (const name of selected.value) {
-    try {
-      const item = await call('get_review_item', {name});
-      if (!item.can_approve) throw new Error(item.error || '当前状态不可审核');
-      await call('approve_draft', {name});
-      outcomes.value.push({name, message: '审核通过'});
-    } catch (e) { outcomes.value.push({name, message: errorMessage(e)}); }
+    const item = props.items.find(row => row.draft?.name === name);
+    if (!item) { summary.anomalies++; continue; }
+    const amount = Number(item.transaction.amount);
+    if (Number.isFinite(amount) && ['income', 'expense'].includes(item.transaction.direction)) summary[item.transaction.direction] += amount;
+    let debit = 0, credit = 0;
+    const lines = item.draft.lines || [];
+    let invalid = !postEligible(item) || !Number.isFinite(amount) || amount <= 0 || !lines.length;
+    for (const line of lines) {
+      const dr = Number(line.debit || 0), cr = Number(line.credit || 0);
+      if (!line.account || !Number.isFinite(dr) || !Number.isFinite(cr) || dr < 0 || cr < 0 || (dr && cr)) invalid = true;
+      if (Number.isFinite(dr)) debit += dr;
+      if (Number.isFinite(cr)) credit += cr;
+    }
+    summary.debit += debit; summary.credit += credit;
+    if (invalid || debit <= 0 || Math.abs(debit - credit) >= 1e-9) summary.anomalies++;
   }
-  selected.value = []; active.value = null; busy.value = false; emit('refresh');
+  return summary;
+});
+const confirmationVersion = () => JSON.stringify(selected.value.map(name => props.items.find(item => item.draft?.name === name)));
+const confirmationValid = computed(() => confirmation.value === confirmationVersion());
+const money = value => Number(value).toLocaleString('zh-CN', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+function confirmPosting() {
+  if (!props.canWrite || busy.value || dirty.value || !selected.value.length) return;
+  confirmation.value = confirmationVersion(); error.value = '';
+}
+async function postBatch() {
+  if (!props.canWrite || busy.value || dirty.value || !confirmation.value || !confirmationValid.value || postingSummary.value.anomalies) return;
+  busy.value = true; outcomes.value = []; error.value = '';
+  try {
+    const response = await frappe.call({method: 'internal_ledger.api.posting_api.approve_and_post',
+      args: {draft_names: JSON.stringify(selected.value)}, type: 'POST'});
+    outcomes.value = response.message;
+    selected.value = []; confirmation.value = ''; active.value = null; emit('refresh');
+  } catch (e) { error.value = errorMessage(e); }
+  finally { busy.value = false; }
 }
 </script>
 
@@ -68,15 +97,33 @@ async function bulk() {
     <p>异常优先。人工修改会保留操作人，并重新验证科目、金额与会计期间。</p>
     <div role="group" aria-label="审核状态筛选"><button v-for="label in filters" :key="label" :aria-pressed="filter === label" :disabled="busy" @click="filter = label">{{ label }}（{{ items.filter(item => stage(item) === label).length }}）</button></div>
     <button v-if="canWrite" :disabled="busy || dirty || !selectedTransactions.length" @click="prepareBatch">批量生成凭证（{{ selectedTransactions.length }}）</button>
-    <button v-if="canWrite" :disabled="busy || dirty || !selected.length" @click="bulk">审核选中项（{{ selected.length }}）</button>
+    <button v-if="canWrite" :disabled="busy || dirty || !selected.length" @click="confirmPosting">审核并过账选中项（{{ selected.length }}）</button>
     <p v-if="loading" role="status">正在载入…</p><p v-else-if="!visibleItems.length">当前筛选没有流水。</p>
     <p v-if="error && !active" role="alert">{{ error }}</p>
-    <ol v-if="outcomes.length" aria-live="polite"><li v-for="(outcome, index) in outcomes" :key="index">{{ outcome.name }}：{{ resultStatuses[outcome.status] || '审核结果' }} · {{ outcome.message }} <a v-if="outcome.draft" :href="`/app/voucher-draft/${encodeURIComponent(outcome.draft)}`">查看凭证 {{ outcome.draft }}</a></li></ol>
+    <div v-if="canWrite && confirmation" role="region" aria-label="审核过账确认">
+      <h3>审核过账确认</h3>
+      <dl><dt>选中数量</dt><dd>{{ postingSummary.count }}</dd>
+        <dt>收入合计</dt><dd>{{ money(postingSummary.income) }}</dd><dt>支出合计</dt><dd>{{ money(postingSummary.expense) }}</dd>
+        <dt>借方合计</dt><dd>{{ money(postingSummary.debit) }}</dd><dt>贷方合计</dt><dd>{{ money(postingSummary.credit) }}</dd>
+        <dt>异常数量</dt><dd>{{ postingSummary.anomalies }}</dd></dl>
+      <p>确认后将逐笔审核并生成正式记账凭证；失败项保留原状态，可修复后重试。</p>
+      <p v-if="!confirmationValid" role="alert">选中项或汇总已变化，请重新预览确认。</p>
+      <button :disabled="busy || dirty || !confirmationValid || !!postingSummary.anomalies" @click="postBatch">确认审核并过账</button>
+      <button :disabled="busy" @click="confirmation = ''">取消</button>
+    </div>
+    <table v-if="outcomes.length" aria-live="polite">
+      <caption>逐项处理结果</caption><thead><tr><th scope="col">草稿 / 流水</th><th scope="col">状态</th><th scope="col">处理说明</th><th scope="col">凭证</th></tr></thead>
+      <tbody><tr v-for="(outcome, index) in outcomes" :key="index">
+        <td>{{ outcome.name }}</td><td>{{ outcome.status === 'created' && outcome.journal_entry ? '已过账' : resultStatuses[outcome.status] }}</td><td>{{ outcome.message }}</td>
+        <td><a v-if="outcome.journal_entry" :href="`/app/journal-entry/${encodeURIComponent(outcome.journal_entry)}`">正式凭证 {{ outcome.journal_entry }}</a>
+          <a v-else-if="outcome.draft" :href="`/app/voucher-draft/${encodeURIComponent(outcome.draft)}`">查看草稿 {{ outcome.draft }}</a></td>
+      </tr></tbody>
+    </table>
     <div class="ledger-review">
       <ul class="ledger-items">
         <li v-for="item in visibleItems" :key="item.transaction.name">
           <label v-if="canWrite && eligible(item)"><input v-model="selectedTransactions" type="checkbox" :value="item.transaction.name" :disabled="busy">选择生成凭证</label>
-          <label v-if="canWrite && item.draft"><input v-model="selected" type="checkbox" :value="item.draft.name" :disabled="busy || !item.can_approve">选择 {{ item.draft.name }}</label>
+          <label v-if="canWrite && postEligible(item)"><input v-model="selected" type="checkbox" :value="item.draft.name" :disabled="busy">选择 {{ item.draft.name }}</label>
           <strong>{{ item.error || item.draft?.rejection_reason || statuses[item.draft?.status] || '待分类' }}</strong>
           <span>{{ item.transaction.counterparty }} · {{ item.transaction.amount }}</span>
           <button :disabled="busy" @click="open(item)">查看 {{ item.transaction.name }}</button>
