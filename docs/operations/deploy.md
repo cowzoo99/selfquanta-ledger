@@ -19,7 +19,42 @@ The build follows the official layered image interface: `images/layered/Containe
 sudo env WIREGUARD_ENDPOINT='SERVER_PUBLIC_IP_OR_HOSTNAME' bash /srv/selfquanta/ledger/infra/host/configure-private-access.sh laptop-cao
 ```
 
-**Post-ICP:** Only after filing approval, provision public DNS and a valid public TLS certificate, then deliberately change the HTTP/HTTPS bindings and firewall rules for public access. Public bindings, public DNS, and public 80/443 remain disabled until that gate is met. Re-run the configuration checks and review the changed firewall rules before cutover.
+**Post-ICP:** Only after filing approval, provision public DNS and a valid public TLS certificate, then use the gated public cutover below. Public bindings, public DNS, and public 80/443 remain disabled until that gate is met. Public mode opens gateway HTTPS 443; HTTP 80 stays WireGuard-only. Use DNS-based certificate issuance/renewal so public 80 is unnecessary.
+
+### Gated public HTTPS cutover and private rollback
+
+The checked-in defaults are `PUBLIC_ACCESS_ENABLED=0`, empty `PUBLIC_HOSTNAME`, `ICP_APPROVED=0`, and `HTTP_BIND=HTTPS_BIND=10.77.0.1`. Compose also defaults to the WireGuard address when bind variables are absent. The startup static gate rejects public bindings without an explicit approved public mode; all services except gateway remain unpublished.
+
+This task prepares code only. Before invoking the script, the owner must supply the exact registered hostname, visible Tencent Cloud ICP approval and a public certificate/key. Legal approval and Tencent console firewall state cannot be established by this script: a root operator must record the approval reference/date, exact hostname, provider firewall review, named account review and privileged 2FA enrollment/successful interactive challenge in `/etc/selfquanta/ledger/public-access-evidence.txt` (root-owned, mode 0600). No identities, OTP seeds, certificate private keys or account credentials belong in that evidence. Keep public SSH permissions unchanged and retain WireGuard management access. Verify the provider allows only TCP 443 for this service; Docker published ports can bypass UFW, so provider rules and Compose bindings both matter.
+
+While still private, configure the pinned Frappe v16.52.0 controls through its administrator UI:
+
+- Website Settings: `disable_signup=1`.
+- System Settings: positive `allow_consecutive_login_attempts` and `allow_login_after_fail`, `enable_two_factor_auth=1`, and both `bypass_2fa_for_retricted_ip_users=0` (the upstream field spelling) and `bypass_restrict_ip_check_if_2fa_enabled=0`.
+- Set `Role.two_factor_auth=1` on a role held by every enabled Administrator, System Manager and 账套管理员 user. Keep those users' `bypass_restrict_ip_check_if_2fa_enabled=0`. Each must complete and test OTP enrollment interactively before the operator confirms it. The script reads no OTP secrets: Frappe's OTP-secret accessor can create a secret, which cannot prove enrollment.
+- Configure the site's native request limiter, for example `bench --site ledger.selfquanta.com set-config rate_limit '{"limit":120,"window":60}' --parse`, while private. The script requires positive finite numeric `limit` and `window`. This native limiter measures request processing time; password attacks are also covered by the System Settings lockout and gateway login endpoint IP limit (5 requests/minute, burst 5, HTTP 429).
+
+Use one named account per person, including administrators. Prohibit shared Administrator use. Frappe emits the `sid` cookie with HttpOnly and SameSite=Lax, and marks it Secure for HTTPS requests; the gateway supplies `X-Forwarded-Proto=https` and additionally enforces those cookie flags. The gateway replaces untrusted incoming forwarded client IPs, supports WebSocket upgrades, and sends HSTS, nosniff and SAMEORIGIN headers.
+
+Complete a backup/upload and retain the verified private runtime before cutover. Install the matching public certificate chain and key under `/etc/selfquanta/ledger` with mode 0600. Change only the protected runtime's TLS file paths and the literal `ICP_APPROVED=1` flag; leave bindings and public-mode defaults private for the script. Point the approved hostname's A record exclusively to this server's public IPv4 (verify against the restricted deployment record), and do not publish an AAAA record for this IPv4-only gateway. The script independently detects the server IPv4 from Tencent metadata with a five-second timeout, verifies DNS A resolution, certificate DNS SAN/hostname, trust chain, lifetime and key matching, and checks the live Frappe controls before changing access.
+
+After the evidence exists and the owner has authorized production cutover, an operator can run this command, replacing the illustrative hostname with the exact approved registered hostname. Do not run the example hostname:
+
+```bash
+sudo env PRIVILEGED_2FA_CONFIRMED=1 \
+  PUBLIC_ACCESS_EVIDENCE_FILE=/etc/selfquanta/ledger/public-access-evidence.txt \
+  bash /srv/selfquanta/ledger/infra/host/configure-public-access.sh ledger.example.com
+```
+
+The script retains restricted runtime/UFW snapshots, validates the new runtime with StaticOnly and Compose config, then updates only managed web firewall rules and recreates only gateway. It leaves SSH/WireGuard rules and all volumes intact. It restores runtime and UFW on any failure; a failed recovery requests gateway stop and reports `ROLLBACK FAILED` for manual intervention. A successful command is configuration evidence only: verify from an external network HTTPS hostname/trust, non-admin login, session cookies, privileged OTP challenge, Workspace, WebSocket, a permitted file upload, logout, and only TCP 443 reachable. Do not upload synthetic accounting data to production. Review SSH/WireGuard management connectivity as well. These live checks and Tencent/ICP evidence remain separate from offline tests.
+
+To return to private access, with the internal CA/certificate still installed and WireGuard active:
+
+```bash
+sudo bash /srv/selfquanta/ledger/infra/host/configure-private-access.sh --rollback
+```
+
+This delegates to `configure-public-access.sh --private`, requires no public DNS/ICP/2FA evidence, restores both binds to `10.77.0.1`, restores internal TLS paths, clears public mode/hostname and resets ICP confirmation to 0. It rebuilds public 80/443 denials and wg0-only web allowances, validates configuration and recreates only gateway. Check private HTTPS through WireGuard and inspect the retained snapshot. Repeating rollback is safe; no database migration, volume deletion, firewall reset or SSH policy change occurs. Provisioning a new WireGuard client while public mode is active is refused until this explicit rollback.
 
 ## Build the immutable image
 
@@ -89,6 +124,9 @@ Use long random passwords. Keep `db-root-password` and `site-admin-password` own
 INTERNAL_LEDGER_IMAGE=internal-ledger:<git-sha>
 OCR_IMAGE=internal-ledger-ocr:<same-git-sha>
 SITE_NAME=ledger.selfquanta.com
+PUBLIC_ACCESS_ENABLED=0
+PUBLIC_HOSTNAME=
+ICP_APPROVED=0
 COMPOSE_PROJECT_NAME=selfquanta-ledger
 DB_ROOT_PASSWORD_FILE=/etc/selfquanta/ledger/db-root-password
 SITE_ADMIN_PASSWORD_FILE=/etc/selfquanta/ledger/site-admin-password

@@ -7,6 +7,9 @@ if [[ $EUID -ne 0 ]]; then
     echo 'Run this script as root.' >&2
     exit 1
 fi
+if [[ ${1:-} == --rollback && $# -eq 1 ]]; then
+    exec bash "$(dirname -- "${BASH_SOURCE[0]}")/configure-public-access.sh" --private
+fi
 if [[ $# -ne 1 || ! $1 =~ ^[a-z][a-z0-9_-]{0,31}$ ]]; then
     echo 'Usage: sudo bash infra/host/configure-private-access.sh <client-name>' >&2
     exit 1
@@ -36,6 +39,12 @@ clients=$secrets/wireguard-clients
 server_config=/etc/wireguard/wg0.conf
 client_config=$clients/$client_name.conf
 install -d -m 0700 -o root -g root /etc/wireguard "$secrets" "$clients"
+exec 8>"$secrets/.access-mode.lock"
+flock -n 8
+if [[ -f $secrets/runtime.env ]] && grep -Fxq 'PUBLIC_ACCESS_ENABLED=1' "$secrets/runtime.env"; then
+    echo 'Public access is enabled; use configure-private-access.sh --rollback first.' >&2
+    exit 1
+fi
 exec 9>/etc/wireguard/.private-access.lock
 flock -n 9
 if [[ -e $client_config ]] || { [[ -f $server_config ]] && grep -Fxq "# Client: $client_name" "$server_config"; }; then

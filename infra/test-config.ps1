@@ -5,6 +5,7 @@ param(
     [string]$AssetRoot,
     [switch]$StaticOnly,
     [switch]$PrivateAccessOnly,
+    [switch]$PublicAccessOnly,
     [switch]$BackupUploadOnly
 )
 
@@ -32,6 +33,26 @@ foreach ($imageVariable in @('INTERNAL_LEDGER_IMAGE', 'OCR_IMAGE')) {
     }
 }
 
+# Validate the loaded runtime too; checking only the example cannot guard systemd.
+$publicMode = if ($env:PUBLIC_ACCESS_ENABLED) { $env:PUBLIC_ACCESS_ENABLED } else { '0' }
+Assert-True ($publicMode -cin @('0', '1')) 'PUBLIC_ACCESS_ENABLED must be literal 0 or 1'
+$httpBind = if ($env:HTTP_BIND) { $env:HTTP_BIND } else { '10.77.0.1' }
+$httpsBind = if ($env:HTTPS_BIND) { $env:HTTPS_BIND } else { '10.77.0.1' }
+Assert-True ($httpBind -eq '10.77.0.1') 'Pre-ICP public exposure: HTTP must remain WireGuard-only'
+Assert-True (-not $env:HTTP_PORT -or $env:HTTP_PORT -eq '80') 'Gateway HTTP port must be 80'
+Assert-True (-not $env:HTTPS_PORT -or $env:HTTPS_PORT -eq '443') 'Gateway HTTPS port must be 443'
+if ($publicMode -eq '0') {
+    Assert-True ($httpsBind -eq '10.77.0.1') 'Pre-ICP public exposure: private HTTPS must bind only to WireGuard'
+} else {
+    Assert-True (([string]$env:PUBLIC_HOSTNAME).Length -le 253 -and $env:PUBLIC_HOSTNAME -match '^([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$') 'Public mode requires a DNS hostname, never an IP'
+    Assert-True ($env:ICP_APPROVED -ceq '1') 'Public mode requires literal ICP_APPROVED=1'
+    Assert-True ($httpsBind -eq '0.0.0.0') 'Public HTTPS must bind to 0.0.0.0:443'
+    foreach ($variable in @('TLS_CERTIFICATE_FILE', 'TLS_PRIVATE_KEY_FILE')) {
+        $path = [Environment]::GetEnvironmentVariable($variable)
+        Assert-True ($path -and (Test-Path -LiteralPath $path -PathType Leaf)) 'Public mode requires existing certificate/key files'
+    }
+}
+
 Assert-True ([bool]$AssetManifestPath -eq [bool]$AssetRoot) 'AssetManifestPath and AssetRoot must be supplied together'
 if ($AssetManifestPath) {
     $assetBase = (Resolve-Path -LiteralPath $AssetRoot).Path
@@ -55,6 +76,7 @@ $required = @(
     'runtime.env.example',
     'host/bootstrap-ubuntu.sh',
     'host/configure-private-access.sh',
+    'host/configure-public-access.sh',
     'systemd/selfquanta-ledger.service',
     'host/install-systemd-units.sh',
     'compose.yaml',
@@ -92,6 +114,10 @@ Assert-True ($bootstrap -notmatch '(?im)(password|secret|token)\s*=\s*\S+' -and 
 Assert-True ($bootstrap -notmatch '(?im)(rm\s+-[a-z]*r|docker\s+(system|volume)\s+prune|apt-get\s+(purge|autoremove))') 'Bootstrap must not perform broad destructive cleanup'
 Assert-True ($bootstrap -match 'docker --version' -and $bootstrap -match 'docker compose version' -and $bootstrap -match 'pwsh.*PSVersionTable') 'Bootstrap must print a final version summary'
 $privateAccess = Get-Content -Raw -LiteralPath (Join-Path $InfraRoot 'host/configure-private-access.sh')
+$publicAccess = Get-Content -Raw -LiteralPath (Join-Path $InfraRoot 'host/configure-public-access.sh')
+Assert-True ($publicAccess -match 'EUID.*-ne 0' -and $publicAccess -match 'ICP_APPROVED=1' -and $publicAccess -match 'PRIVILEGED_2FA_CONFIRMED' -and $publicAccess -match 'PUBLIC_ACCESS_EVIDENCE_FILE') 'Public cutover must require root, explicit ICP and operator 2FA evidence'
+Assert-True ($publicAccess -match 'x509 .*checkhost' -and $publicAccess -match 'does match certificate' -and $publicAccess -match 'verify -purpose sslserver -verify_hostname' -and $publicAccess -match 'ahostsv4' -and $publicAccess -match 'meta-data/public-ipv4') 'Public cutover must check DNS, certificate trust and hostname'
+Assert-True ($publicAccess -match 'trap recover EXIT' -and $publicAccess -match 'ROLLBACK FAILED' -and $publicAccess -match 'dc stop gateway' -and $privateAccess -match 'configure-public-access.sh.*--private') 'Access mode changes must restore snapshots or stop the gateway on rollback failure'
 Assert-True ($privateAccess -match '(?m)^set -euo pipefail$' -and $privateAccess -match 'EUID.*-ne 0') 'Private access setup must require root and propagate failures'
 Assert-True ($privateAccess -match '\$#.*-ne 1' -and $privateAccess -match 'client_name=\$1' -and $privateAccess -match 'Duplicate client name') 'Private access setup must accept exactly one unique client name'
 Assert-True ($privateAccess -match 'WIREGUARD_ENDPOINT' -and $privateAccess -match 'Invalid or missing WIREGUARD_ENDPOINT' -and $privateAccess -match 'Endpoint = \$\{WIREGUARD_ENDPOINT\}:51820' -and $privateAccess.IndexOf('Invalid or missing WIREGUARD_ENDPOINT') -lt $privateAccess.IndexOf('install -d')) 'WireGuard must validate an external endpoint before host mutations; public DNS is unavailable before ICP approval'
@@ -141,6 +167,9 @@ foreach ($unit in @('selfquanta-ledger-backup.service', 'selfquanta-ledger-backu
 Assert-True ($unitInstaller -match '(?m)^systemctl enable selfquanta-ledger-backup.timer$') 'Unit installer must enable the backup timer without starting it'
 
 $runtime = Get-Content -Raw -LiteralPath (Join-Path $InfraRoot 'runtime.env.example')
+foreach ($setting in @('PUBLIC_ACCESS_ENABLED=0', 'PUBLIC_HOSTNAME=', 'ICP_APPROVED=0')) {
+    Assert-True ($runtime -match "(?m)^$([regex]::Escape($setting))\r?$") "Private default missing: $setting"
+}
 Assert-True ($runtime -match '(?m)^SITE_NAME=ledger\.selfquanta\.com\r?$') 'Runtime site name is wrong'
 Assert-True ($runtime -match '(?m)^COMPOSE_PROJECT_NAME=selfquanta-ledger\r?$') 'Runtime project name is wrong'
 Assert-True ($runtime -match '(?m)^HTTP_BIND=10\.77\.0\.1\r?$') 'Pre-ICP public exposure: HTTP must bind only to WireGuard'
@@ -173,7 +202,10 @@ Assert-True ($compose.Contains('image: ${INTERNAL_LEDGER_IMAGE:?set INTERNAL_LED
 Assert-True ($compose.Contains('image: ${OCR_IMAGE:?set OCR_IMAGE to internal-ledger-ocr:<git-sha>}')) 'Compose must require OCR_IMAGE without a development fallback'
 Assert-True ($compose -match 'UPSTREAM_REAL_IP_ADDRESS:\s+172\.16\.0\.0/12') 'Frontend must trust the Docker bridge CIDR without depending on the gateway service DNS name'
 Assert-True ($compose -notmatch 'UPSTREAM_REAL_IP_ADDRESS:\s+gateway') 'Frontend must not create a gateway DNS startup cycle'
-foreach ($internalService in @('db', 'redis-cache', 'redis-queue', 'configurator', 'create-site', 'backend', 'ocr', 'restore-runner', 'frontend', 'websocket', 'queue-short', 'queue-long', 'scheduler')) {
+$serviceSection = [regex]::Match($compose, '(?ms)^services:\r?\n(?<body>.*?)(?=^secrets:)').Groups['body'].Value
+foreach ($serviceMatch in [regex]::Matches($serviceSection, '(?m)^  ([A-Za-z0-9_-]+):\r?$')) {
+    $internalService = $serviceMatch.Groups[1].Value
+    if ($internalService -eq 'gateway') { continue }
     Assert-True ((Get-ServiceBlock -Yaml $compose -Name $internalService) -notmatch '(?m)^\s{4}ports:\s*$') "$internalService must not publish host ports"
 }
 $backend = Get-ServiceBlock -Yaml $compose -Name 'backend'
@@ -188,7 +220,12 @@ $gateway = Get-ServiceBlock -Yaml $compose -Name 'gateway'
 Assert-True ($gateway -match '(?m)^\s{4}ports:\s*$') 'Gateway must publish HTTP/HTTPS ports'
 Assert-True ($gateway -match 'HTTP_PORT:-80}:8080') 'HTTP port 80 must map to the gateway'
 Assert-True ($gateway -match 'HTTPS_PORT:-443}:8443') 'HTTPS port 443 must map to the gateway'
-Assert-True ($gateway.Contains('${HTTP_BIND:-0.0.0}:${HTTP_PORT:-80}:8080') -and $gateway.Contains('${HTTPS_BIND:-0.0.0}:${HTTPS_PORT:-443}:8443')) 'Gateway must respect the configured private HTTP/HTTPS bindings'
+Assert-True ($gateway.Contains('${HTTP_BIND:-10.77.0.1}:${HTTP_PORT:-80}:8080') -and $gateway.Contains('${HTTPS_BIND:-10.77.0.1}:${HTTPS_PORT:-443}:8443')) 'Gateway must default to private HTTP/HTTPS bindings'
+$nginx = Get-Content -Raw -LiteralPath (Join-Path $InfraRoot 'nginx.conf')
+Assert-True ($nginx -match 'proxy_cookie_flags sid secure httponly samesite=lax' -and $nginx -match 'proxy_set_header X-Forwarded-Proto https') 'Gateway must enforce secure session cookies and HTTPS proxy scheme'
+Assert-True ($nginx -match 'limit_req_zone' -and $nginx -match 'location = /api/method/login' -and $nginx -match 'limit_req_status 429') 'Gateway must rate-limit password login'
+Assert-True ($nginx -match 'Strict-Transport-Security' -and $nginx -match 'X-Content-Type-Options' -and $nginx -match 'X-Frame-Options') 'Gateway requires HTTPS security headers'
+Assert-True ($nginx -notmatch 'proxy_add_x_forwarded_for' -and $nginx -match 'proxy_set_header X-Forwarded-For \$remote_addr') 'Public gateway must replace untrusted forwarded client IPs'
 Assert-True ($compose -notmatch '(?im)(password|secret|token)[ \t]*:[ \t]*[^$\r\n{][^\r\n]*') 'Compose must not embed secrets'
 Assert-True ($compose -match '(?m)^\s{4}restart:\s+unless-stopped\s*$') 'Long-running services need restart policies'
 Assert-True ($compose -match '(?m)^\s{4}healthcheck:\s*$') 'Compose needs health checks'
@@ -262,6 +299,59 @@ foreach ($name in $scripts) {
 
 if ($StaticOnly) {
     Write-Host 'Infrastructure static checks passed.'
+    exit 0
+}
+
+if ($PublicAccessOnly) {
+    Assert-True (-not $IsWindows) 'Run PublicAccessOnly inside Linux/WSL with Python 3 and OpenSSL'
+    & python3 -m unittest discover -s (Join-Path $InfraRoot '../internal_ledger/tests') -p test_public_access_security.py -v
+    Assert-True ($LASTEXITCODE -eq 0) 'Public access offline fixtures failed'
+    $variables = @('PUBLIC_ACCESS_ENABLED', 'PUBLIC_HOSTNAME', 'ICP_APPROVED', 'HTTP_BIND', 'HTTPS_BIND', 'HTTP_PORT', 'HTTPS_PORT', 'TLS_CERTIFICATE_FILE', 'TLS_PRIVATE_KEY_FILE')
+    $saved = @{}
+    foreach ($name in $variables) { $saved[$name] = [Environment]::GetEnvironmentVariable($name) }
+    $fixture = Join-Path ([IO.Path]::GetTempPath()) ('ledger-public-' + [guid]::NewGuid().ToString('N'))
+    [void](New-Item -ItemType Directory -Path $fixture)
+    try {
+        foreach ($name in $variables) { [Environment]::SetEnvironmentVariable($name, $null) }
+        $env:PUBLIC_ACCESS_ENABLED = '1'
+        $env:PUBLIC_HOSTNAME = 'ledger.example.com'
+        $env:ICP_APPROVED = '1'
+        $env:HTTP_BIND = '10.77.0.1'
+        $env:HTTPS_BIND = '0.0.0.0'
+        $env:TLS_CERTIFICATE_FILE = Join-Path $fixture 'cert.pem'
+        $env:TLS_PRIVATE_KEY_FILE = Join-Path $fixture 'key.pem'
+        Set-Content -LiteralPath $env:TLS_CERTIFICATE_FILE -Value 'fixture'
+        Set-Content -LiteralPath $env:TLS_PRIVATE_KEY_FILE -Value 'fixture'
+        & $PSCommandPath -StaticOnly
+        Assert-True ($LASTEXITCODE -eq 0) 'Valid public runtime was rejected'
+        foreach ($case in @(
+            @('PUBLIC_HOSTNAME', '198.51.100.1', 'DNS hostname'),
+            @('PUBLIC_HOSTNAME', '', 'DNS hostname'),
+            @('ICP_APPROVED', '0', 'ICP_APPROVED=1'),
+            @('ICP_APPROVED', '', 'ICP_APPROVED=1'),
+            @('PUBLIC_ACCESS_ENABLED', 'yes', 'literal 0 or 1'),
+            @('PUBLIC_ACCESS_ENABLED', '0', 'private HTTPS'),
+            @('TLS_CERTIFICATE_FILE', '/missing-certificate', 'certificate/key'),
+            @('TLS_PRIVATE_KEY_FILE', '/missing-key', 'certificate/key'),
+            @('HTTP_BIND', '0.0.0.0', 'HTTP must remain WireGuard'),
+            @('HTTPS_BIND', '127.0.0.1', '0.0.0.0:443'),
+            @('HTTPS_PORT', '8443', 'HTTPS port')
+        )) {
+            $oldValue = [Environment]::GetEnvironmentVariable($case[0])
+            [Environment]::SetEnvironmentVariable($case[0], $case[1])
+            $output = & pwsh -NoProfile -File $PSCommandPath -StaticOnly 2>&1 | Out-String
+            Assert-True ($LASTEXITCODE -ne 0 -and $output -match [regex]::Escape($case[2])) "Public runtime rejection failed: $($case[0])"
+            [Environment]::SetEnvironmentVariable($case[0], $oldValue)
+        }
+        $env:PUBLIC_ACCESS_ENABLED = '0'
+        $env:HTTPS_BIND = '10.77.0.1'
+        & $PSCommandPath -StaticOnly
+        Assert-True ($LASTEXITCODE -eq 0) 'Private runtime rollback was rejected'
+        Write-Host 'Public/private runtime fixture checks passed.'
+    } finally {
+        foreach ($name in $variables) { [Environment]::SetEnvironmentVariable($name, $saved[$name]) }
+        Remove-Item -LiteralPath $fixture -Recurse -Force
+    }
     exit 0
 }
 
