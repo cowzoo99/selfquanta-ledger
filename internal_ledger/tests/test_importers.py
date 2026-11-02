@@ -5,10 +5,12 @@ from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
 import unittest
+from unittest.mock import patch
 
 import frappe
 
 from internal_ledger.tests.test_install import make_company
+from internal_ledger.tests.test_classifier import account, add_rule, set_up as classification_set_up
 
 
 def fixture(source):
@@ -209,6 +211,74 @@ def test_confirm_blocks_errors_and_api_rejects_invalid_base64():
     rejects(lambda: confirm_import("bank", encoded, "测试资金账户", result["file_hash"]), "错误")
     rejects(lambda: preview_import("bank", "***", "测试资金账户"), "Base64")
     assert frappe.db.count("Import Batch") == before
+
+
+def test_confirm_import_auto_processes_normal_rows_and_returns_summary():
+    from internal_ledger.api.import_api import preview_import, confirm_import
+    from internal_ledger.accounting.batch_workflow import process_transactions
+
+    classification_set_up()
+    add_rule(kind="keyword", value="办公")
+    encoded = base64.b64encode(fixture("bank")).decode()
+    preview = preview_import("bank", encoded, account("1001"))
+    result = confirm_import("bank", encoded, account("1001"), preview["file_hash"])
+    assert result["summary"]["total"] == len(result["processing"])
+    assert result["summary"]["created"] >= 1
+    created = [row for row in result["processing"] if row["status"] == "created"]
+    assert all(frappe.db.exists("Voucher Draft", row["draft"]) for row in created)
+    assert result["summary"] == {"total": 3, "created": 1, "duplicate": 0,
+                                 "manual": 2, "conflict": 0, "failed": 0}
+    names = frappe.get_all("Imported Transaction", filters={"import_batch": result["batch_name"]}, pluck="name")
+    assert {row["name"] for row in result["processing"]} == set(names)
+    repeated = process_transactions([row["name"] for row in created])
+    assert repeated[0]["status"] == "skipped" and repeated[0]["draft"] == created[0]["draft"]
+    assert frappe.db.count("Voucher Draft", {"imported_transaction": created[0]["name"]}) == 1
+
+    duplicate = confirm_import("bank", encoded, account("1001"), preview["file_hash"])
+    assert duplicate["summary"] == {"total": 3, "created": 0, "duplicate": 3,
+                                    "manual": 0, "conflict": 0, "failed": 0}
+    assert all(row["status"] == "duplicate" and row["draft"] is None for row in duplicate["processing"])
+
+
+def test_confirm_import_preserves_batch_attachment_and_later_rows_after_draft_failure():
+    from internal_ledger.api.import_api import preview_import, confirm_import
+    from internal_ledger.accounting import batch_workflow
+
+    classification_set_up()
+    add_rule(kind="keyword", value="办公")
+    add_rule(kind="keyword", value="交通")
+    encoded = base64.b64encode(fixture("bank")).decode()
+    preview = preview_import("bank", encoded, account("1001"))
+    create_draft = batch_workflow.create_draft
+
+    def fail_office_after_insert(name, classification):
+        draft = create_draft(name, classification)
+        if frappe.db.get_value("Imported Transaction", name, "summary") == "办公用品":
+            raise RuntimeError("private-import-failure")
+        return draft
+
+    with patch.object(batch_workflow, "create_draft", side_effect=fail_office_after_insert):
+        result = confirm_import("bank", encoded, account("1001"), preview["file_hash"])
+    assert [row["status"] for row in result["processing"]] == ["failed", "manual", "created"]
+    assert result["summary"] == {"total": 3, "created": 1, "duplicate": 0,
+                                 "manual": 1, "conflict": 0, "failed": 1}
+    assert "private-import-failure" not in str(result)
+    assert not frappe.db.exists("Voucher Draft", {"imported_transaction": result["processing"][0]["name"]})
+    assert frappe.db.exists("Voucher Draft", result["processing"][2]["draft"])
+    batch = frappe.get_doc("Import Batch", result["batch_name"])
+    carrier = frappe.get_doc("Internal Ledger Source File", batch.raw_file)
+    assert frappe.db.exists("File", {"file_url": carrier.raw_file, "is_private": 1})
+    assert frappe.db.count("Imported Transaction", {"import_batch": batch.name}) == 3
+
+
+def test_summarize_processing_counts_all_results_without_counting_skips_as_created():
+    from internal_ledger.api.import_api import summarize_processing
+
+    assert summarize_processing([]) == {"total": 0, "created": 0, "duplicate": 0,
+                                        "manual": 0, "conflict": 0, "failed": 0}
+    statuses = ["created", "created", "duplicate", "manual", "conflict", "failed", "skipped"]
+    assert summarize_processing([{"status": status} for status in statuses]) == {
+        "total": 7, "created": 2, "duplicate": 1, "manual": 1, "conflict": 1, "failed": 1}
 
 
 def test_api_keeps_frappe_create_permissions():

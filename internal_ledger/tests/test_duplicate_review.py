@@ -38,9 +38,12 @@ def test_confirm_preserves_totals_and_blocks_accounting():
     original, duplicate = duplicate_pair()
     before = get_dashboard_counts("2026-10")
     result = resolve_duplicate(duplicate.name, "confirm", "  已核对  ")
-    assert result["status"] == "Duplicate"
-    assert result["duplicate_review_status"] == "Confirmed"
-    assert result["duplicate_review_note"] == "已核对"
+    assert result["transaction"]["status"] == "Duplicate"
+    assert result["transaction"]["duplicate_review_status"] == "Confirmed"
+    assert result["transaction"]["duplicate_review_note"] == "已核对"
+    assert result["processing"]["name"] == duplicate.name
+    assert result["processing"]["status"] == "duplicate" and result["processing"]["draft"] is None
+    assert not frappe.db.exists("Voucher Draft", {"imported_transaction": duplicate.name})
     assert get_dashboard_counts("2026-10") == before
     with unittest.TestCase().assertRaisesRegex(frappe.ValidationError, "重复流水"):
         classify(duplicate.name)
@@ -63,11 +66,39 @@ def test_release_preserves_link_and_enters_normal_flow_once():
     assert released.candidate_dedupe_key == "wechat:WX-1"
     assert released.duplicate_reviewed_by == "Administrator"
     assert released.duplicate_reviewed_at
+    assert not frappe.db.exists("Voucher Draft", {"imported_transaction": released.name})
     assert create_draft(released.name, classify(released.name))
     with unittest.TestCase().assertRaisesRegex(frappe.ValidationError, "已经处理"):
         release_duplicate(duplicate.name, "Administrator", "重试")
     assert frappe.db.count("Internal Ledger Audit Event", {"action": "duplicate_release", "reference_name": duplicate.name}) == 1
     assert frappe.db.count("Journal Entry") == frappe.flags.classification_journals
+
+
+def test_release_duplicate_immediately_reprocesses_it():
+    from internal_ledger.api.duplicate_api import resolve_duplicate
+    from internal_ledger.accounting.batch_workflow import process_transactions
+
+    add_rule()
+    _, duplicate = duplicate_pair()
+    result = resolve_duplicate(duplicate.name, "release", "两笔真实交易")
+    assert result["transaction"]["duplicate_review_status"] == "Released"
+    assert result["processing"]["status"] == "created"
+    assert result["processing"]["draft"]
+    draft = frappe.get_doc("Voucher Draft", result["processing"]["draft"])
+    assert draft.imported_transaction == duplicate.name and draft.status == "Draft"
+    assert process_transactions([duplicate.name])[0]["draft"] == draft.name
+    assert frappe.db.count("Voucher Draft", {"imported_transaction": duplicate.name}) == 1
+    assert frappe.db.count("Journal Entry") == frappe.flags.classification_journals
+
+
+def test_release_without_a_rule_returns_manual_work():
+    from internal_ledger.api.duplicate_api import resolve_duplicate
+
+    _, duplicate = duplicate_pair()
+    result = resolve_duplicate(duplicate.name, "release", "两笔真实交易")
+    assert result["transaction"]["duplicate_review_status"] == "Released"
+    assert result["processing"]["status"] == "manual" and result["processing"]["draft"] is None
+    assert not frappe.db.exists("Voucher Draft", {"imported_transaction": duplicate.name})
 
 
 def test_invalid_decision_and_actor_leave_candidate_unchanged():

@@ -27,7 +27,10 @@ def import_duplicate_acceptance_batch():
     encoded = base64.b64encode(content).decode()
     preview = preview_import("wechat", encoded, account("1001"))
     assert len(preview["rows"]) == 3 and not preview["errors"]
-    batch = confirm_import("wechat", encoded, account("1001"), preview["file_hash"])["batch_name"]
+    imported = confirm_import("wechat", encoded, account("1001"), preview["file_hash"])
+    assert imported["summary"] == {"total": 3, "created": 0, "duplicate": 1,
+                                   "manual": 2, "conflict": 0, "failed": 0}
+    batch = imported["batch_name"]
     rows = frappe.get_all("Imported Transaction", filters={"import_batch": batch},
                           fields=["*"], order_by="raw_row")
     assert len(rows) == 3
@@ -65,7 +68,8 @@ def test_duplicate_pending_and_confirmed_stay_out_of_classification_drafts_and_t
     assert Decimal(pending["expense"]) == Decimal("47.50")
     assert_duplicate_excluded(candidate)
     resolved = resolve_duplicate(candidate.name, "confirm", "核对为同一笔交易")
-    assert resolved["duplicate_review_status"] == "Confirmed"
+    assert resolved["transaction"]["duplicate_review_status"] == "Confirmed"
+    assert resolved["processing"]["status"] == "duplicate"
     assert_duplicate_excluded(candidate)
     assert get_dashboard_counts("2026-10") == pending
     assert frappe.db.count("Journal Entry") == frappe.flags.classification_journals
@@ -83,9 +87,10 @@ def test_released_and_unmatched_only_post_two_balanced_journals_and_retry_withou
     frappe.set_user(admin)
     assert_duplicate_excluded(candidate)
     released = resolve_duplicate(candidate.name, "release", "  独立真实交易，经人工核对  ")
-    assert released["status"] == "Imported" and released["duplicate_review_status"] == "Released"
-    assert released["duplicate_review_note"] == "独立真实交易，经人工核对"
-    assert released["duplicate_of"] == original.name
+    assert released["transaction"]["status"] == "Imported" and released["transaction"]["duplicate_review_status"] == "Released"
+    assert released["transaction"]["duplicate_review_note"] == "独立真实交易，经人工核对"
+    assert released["transaction"]["duplicate_of"] == original.name
+    assert released["processing"]["status"] == "manual" and released["processing"]["draft"] is None
     with unittest.TestCase().assertRaises(frappe.ValidationError):
         resolve_duplicate(candidate.name, "release", "不得重复释放")
     assert frappe.db.count("Internal Ledger Audit Event", {
@@ -186,7 +191,7 @@ def test_real_three_source_workflow_balances_audit_and_source_trace():
     from frappe.desk.query_report import run as run_report
     from erpnext.accounts.utils import get_balance_on
     from internal_ledger.api.import_api import preview_import, confirm_import
-    from internal_ledger.api.review_api import prepare_draft, approve_draft, get_review_item, get_dashboard_counts
+    from internal_ledger.api.review_api import approve_draft, get_review_item, get_dashboard_counts
     from internal_ledger.api.posting_api import post_draft
     from internal_ledger.api.report_api import get_account_balance
 
@@ -226,7 +231,10 @@ def test_real_three_source_workflow_balances_audit_and_source_trace():
         encoded = base64.b64encode(content).decode()
         preview = preview_import(source, encoded, payment)
         assert len(preview["rows"]) == 3 and not preview["errors"]
-        batch = confirm_import(source, encoded, payment, preview["file_hash"])["batch_name"]
+        imported = confirm_import(source, encoded, payment, preview["file_hash"])
+        assert imported["summary"] == {"total": 3, "created": 3, "duplicate": 0,
+                                       "manual": 0, "conflict": 0, "failed": 0}
+        batch = imported["batch_name"]
         batches.append(batch)
         saved = frappe.get_doc("Import Batch", batch)
         assert saved.file_hash == hashlib.sha256(content).hexdigest()
@@ -235,8 +243,9 @@ def test_real_three_source_workflow_balances_audit_and_source_trace():
         assert file.is_private and Path(file.get_full_path()).read_bytes() == content
         rows = frappe.get_list("Imported Transaction", filters={"import_batch": batch}, fields=["name"])
         assert len(rows) == 3
+        drafts = {row["name"]: row["draft"] for row in imported["processing"]}
         for row in rows:
-            doc = prepare_draft(row.name)
+            doc = frappe.get_doc("Voucher Draft", drafts[row.name])
             assert doc.status == "Draft" and doc.classification_rule
             assert approve_draft(doc.name).status == "Approved"
             journal_name = post_draft(doc.name)
