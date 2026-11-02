@@ -25,6 +25,27 @@ def prepare(names):
     return prepare_matched_transactions(names)
 
 
+def test_process_transactions_reports_actionable_states_and_is_idempotent():
+    from internal_ledger.accounting.batch_workflow import process_transactions
+    add_rule()
+    matched = transaction()
+    unmatched = transaction(counterparty="无匹配商户")
+    conflict = transaction(counterparty="冲突商户")
+    add_rule(value="冲突商户")
+    add_rule(value="冲突商户", debit_account=account("560202"))
+    _, duplicate = duplicate_pair()
+
+    outcomes = process_transactions([matched, unmatched, conflict, duplicate.name])
+    assert [row["status"] for row in outcomes] == ["created", "manual", "conflict", "duplicate"]
+    assert outcomes[0]["draft"]
+    assert all(set(row) == {"name", "status", "draft", "message"} for row in outcomes)
+
+    repeated = process_transactions([matched])
+    assert repeated[0]["status"] == "skipped"
+    assert repeated[0]["draft"] == outcomes[0]["draft"]
+    assert frappe.db.count("Voucher Draft", {"imported_transaction": matched}) == 1
+
+
 def test_mixed_batch_preserves_every_input_and_is_idempotent():
     add_rule()
     matched = transaction()
@@ -38,7 +59,7 @@ def test_mixed_batch_preserves_every_input_and_is_idempotent():
     names = [matched, unmatched, conflict, duplicate.name, drafted, "missing-transaction", matched, ""]
     outcomes = prepare(names)
     assert [row["name"] for row in outcomes] == names
-    assert [row["status"] for row in outcomes] == ["created", "skipped", "skipped", "skipped", "skipped", "failed", "skipped", "failed"]
+    assert [row["status"] for row in outcomes] == ["created", "manual", "conflict", "duplicate", "skipped", "failed", "skipped", "failed"]
     assert all(set(row) == {"name", "status", "draft", "message"} for row in outcomes)
     assert outcomes[4]["draft"] == existing
     assert outcomes[0]["draft"] == outcomes[6]["draft"]
@@ -74,7 +95,7 @@ def test_failure_rolls_back_only_its_row_and_redacts_exception():
     assert [row.result for row in audit] == ["failed"]
 
 
-def test_duplicate_states_skip_without_classifying_and_release_is_eligible():
+def test_duplicate_states_report_duplicate_without_classifying_and_release_is_eligible():
     from internal_ledger.importing.duplicate_review import resolve
     from internal_ledger.accounting import batch_workflow
     _, pending = duplicate_pair()
@@ -86,7 +107,7 @@ def test_duplicate_states_skip_without_classifying_and_release_is_eligible():
     original = batch_workflow.classify
     with patch.object(batch_workflow, "classify", wraps=original) as classifier:
         outcomes = prepare([pending.name, confirmed.name, released.name])
-    assert [row["status"] for row in outcomes] == ["skipped", "skipped", "created"]
+    assert [row["status"] for row in outcomes] == ["duplicate", "duplicate", "created"]
     assert [call.args[0] for call in classifier.call_args_list] == [released.name]
 
 

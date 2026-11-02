@@ -51,7 +51,7 @@ def assert_duplicate_excluded(candidate):
                                                 account("1001"), "重复不得分类", 0)):
         with unittest.TestCase().assertRaises(frappe.ValidationError):
             operation()
-    assert prepare_matched_transactions([candidate.name])[0]["status"] == "skipped"
+    assert prepare_matched_transactions([candidate.name])[0]["status"] == "duplicate"
     assert not frappe.db.exists("Voucher Draft", {"imported_transaction": candidate.name})
 
 
@@ -93,7 +93,7 @@ def test_released_and_unmatched_only_post_two_balanced_journals_and_retry_withou
     counts = get_dashboard_counts("2026-10")
     assert counts["pending_classification"] == 3 and Decimal(counts["expense"]) == Decimal("60.00")
     names = [candidate.name, unmatched.name]
-    assert [row["status"] for row in prepare_matched_transactions(names)] == ["skipped", "skipped"]
+    assert [row["status"] for row in prepare_matched_transactions(names)] == ["manual", "manual"]
     drafts = [classify_manually(name, "expense", account("560201"), account("1001"),
                                 "人工核对独立交易", 0).name for name in names]
     for draft_name, transaction_name, amount in zip(drafts, names, (Decimal("12.50"), Decimal("35.00"))):
