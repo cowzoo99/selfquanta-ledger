@@ -173,6 +173,61 @@ def test_detail_includes_original_lines_and_month_counts():
     assert any(row["draft"]["name"] == doc.name for row in list_review_items())
 
 
+def test_latest_batch_counts_follow_drafts_duplicate_resolution_and_manual_work():
+    from uuid import uuid4
+    from internal_ledger.api.classification_api import classify_manually
+    from internal_ledger.api.duplicate_api import resolve_duplicate
+    from internal_ledger.api.posting_api import approve_and_post
+    from internal_ledger.api.review_api import get_dashboard_counts
+    from internal_ledger.accounting.batch_workflow import process_transactions
+    from internal_ledger.importing.models import save_batch
+    from internal_ledger.tests.test_dedupe import tx
+
+    draft()  # Older batches must not contribute to the latest batch summary.
+    source_id = uuid4().hex
+    common = {"payment_account": account("1001")}
+    batch = save_batch("wechat", uuid4().hex, [
+        tx(source_id=source_id, raw_row=2, **common),
+        tx(source_id=source_id, raw_row=3, **common),
+        tx(source_id=uuid4().hex, counterparty="待人工商户", raw_row=4, **common)])
+    rows = frappe.get_all("Imported Transaction", filters={"import_batch": batch},
+                          fields=["name"], order_by="raw_row")
+    outcomes = process_transactions([row.name for row in rows])
+    assert [row["status"] for row in outcomes] == ["created", "duplicate", "manual"]
+    expected = {"batch_name": batch, "total": 3, "created": 1, "duplicate": 1, "manual": 1}
+    assert get_dashboard_counts("2026-10")["latest_batch"] == expected
+    assert get_dashboard_counts("1900-01")["latest_batch"] == expected
+    released = resolve_duplicate(rows[1].name, "release", "独立交易")
+    assert released["processing"]["status"] == "created"
+    expected.update(created=2, duplicate=0)
+    assert get_dashboard_counts("2026-10")["latest_batch"] == expected
+    classify_manually(rows[2].name, "expense", account("560201"), account("1001"), "人工核对", 0)
+    expected["manual"] = 0
+    assert get_dashboard_counts("2026-10")["latest_batch"] == expected
+    assert approve_and_post([outcomes[0]["draft"]])[0]["status"] == "created"
+    assert get_dashboard_counts("2026-10")["latest_batch"] == expected
+
+
+def test_latest_batch_is_none_without_imports():
+    from unittest.mock import patch
+    from internal_ledger.api import review_api
+
+    with patch.object(review_api, "list_review_items", return_value=[]), \
+            patch.object(frappe, "get_list", return_value=[]):
+        assert review_api.get_dashboard_counts("2026-10")["latest_batch"] is None
+
+
+def test_latest_batch_includes_an_empty_import_instead_of_an_older_draft():
+    from uuid import uuid4
+    from internal_ledger.api.review_api import get_dashboard_counts
+    from internal_ledger.importing.models import save_batch
+
+    draft()
+    batch = save_batch("wechat", uuid4().hex, [])
+    assert get_dashboard_counts("2026-10")["latest_batch"] == {
+        "batch_name": batch, "total": 0, "created": 0, "duplicate": 0, "manual": 0}
+
+
 def test_pending_transaction_can_be_classified_without_auto_approval():
     from internal_ledger.api.review_api import list_review_items, prepare_draft
 

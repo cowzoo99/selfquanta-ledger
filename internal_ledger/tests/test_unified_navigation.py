@@ -10,9 +10,9 @@ from internal_ledger.tests.test_classifier import set_up, tear_down
 
 TITLE = "SelfLedger 企业经营与智能内账"
 ROOT = Path(__file__).resolve().parents[1]
-LABELS = ["业务总览", "文件智能导入", "重复流水复核", "智能分类", "凭证中心", "销售", "采购", "库存", "制造"]
+LABELS = ["业务总览", "文件智能导入", "待办中心", "账簿与报表", "企业成员", "销售", "采购", "库存", "制造"]
 ROUTES = ["/app/ledger-workbench/" + view for view in
-          ("dashboard", "import", "duplicates", "classification", "review")] + [
+          ("dashboard", "import", "review")] + ["/app/query-report/General%20Ledger", "/app/ledger-workbench/members"] + [
               "/app/selling", "/app/buying", "/app/stock", "/app/manufacturing"]
 
 
@@ -120,6 +120,29 @@ def test_unified_home_makes_import_primary_and_keeps_erp_modules_in_one_site():
     assert 'class="ledger-primary-action"' in dashboard
     for route in ("/app/ledger-workbench/import", "selling", "buying", "stock", "manufacturing"):
         assert route in dashboard
+
+
+def test_workspace_fixture_has_only_the_nine_unified_entries():
+    workspace = json.loads((ROOT / "internal_ledger/workspace/selfledger/selfledger.json").read_text(encoding="utf-8"))
+    assert [row["label"] for row in workspace["shortcuts"]] == LABELS
+    assert [row["url"] for row in workspace["shortcuts"]] == ROUTES
+    assert [row["data"]["shortcut_name"] for row in json.loads(workspace["content"])] == LABELS
+
+
+def test_dashboard_orders_import_totals_four_tasks_latest_batch_and_erp():
+    source = (ROOT / "public/frontend/src/pages/Dashboard.vue").read_text(encoding="utf-8")
+    template = source.split("<template>", 1)[1]
+    positions = [template.index(text) for text in (
+        'class="ledger-primary-action"', 'class="ledger-counts"', 'v-for="card in cards"',
+        '最近处理', 'v-for="entry in erpLinks"')]
+    assert positions == sorted(positions)
+    for field in ("batch_name", "total", "created", "duplicate", "manual"):
+        assert "counts.latest_batch." + field in template
+    assert "ledger-flow" not in source and "异常优先" not in source
+    app = (ROOT / "public/frontend/src/App.vue").read_text(encoding="utf-8")
+    assert 'href="/app/query-report/General%20Ledger"' in app
+    navigation = app.split("const navigation =", 1)[1].split(";", 1)[0]
+    assert "duplicates" not in navigation and "classification" not in navigation
 
 
 def test_default_workspace_patch_sets_only_blank_ledger_users():

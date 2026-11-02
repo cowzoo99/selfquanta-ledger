@@ -150,6 +150,49 @@ def test_released_and_unmatched_only_post_two_balanced_journals_and_retry_withou
     print("E2E UNIFIED: released + unmatched; 2 drafts; 2 submitted JE; 2 links; 4 GL; retry delta=0")
 
 
+def test_import_learning_and_duplicate_release_auto_draft_but_require_explicit_posting():
+    from internal_ledger.api.classification_api import classify_manually
+    from internal_ledger.api.duplicate_api import resolve_duplicate
+    from internal_ledger.api.import_api import confirm_import
+    from internal_ledger.api.posting_api import approve_and_post
+
+    add_rule(value="测试商户甲")
+    payment = account("1001")
+    lines = fixture("wechat").decode("utf-8-sig").splitlines()
+    original = lines[2].replace("WX-001", uuid4().hex)
+    unlearned = lines[4].replace("WX-003", uuid4().hex).replace("测试商户丙", "学习验收商户")
+    content = "\n".join([*lines[:2], original, original, unlearned]).encode()
+    imported = confirm_import("wechat", base64.b64encode(content).decode(), payment,
+                              hashlib.sha256(content).hexdigest())
+    assert imported["summary"] == {"total": 3, "created": 1, "duplicate": 1,
+                                   "manual": 1, "conflict": 0, "failed": 0}
+    rows = frappe.get_all("Imported Transaction", filters={"import_batch": imported["batch_name"]},
+                          fields=["*"], order_by="raw_row")
+    matched, duplicate, manual = rows
+    assert frappe.db.count("Voucher Draft", {"imported_transaction": matched.name}) == 1
+    assert not frappe.db.exists("Voucher Draft", {"imported_transaction": duplicate.name})
+    learned_draft = classify_manually(manual.name, "expense", account("560202"), payment,
+                                      "记住交易对象", 1)
+    next_content = "\n".join([*lines[:2], unlearned.replace(manual.source_id, uuid4().hex)]).encode()
+    learned = confirm_import("wechat", base64.b64encode(next_content).decode(), payment,
+                             hashlib.sha256(next_content).hexdigest())
+    learned_tx = learned["processing"][0]["name"]
+    assert learned["summary"]["created"] == 1
+    assert frappe.db.count("Voucher Draft", {"imported_transaction": learned_tx}) == 1
+    released = resolve_duplicate(duplicate.name, "release", "人工确认是独立交易")
+    assert released["processing"]["status"] == "created"
+    assert frappe.db.count("Voucher Draft", {"imported_transaction": duplicate.name}) == 1
+    drafts = [imported["processing"][0]["draft"], learned_draft.name,
+              learned["processing"][0]["draft"], released["processing"]["draft"]]
+    assert all(frappe.get_doc("Voucher Draft", name).status == "Draft" for name in drafts)
+    assert frappe.db.count("Journal Entry") == frappe.flags.classification_journals
+    assert not frappe.db.exists("Journal Entry", {"user_remark": ["like", "%自动过账%"]})
+    results = approve_and_post(frappe.as_json(drafts))
+    assert all(row["status"] == "created" and row["journal_entry"] for row in results)
+    assert all(frappe.get_doc("Journal Entry", row["journal_entry"]).docstatus == 1 for row in results)
+    assert frappe.db.count("Journal Entry") == frappe.flags.classification_journals + 4
+
+
 def test_viewer_reads_duplicate_workbench_and_voucher_but_all_accounting_writes_are_denied():
     from internal_ledger.api.classification_api import classify_manually
     from internal_ledger.api.duplicate_api import list_duplicates, resolve_duplicate
@@ -191,8 +234,8 @@ def test_real_three_source_workflow_balances_audit_and_source_trace():
     from frappe.desk.query_report import run as run_report
     from erpnext.accounts.utils import get_balance_on
     from internal_ledger.api.import_api import preview_import, confirm_import
-    from internal_ledger.api.review_api import approve_draft, get_review_item, get_dashboard_counts
-    from internal_ledger.api.posting_api import post_draft
+    from internal_ledger.api.review_api import get_review_item, get_dashboard_counts
+    from internal_ledger.api.posting_api import approve_and_post
     from internal_ledger.api.report_api import get_account_balance
 
     add_rule(value="测试商户甲", debit_account=account("560201"))
@@ -247,8 +290,10 @@ def test_real_three_source_workflow_balances_audit_and_source_trace():
         for row in rows:
             doc = frappe.get_doc("Voucher Draft", drafts[row.name])
             assert doc.status == "Draft" and doc.classification_rule
-            assert approve_draft(doc.name).status == "Approved"
-            journal_name = post_draft(doc.name)
+            assert frappe.db.count("Journal Entry") == frappe.flags.classification_journals + len(journals)
+            outcome = approve_and_post(frappe.as_json([doc.name]))[0]
+            assert outcome["status"] == "created"
+            journal_name = outcome["journal_entry"]
             journals.append(journal_name)
             journal = frappe.get_doc("Journal Entry", journal_name)
             assert journal.docstatus == 1

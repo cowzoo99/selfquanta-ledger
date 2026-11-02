@@ -44,6 +44,7 @@ onMounted(refresh);
       <h2>{{ navigation.find(entry => entry[0] === taskPage)?.[1] }}</h2>
       <div class="ledger-tabs" role="group" aria-label="智能内账视图">
         <a v-for="entry in navigation" :key="entry[0]" :href="`/app/ledger-workbench/${entry[0]}`" :aria-current="taskPage === entry[0] ? 'page' : undefined">{{ entry[1] }}</a>
+        <a href="/app/query-report/General%20Ledger">账簿与报表</a>
       </div>
       <label class="language-switch" for="ledger-language">界面语言
         <select id="ledger-language" v-model="language" :disabled="savingLanguage" @change="changeLanguage">
@@ -77,11 +78,6 @@ onMounted(refresh);
 .ledger-primary-action strong { font-size: 20px; }
 .ledger-primary-action span { color: #e5f4fa; line-height: 1.5; }
 .ledger-primary-action:hover { background: #0f4863; }
-.ledger-flow { list-style: none; padding: 0; margin: 0 0 20px; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; }
-.ledger-flow li { padding: 14px; border-radius: 8px; background: var(--card-bg, #fff); border: 1px solid var(--border-color, #ddd); }
-.ledger-flow strong, .ledger-flow span { display: block; }
-.ledger-flow strong { color: #155775; margin-bottom: 6px; }
-.ledger-flow span { font-size: 12px; line-height: 1.45; }
 .ledger-app button { padding: 8px 12px; margin: 4px; border: 1px solid #66788a; border-radius: 5px; background: var(--card-bg, white); color: inherit; }
 .ledger-app button[aria-current="page"] { background: #155775; color: white; }
 .ledger-app button:disabled { opacity: .55; cursor: default; }
@@ -105,7 +101,6 @@ onMounted(refresh);
 .ledger-detail dl { display: grid; grid-template-columns: minmax(90px, 120px) minmax(0, 1fr); gap: 6px 10px; }
 .ledger-detail dd { margin: 0; overflow-wrap: anywhere; }
 .ledger-app [role="alert"] { color: #a12621; }
-@media (max-width: 900px) { .ledger-hero { grid-template-columns: minmax(0, 1fr); padding: 20px; } .ledger-flow { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 900px) { .ledger-hero { grid-template-columns: minmax(0, 1fr); padding: 20px; } }
 @media (max-width: 800px) { .ledger-review { grid-template-columns: minmax(0, 1fr); } .ledger-app { padding: 6px; } }
-@media (max-width: 480px) { .ledger-flow { grid-template-columns: minmax(0, 1fr); } }
 </style>

@@ -96,7 +96,18 @@ def get_dashboard_counts(month: str | None = None):
     monthly = [row for row in rows if row["transaction"]["status"] == "Imported"
                and row["transaction"].get("duplicate_review_status") not in {"Pending", "Confirmed"}
                and start <= getdate(row["transaction"]["occurred_at"]) < end]
-    return {"month": month, "income": str(sum((Decimal(str(row["transaction"]["amount"]))
+    batches = frappe.get_list("Import Batch", fields=["name"], order_by="creation desc", limit_page_length=1)
+    latest_batch = None
+    if batches:
+        batch_rows = [row for row in rows if row["transaction"]["import_batch"] == batches[0].name]
+        eligible = [row for row in batch_rows if row["transaction"]["status"] == "Imported"
+                    and row["transaction"].get("duplicate_review_status") not in {"Pending", "Confirmed"}]
+        latest_batch = {"batch_name": batches[0].name, "total": len(batch_rows),
+                        "created": sum(bool(row["draft"] and not row["draft"].get("is_manual_override"))
+                                       for row in eligible),
+                        "duplicate": len(batch_rows) - len(eligible),
+                        "manual": sum(row["draft"] is None for row in eligible)}
+    return {"latest_batch": latest_batch, "month": month, "income": str(sum((Decimal(str(row["transaction"]["amount"]))
             for row in monthly if row["transaction"]["direction"] == "income"), Decimal("0"))),
             "expense": str(sum((Decimal(str(row["transaction"]["amount"]))
             for row in monthly if row["transaction"]["direction"] == "expense"), Decimal("0"))),
