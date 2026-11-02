@@ -157,6 +157,16 @@ def test_ledger_login_redirects_to_unified_home_without_overriding_password_rese
     frappe.local.flags.pop("home_page", None)
 
 
+def test_setup_home_is_redirected_inside_desk_for_ledger_users():
+    hooks = (ROOT / "hooks.py").read_text()
+    assert 'app_include_js = "/assets/internal_ledger/js/internal_ledger_desk.js"' in hooks
+    script = (ROOT / "public/js/internal_ledger_desk.js").read_text()
+    assert 'route[0] === "setup" && route[1] === "home"' in script
+    assert 'frappe.set_route("ledger-workbench", "dashboard")' in script
+    assert 'frappe.router.on("change"' in script
+    assert "账套管理员" in script and "账务查看者" in script
+
+
 def test_duplicate_page_contract_and_dedicated_review_link():
     path = ROOT / "public/frontend/src/pages/DuplicateReview.vue"
     assert path.exists(), "Dedicated duplicate-review component is missing"
