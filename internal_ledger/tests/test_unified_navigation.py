@@ -162,6 +162,8 @@ def test_setup_home_is_redirected_inside_desk_for_ledger_users():
     assert 'app_include_js = "/assets/internal_ledger/js/internal_ledger_desk.js"' in hooks
     script = (ROOT / "public/js/internal_ledger_desk.js").read_text()
     assert 'route[0] === "setup" && route[1] === "home"' in script
+    assert 'route[0] === "Workspaces" && route[1] === "Home"' in script
+    assert '(frappe.user_roles || []).some' in script
     assert 'frappe.set_route("ledger-workbench", "dashboard")' in script
     assert 'frappe.router.on("change"' in script
     assert "账套管理员" in script and "账务查看者" in script
