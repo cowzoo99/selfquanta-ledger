@@ -53,6 +53,15 @@ def test_controlled_evidence_derives_company_and_sanitizes_note():
     assert evidence(note_html=None).note_html == ""
 
 
+def test_ledger_admin_can_create_evidence_without_a_stored_company():
+    name = transaction()
+    actor = user("账套管理员")
+    frappe.set_user(actor)
+    doc = evidence(name, note_html="管理员核对")
+    assert doc.company == frappe.flags.classification_company
+    assert doc.owner == actor
+
+
 def test_transaction_has_at_most_one_evidence_record():
     name = transaction()
     evidence(name)
@@ -99,7 +108,8 @@ def test_evidence_company_scope_applies_to_reads_and_transaction_validation():
     other = frappe.get_doc({"doctype": "Company", "company_name": "_Test Evidence Other",
         "abbr": "ILEO", "default_currency": "CNY", "country": "China",
         "create_chart_of_accounts_based_on": "Standard Template", "chart_of_accounts": "Standard"}).insert()
-    frappe.db.set_value("Ledger Evidence", foreign.name, "company", other.name)
+    # Stored company must neither grant foreign access nor hide a current-company record.
+    frappe.db.set_value("Ledger Evidence", own.name, "company", other.name)
     batch = frappe.db.get_value("Imported Transaction", foreign.imported_transaction, "import_batch")
     frappe.db.set_value("Import Batch", batch, "company", other.name)
     for actor in (user("账套管理员"), user("账务查看者")):
@@ -124,6 +134,46 @@ def test_direct_evidence_file_insert_is_blocked():
         frappe.set_user(actor)
         with unittest.TestCase().assertRaises(frappe.PermissionError):
             attachment(doc.name)
+
+
+def test_rejected_evidence_upload_writes_no_blob_before_rollback():
+    name = evidence().name
+    file_name = f"evidence-denied-{uuid4().hex}.txt"
+    path = Path(frappe.get_site_path("private", "files", file_name))
+    doc = frappe.get_doc({"doctype": "File", "file_name": file_name,
+        "content": uuid4().hex, "is_private": 1,
+        "attached_to_doctype": "Ledger Evidence", "attached_to_name": name})
+    with unittest.TestCase().assertRaises(frappe.PermissionError):
+        doc.insert(ignore_permissions=True)
+    assert not path.exists()
+    assert not frappe.db.exists("File", {"file_name": file_name})
+
+
+def test_ordinary_file_cannot_publish_a_shared_evidence_blob():
+    protected = attachment(evidence().name, marked=True)
+    path = Path(protected.get_full_path())
+    original = path.read_bytes()
+    ordinary = frappe.get_doc({"doctype": "File", "file_name": f"ordinary-{uuid4().hex}.txt",
+        "content": original, "is_private": 1, "attached_to_doctype": "Company",
+        "attached_to_name": frappe.flags.classification_company}).insert(ignore_permissions=True)
+    assert ordinary.content_hash == protected.content_hash
+    assert ordinary.file_url == protected.file_url
+    ordinary.is_private = 0
+    with unittest.TestCase().assertRaises(frappe.PermissionError):
+        ordinary.save(ignore_permissions=True)
+    # File payload fields cannot bypass protection of the actual shared blob path.
+    ordinary = frappe.get_doc("File", ordinary.name)
+    ordinary.is_private = 0
+    ordinary.content_hash = "forged"
+    with unittest.TestCase().assertRaises(frappe.PermissionError):
+        ordinary.save(ignore_permissions=True)
+    ordinary.is_private = 1
+    ordinary.file_name = path.name
+    with unittest.TestCase().assertRaises(frappe.PermissionError):
+        ordinary.save_file(content=b"forged", overwrite=True)
+    saved = frappe.get_doc("File", protected.name)
+    assert saved.is_private == 1 and saved.file_url == protected.file_url
+    assert path.read_bytes() == original
 
 
 def test_evidence_file_changes_require_private_controlled_writes():
@@ -192,6 +242,20 @@ def test_unrelated_file_can_still_be_deleted():
     doc.delete(ignore_permissions=True)
     assert not frappe.db.exists("File", doc.name)
     assert not path.exists()
+
+
+def test_unrelated_file_can_still_change_privacy():
+    content = uuid4().hex.encode()
+    doc = frappe.get_doc({"doctype": "File", "file_name": f"privacy-{uuid4().hex}.txt",
+                          "content": content, "is_private": 1}).insert(ignore_permissions=True)
+    private_path = Path(doc.get_full_path())
+    doc.is_private = 0
+    doc.save(ignore_permissions=True)
+    assert doc.file_url.startswith("/files/")
+    assert Path(doc.get_full_path()).read_bytes() == content
+    doc.is_private = 1
+    doc.save(ignore_permissions=True)
+    assert private_path.read_bytes() == content
 
 
 def tear_down():

@@ -339,6 +339,49 @@ def test_audit_failure_rolls_back_business_and_all_write_actions_are_recorded():
     print("AUDIT EVIDENCE", doc.name, journal, "6 actions; audit insertion failure rolls approval back")
 
 
+def test_rejected_source_upload_writes_no_blob_before_rollback():
+    from internal_ledger.permissions import _SOURCE_INSERT
+
+    name = transaction()
+    source = frappe.get_doc({"doctype": "Internal Ledger Source File",
+        "import_batch": frappe.db.get_value("Imported Transaction", name, "import_batch")})
+    source.flags.source_insert = _SOURCE_INSERT
+    source.insert()
+    file_name = f"source-denied-{uuid4().hex}.txt"
+    path = Path(frappe.get_site_path("private", "files", file_name))
+    doc = frappe.get_doc({"doctype": "File", "file_name": file_name, "content": uuid4().hex,
+        "is_private": 1, "attached_to_doctype": source.doctype, "attached_to_name": source.name})
+    with unittest.TestCase().assertRaises(frappe.PermissionError):
+        doc.insert(ignore_permissions=True)
+    assert not path.exists()
+    assert not frappe.db.exists("File", {"file_name": file_name})
+
+
+def test_ordinary_file_cannot_publish_a_shared_source_blob():
+    from internal_ledger.api.import_api import confirm_import, preview_import
+    from frappe.core.doctype.file.utils import find_file_by_url
+
+    encoded = base64.b64encode(fixture("bank")).decode()
+    preview = preview_import("bank", encoded, account("1001"))
+    name = confirm_import("bank", encoded, account("1001"), preview["file_hash"])["batch_name"]
+    batch = frappe.get_doc("Import Batch", name)
+    source = frappe.get_doc("Internal Ledger Source File", batch.raw_file)
+    protected = find_file_by_url(source.raw_file)
+    path = Path(protected.get_full_path())
+    original = path.read_bytes()
+    ordinary = frappe.get_doc({"doctype": "File", "file_name": f"ordinary-{uuid4().hex}.csv",
+        "content": original, "is_private": 1, "attached_to_doctype": "Company",
+        "attached_to_name": frappe.flags.classification_company}).insert(ignore_permissions=True)
+    assert ordinary.content_hash == protected.content_hash
+    assert ordinary.file_url == protected.file_url
+    ordinary.is_private = 0
+    with unittest.TestCase().assertRaises(frappe.PermissionError):
+        ordinary.save(ignore_permissions=True)
+    saved = frappe.get_doc("File", protected.name)
+    assert saved.is_private == 1 and saved.file_url == source.raw_file
+    assert path.read_bytes() == original
+
+
 def test_private_source_is_immutable_and_viewer_cannot_list_or_download():
     from internal_ledger.api.import_api import confirm_import, preview_import
     from frappe.handler import download_file

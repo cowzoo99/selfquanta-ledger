@@ -23,6 +23,11 @@ def document_company(doc):
         return doc.name
     if doc.doctype == "Imported Transaction" or doc.doctype == "Internal Ledger Source File":
         return frappe.db.get_value("Import Batch", doc.import_batch, "company")
+    if doc.doctype == "Ledger Evidence":
+        if not doc.imported_transaction:
+            return None
+        batch = frappe.db.get_value("Imported Transaction", doc.imported_transaction, "import_batch")
+        return frappe.db.get_value("Import Batch", batch, "company") if batch else None
     if doc.doctype == "Posting Link":
         return frappe.db.get_value("Voucher Draft", doc.voucher_draft, "company")
     return doc.get("company")
@@ -54,6 +59,9 @@ def company_query(user=None, doctype=None):
         return ""
     company = frappe.db.escape(frappe.db.get_single_value("Internal Ledger Settings", "company") or "")
     table = f"`tab{doctype}`"
+    if doctype == "Ledger Evidence":
+        return (f"{table}.imported_transaction IN (SELECT name FROM `tabImported Transaction` "
+                f"WHERE import_batch IN (SELECT name FROM `tabImport Batch` WHERE company = {company}))")
     if doctype in ("Imported Transaction", "Internal Ledger Source File"):
         return f"{table}.import_batch IN (SELECT name FROM `tabImport Batch` WHERE company = {company})"
     if doctype == "Posting Link":
@@ -122,6 +130,27 @@ def protect_source_file(doc, method=None):
 
 
 class ProtectedLedgerFile:
+    def save_file(self, *args, **kwargs):
+        protect_source_file(self, "save_file")
+        if not self.is_new() and not self.is_remote_file:
+            self._protect_shared_blob()
+        return super().save_file(*args, **kwargs)
+
+    def handle_is_private_changed(self):
+        protect_source_file(self, "handle_is_private_changed")
+        if not self.is_private and not self.is_remote_file:
+            self._protect_shared_blob()
+        return super().handle_is_private_changed()
+
+    def _protect_shared_blob(self):
+        references = {"file_url": self.file_url}
+        if self.content_hash:
+            references["content_hash"] = self.content_hash
+        if frappe.get_all("File", filters={"name": ["!=", self.name],
+                "attached_to_doctype": ["in", ["Ledger Evidence", "Internal Ledger Source File"]]},
+                or_filters=references, limit=1):
+            frappe.throw("共享流水佐证或原始文件的附件不能改写或公开", frappe.PermissionError)
+
     def on_trash(self):
         # File's native on_trash removes the blob before doc_events run.
         protect_source_file(self, "on_trash")
