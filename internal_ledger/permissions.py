@@ -1,5 +1,5 @@
 import frappe
-from frappe.utils import now_datetime
+from frappe.utils import cint, now_datetime
 
 
 LEDGER_DOCTYPES = ("Import Batch", "Imported Transaction", "Classification Rule", "Voucher Draft",
@@ -138,7 +138,7 @@ class ProtectedLedgerFile:
 
     def handle_is_private_changed(self):
         protect_source_file(self, "handle_is_private_changed")
-        if not self.is_private and not self.is_remote_file:
+        if not cint(self.is_private) and not self.is_remote_file:
             self._protect_shared_blob()
         return super().handle_is_private_changed()
 

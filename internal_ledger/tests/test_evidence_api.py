@@ -158,9 +158,14 @@ def test_ordinary_file_cannot_publish_a_shared_evidence_blob():
         "attached_to_name": frappe.flags.classification_company}).insert(ignore_permissions=True)
     assert ordinary.content_hash == protected.content_hash
     assert ordinary.file_url == protected.file_url
-    ordinary.is_private = 0
-    with unittest.TestCase().assertRaises(frappe.PermissionError):
-        ordinary.save(ignore_permissions=True)
+    for is_private in (0, "0"):
+        ordinary = frappe.get_doc("File", ordinary.name)
+        ordinary.is_private = is_private
+        with unittest.TestCase().assertRaises(frappe.PermissionError):
+            ordinary.save(ignore_permissions=True)
+        saved = frappe.get_doc("File", protected.name)
+        assert saved.is_private == 1 and saved.file_url == protected.file_url
+        assert path.read_bytes() == original
     # File payload fields cannot bypass protection of the actual shared blob path.
     ordinary = frappe.get_doc("File", ordinary.name)
     ordinary.is_private = 0
