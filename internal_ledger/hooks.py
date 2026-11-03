@@ -15,8 +15,10 @@ _ledger_doctypes = ("Import Batch", "Imported Transaction", "Classification Rule
                     "Posting Link", "Internal Ledger Settings", "Internal Ledger Audit Event",
                     "Internal Ledger Source File", "Ledger Evidence")
 has_permission = {doctype: "internal_ledger.permissions.has_ledger_permission" for doctype in _ledger_doctypes}
+has_permission["File"] = "internal_ledger.permissions.file_permission"
 permission_query_conditions = {doctype: "internal_ledger.permissions.company_query"
                               for doctype in _ledger_doctypes if doctype != "Internal Ledger Settings"}
+permission_query_conditions["File"] = "internal_ledger.permissions.file_query"
 for _doctype in ("Journal Entry", "Account", "GL Entry"):
     has_permission[_doctype] = "internal_ledger.permissions.has_reporting_permission"
     permission_query_conditions[_doctype] = "internal_ledger.permissions.company_query"

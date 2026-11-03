@@ -1,8 +1,9 @@
 from pathlib import Path
+from posixpath import split
 from uuid import uuid4
 
 import frappe
-from frappe.utils import cint, now_datetime
+from frappe.utils import now_datetime
 
 
 LEDGER_DOCTYPES = ("Import Batch", "Imported Transaction", "Classification Rule", "Voucher Draft",
@@ -14,6 +15,7 @@ _IMPORT_WRITE = object()
 _JOURNAL_WRITE = object()
 _EVIDENCE_WRITE = object()
 _EVIDENCE_FILE_WRITE = object()
+_NATIVE_FILE_DEDUP = object()
 
 
 def require_ledger_admin() -> None:
@@ -72,6 +74,39 @@ def company_query(user=None, doctype=None):
     return f"{table}.company = {company}"
 
 
+def file_query(user=None, doctype=None):
+    user = user or frappe.session.user
+    # Frappe ORs explicit shares after query hooks; fail closed for stale unsafe shares.
+    for name in frappe.share.get_shared("File", user=user):
+        if frappe.db.exists("File", name) and not frappe.get_doc("File", name)._ledger_read_allowed(user):
+            frappe.throw("文件分享权限已失效，请联系管理员", frappe.PermissionError)
+    roles = set(frappe.get_roles(user))
+    company = frappe.db.escape(frappe.db.get_single_value("Internal Ledger Settings", "company") or "")
+    can_read = user == "Administrator" or bool(roles & {"账套管理员", "账务查看者"})
+    can_source = user == "Administrator" or "账套管理员" in roles
+    return ("NOT EXISTS (SELECT 1 FROM `tabFile` protected "
+            "LEFT JOIN `tabInternal Ledger Source File` source ON source.name = protected.attached_to_name "
+            "AND protected.attached_to_doctype = 'Internal Ledger Source File' "
+            "LEFT JOIN `tabLedger Evidence` evidence ON evidence.name = protected.attached_to_name "
+            "AND protected.attached_to_doctype = 'Ledger Evidence' "
+            "LEFT JOIN `tabImported Transaction` tx ON tx.name = evidence.imported_transaction "
+            "LEFT JOIN `tabImport Batch` batch ON batch.name = COALESCE(source.import_batch, tx.import_batch) "
+            "WHERE protected.attached_to_doctype IN ('Ledger Evidence', 'Internal Ledger Source File') "
+            "AND (protected.name = `tabFile`.name OR protected.file_url = `tabFile`.file_url) "
+            f"AND ({int(not can_read)} OR batch.company IS NULL OR batch.company != {company} "
+            f"OR ({int(not can_source)} AND protected.attached_to_doctype = 'Internal Ledger Source File')))")
+
+
+def file_permission(doc, ptype, user=None, **kwargs):
+    user = user or frappe.session.user
+    if ptype not in ("read", "select") or doc._ledger_read_allowed(user):
+        return True
+    # A false controller result is followed by Frappe's share fallback.
+    if frappe.share.get_shared("File", user=user, rights=["read"], filters=[["share_name", "=", doc.name]]):
+        frappe.throw("文件分享权限已失效，请联系管理员", frappe.PermissionError)
+    return False
+
+
 def has_reporting_permission(doc, ptype, user=None, **kwargs):
     roles = set(frappe.get_roles(user or frappe.session.user))
     if not roles & {"账套管理员", "账务查看者"}:
@@ -113,6 +148,9 @@ def protect_journal_write(doc, method=None):
 
 
 def protect_source_file(doc, method=None):
+    # Serialize file-domain checks with creation and privacy changes on this single-site ledger.
+    frappe.db.sql("SELECT value FROM `tabSingles` WHERE doctype = %s AND field = %s FOR UPDATE",
+                  ("Internal Ledger Settings", "company"))
     old = doc.get_doc_before_save()
     protected = doc.attached_to_doctype == "Internal Ledger Source File" or (
         old and old.attached_to_doctype == "Internal Ledger Source File")
@@ -130,9 +168,57 @@ def protect_source_file(doc, method=None):
             frappe.throw("流水备注与附件只能由佐证服务写入", frappe.PermissionError)
         if doc.is_private != 1:
             frappe.throw("流水附件必须私有", frappe.PermissionError)
+    if not protected and not evidence:
+        fields = ("file_url", "thumbnail_url")
+        paths = [doc.get(field) for field in fields
+                 if (method == "on_trash" or not old or doc.get(field) != old.get(field))
+                 and not (field == "file_url" and method != "on_trash" and doc.is_new()
+                          and doc.flags.ledger_native_dedup is _NATIVE_FILE_DEDUP)]
+        if paths:
+            protected_files = frappe.get_all("File", filters={"name": ["!=", doc.name],
+                "attached_to_doctype": ["in", ["Ledger Evidence", "Internal Ledger Source File"]]},
+                fields=["file_url", "thumbnail_url"])
+            def disk_path(url):
+                if not url:
+                    return None
+                directory, name = split(url.strip("/"))
+                return ("public" if directory == "files" else "private", name)
+            protected_paths = {disk_path(row.get(field)) for row in protected_files for field in fields}
+            if any(disk_path(path) in protected_paths for path in paths if path):
+                frappe.throw("不能引用或删除受保护的流水文件", frappe.PermissionError)
 
 
 class ProtectedLedgerFile:
+    def _ledger_read_allowed(self, user=None):
+        user = user or frappe.session.user
+        references = frappe.get_all("File", filters={
+            "attached_to_doctype": ["in", ["Ledger Evidence", "Internal Ledger Source File"]],
+            "file_url": self.file_url}, fields=["attached_to_doctype", "attached_to_name"]) if self.file_url else []
+        if self.attached_to_doctype in ("Ledger Evidence", "Internal Ledger Source File"):
+            references.append(self)
+        roles = set(frappe.get_roles(user))
+        company = frappe.db.get_single_value("Internal Ledger Settings", "company")
+        for row in references:
+            if not company or (user != "Administrator" and not roles & {"账套管理员", "账务查看者"}):
+                return False
+            if row.attached_to_doctype == "Internal Ledger Source File" and user != "Administrator" and "账套管理员" not in roles:
+                return False
+            try:
+                parent = frappe.get_doc(row.attached_to_doctype, row.attached_to_name)
+            except frappe.DoesNotExistError:
+                return False
+            if document_company(parent) != company:
+                return False
+        return True
+
+    def has_permission(self, permtype="read", *, debug=False, user=None):
+        if permtype in ("read", "select") and not self._ledger_read_allowed(user):
+            return False
+        return super().has_permission(permtype, debug=debug, user=user)
+
+    def is_downloadable(self):
+        return self._ledger_read_allowed() and super().is_downloadable()
+
     def _is_controlled_attachment(self):
         return ((self.attached_to_doctype == "Ledger Evidence"
                  and self.flags.evidence_file_write is _EVIDENCE_FILE_WRITE)
@@ -157,7 +243,11 @@ class ProtectedLedgerFile:
                 self.file_name = display_name
         if not self.is_new() and not self.is_remote_file:
             self._protect_shared_blob()
-        return super().save_file(*args, **kwargs)
+        generated = self.is_new() and not self.file_url
+        result = super().save_file(*args, **kwargs)
+        if generated:
+            self.flags.ledger_native_dedup = _NATIVE_FILE_DEDUP
+        return result
 
     def write_file(self):
         if not self.is_new() or not self._is_controlled_attachment():
@@ -181,7 +271,7 @@ class ProtectedLedgerFile:
 
     def handle_is_private_changed(self):
         protect_source_file(self, "handle_is_private_changed")
-        if not cint(self.is_private) and not self.is_remote_file:
+        if not self.is_remote_file:
             self._protect_shared_blob()
         return super().handle_is_private_changed()
 
