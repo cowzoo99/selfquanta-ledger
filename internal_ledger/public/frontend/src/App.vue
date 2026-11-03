@@ -12,7 +12,8 @@ const props = defineProps({view: {type: String, default: 'dashboard'}, filter: {
 const month = ref(frappe.datetime.get_today().slice(0, 7));
 const counts = reactive({status: 'idle', data: null, error: ''});
 const list = reactive({status: 'idle', data: null, error: ''});
-const loading = computed(() => counts.status === 'loading' || list.status === 'loading');
+const classificationRun = reactive({status: 'idle', summary: null, error: ''});
+const loading = computed(() => classificationRun.status === 'loading' || counts.status === 'loading' || list.status === 'loading');
 const currentCounts = computed(() => counts.status === 'success' && counts.data?.month === month.value ? counts.data : null);
 const language = ref((frappe.boot?.lang || '').startsWith('zh') ? 'zh' : 'en');
 const savingLanguage = ref(false), languageError = ref('');
@@ -55,6 +56,18 @@ function refresh() {
     load(list, call('list_review_items'), generation),
   ]);
 }
+async function refreshPage() {
+  if (workflowStage.value === 3 && canWrite) {
+    Object.assign(classificationRun, {status: 'loading', summary: null, error: ''});
+    try {
+      const response = await frappe.call({method: 'internal_ledger.api.review_api.auto_classify_pending', type: 'POST'});
+      Object.assign(classificationRun, {status: 'success', summary: response.message.summary, error: ''});
+    } catch (e) {
+      Object.assign(classificationRun, {status: 'error', summary: null, error: '自动分类失败：' + errorMessage(e)});
+    }
+  }
+  return refresh();
+}
 async function changeLanguage() {
   savingLanguage.value = true; languageError.value = '';
   try {
@@ -65,7 +78,7 @@ async function changeLanguage() {
     savingLanguage.value = false;
   }
 }
-onMounted(refresh);
+onMounted(refreshPage);
 </script>
 
 <template>
@@ -82,7 +95,7 @@ onMounted(refresh);
         </select>
       </label>
       <a v-if="canWrite" href="/app/classification-rule">维护分类规则</a>
-      <label for="ledger-month">月度摘要</label><input id="ledger-month" v-model="month" type="month" @change="refresh"><button :disabled="loading" @click="refresh">刷新</button>
+      <label for="ledger-month">月度摘要</label><input id="ledger-month" v-model="month" type="month" @change="refresh"><button :disabled="loading" @click="refreshPage">刷新</button>
       </header>
       <p v-if="error" role="alert">{{ error }}</p>
       <WorkflowNavigation v-if="workflowStage" :current-stage="workflowStage" :batch="batch" :counts="workflowCounts" />
@@ -91,7 +104,7 @@ onMounted(refresh);
       <DuplicateReview v-else-if="page === 'duplicates'" :can-write="canWrite" :batch="batch" :transaction="transaction" @refresh="refresh" />
       <EnterpriseMembers v-else-if="page === 'members' && canWrite" :active="page === 'members'" />
       <AccountingCenter v-else-if="page === 'accounting'" />
-      <ReviewCenter v-else :list="list" :can-write="canWrite" :initial-filter="reviewFilter" :initial-batch="batch" :initial-transaction="transaction" @refresh="refresh" />
+      <ReviewCenter v-else :list="list" :classification-run="classificationRun" :can-write="canWrite" :initial-filter="reviewFilter" :initial-batch="batch" :initial-transaction="transaction" @refresh="refresh" />
     </main>
   </div>
 </template>

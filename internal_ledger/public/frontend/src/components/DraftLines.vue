@@ -23,12 +23,15 @@ function accountFor(line) {
 <template>
   <div class="ledger-voucher">
     <dl v-if="draft" class="voucher-metadata">
-      <dt>记账日期</dt><dd>{{ draft.posting_date }}</dd><dt>草稿编号</dt><dd>{{ draft.name }}</dd>
-      <dt>来源流水</dt><dd>{{ draft.imported_transaction }}</dd><dt>摘要</dt><dd>{{ draft.summary || transaction?.summary || '—' }}</dd>
+      <dt>记账日期</dt><dd>{{ draft.posting_date }}</dd><dt>摘要</dt><dd>{{ draft.summary || transaction?.summary || '—' }}</dd>
       <dt>来源 / 方向</dt><dd>{{ sources[transaction?.source] || '未知来源' }} / {{ directions[transaction?.direction] || '未知方向' }}</dd>
       <dt>业务类型</dt><dd>{{ transactionTypes[draft.transaction_type] || '待核对' }}</dd>
       <dt>分类原因</dt><dd>{{ classificationStatuses[draft.classification_reason] || draft.classification_reason }}</dd><dt>操作人</dt><dd>{{ draft.manual_override_by || draft.modified_by || draft.owner }}</dd>
       <dt>状态</dt><dd>{{ draftStatuses[draft.status] || '待核对' }}</dd>
+    </dl>
+    <dl class="voucher-accounts">
+      <dt>借方科目</dt><dd v-for="(line, index) in (lines || []).filter(row => Number(row.debit) > 0)" :key="'debit-' + index">{{ accountFor(line).account_name || line.account }} · {{ amount(line.debit) }}</dd>
+      <dt>贷方科目</dt><dd v-for="(line, index) in (lines || []).filter(row => Number(row.credit) > 0)" :key="'credit-' + index">{{ accountFor(line).account_name || line.account }} · {{ amount(line.credit) }}</dd>
     </dl>
     <div class="ledger-table">
       <table>
@@ -48,5 +51,9 @@ function accountFor(line) {
       <button v-if="editable" type="button" @click="lines.push({account: '', debit: '0', credit: '0'})">添加分录</button>
       <p v-if="!lines?.length">暂无分录。</p>
     </div>
+    <details v-if="draft"><summary>技术信息</summary>
+      <dl><dt>草稿编号</dt><dd>{{ draft.name }}</dd><dt>来源流水</dt><dd>{{ draft.imported_transaction }}</dd>
+        <dt>批次编号</dt><dd>{{ transaction?.import_batch }}</dd><dt>规则编号</dt><dd>{{ draft.classification_rule || '无' }}</dd></dl>
+    </details>
   </div>
 </template>

@@ -4,10 +4,10 @@ import DraftLines from '../components/DraftLines.vue';
 import ManualClassificationForm from '../components/ManualClassificationForm.vue';
 import {call, errorMessage} from '../api';
 import {directions, sources, transactionTypes, draftStatuses, processingStatuses, classificationStatuses} from '../labels';
-const props = defineProps({list: {type: Object, required: true}, canWrite: Boolean, initialFilter: String, initialBatch: String, initialTransaction: String});
+const props = defineProps({list: {type: Object, required: true}, classificationRun: Object, canWrite: Boolean, initialFilter: String, initialBatch: String, initialTransaction: String});
 const emit = defineEmits(['refresh']);
 const selected = ref([]), active = ref(null), busy = ref(false), error = ref(''), outcomes = ref([]), reason = ref('');
-const savedVersion = ref(''), filter = ref('待分类'), selectedTransactions = ref([]), confirmation = ref('');
+const savedVersion = ref(''), filter = ref('待分类'), confirmation = ref('');
 const currentPage = ref(1), pageSize = 10;
 const filters = ['疑似重复', '待分类', '待审核', '待过账', '已过账'];
 watch(() => props.initialFilter, value => { filter.value = filters.includes(value) ? value : '待分类'; }, {immediate: true});
@@ -19,7 +19,7 @@ function stage(item) {
   if (!item.draft) return '待分类';
   return item.draft.status === 'Rejected' ? '待审核' : item.draft.status === 'Approved' ? '待过账' : draftStatuses[item.draft.status];
 }
-const listReady = computed(() => props.list.status === 'success');
+const listReady = computed(() => props.list.status === 'success' && props.classificationRun?.status !== 'loading');
 const scopedItems = computed(() => listReady.value ? props.list.data.filter(item => (!props.initialBatch || item.transaction.import_batch === props.initialBatch) &&
   (!props.initialTransaction || item.transaction.name === props.initialTransaction)) : []);
 const visibleItems = computed(() => scopedItems.value.filter(item => stage(item) === filter.value));
@@ -29,7 +29,6 @@ function previousPage() { currentPage.value = Math.max(1, currentPage.value - 1)
 function nextPage() { currentPage.value = Math.min(pageCount.value, currentPage.value + 1); active.value = null; }
 watch(() => [filter.value, props.initialBatch, props.initialTransaction], () => { currentPage.value = 1; });
 watch(pageCount, value => { currentPage.value = Math.min(currentPage.value, value); });
-const eligible = item => !duplicate(item) && item.transaction.status === 'Imported' && !item.draft && item.classification?.status === 'matched';
 const editing = computed(() => props.canWrite && active.value?.draft?.status === 'Draft');
 const dirty = computed(() => active.value?.draft && JSON.stringify(active.value.draft) !== savedVersion.value);
 function open(item) {
@@ -49,14 +48,6 @@ async function act(method, args) {
 function save() {
   const doc = active.value.draft;
   return act('update_draft', {name: doc.name, lines: JSON.stringify(doc.lines), summary: doc.summary || '', posting_date: doc.posting_date});
-}
-async function prepareBatch() {
-  busy.value = true; outcomes.value = []; error.value = '';
-  try {
-    outcomes.value = await call('prepare_matched_transactions', {tx_names: JSON.stringify(selectedTransactions.value)});
-    selectedTransactions.value = []; active.value = null; emit('refresh');
-  } catch (e) { error.value = errorMessage(e); }
-  finally { busy.value = false; }
 }
 const postEligible = item => !duplicate(item) && item.transaction.status === 'Imported' && !item.error &&
   (item.draft?.status === 'Approved' || (item.draft?.status === 'Draft' && item.can_approve));
@@ -87,7 +78,7 @@ const postingSummary = computed(() => {
 });
 let initializedScope = '';
 watch(() => [filter.value, props.initialBatch, props.initialTransaction, props.list, props.canWrite], () => {
-  confirmation.value = ''; selectedTransactions.value = [];
+  confirmation.value = '';
   active.value = null; savedVersion.value = '';
   const scope = JSON.stringify([filter.value, props.initialBatch || '', props.initialTransaction || '']);
   const autoSelect = props.canWrite && filter.value === '待审核';
@@ -99,6 +90,12 @@ watch(() => [filter.value, props.initialBatch, props.initialTransaction, props.l
   selected.value = initializedScope === scope ? selected.value.filter(name => names.includes(name)) : names;
   initializedScope = scope;
 }, {deep: true, immediate: true});
+watch(() => [pagedItems.value, props.classificationRun?.status], () => {
+  if (filter.value !== '待分类') return;
+  if (!listReady.value) { active.value = null; return; }
+  const first = pagedItems.value.find(item => ['unmatched', 'conflict'].includes(item.classification?.status) || item.can_classify);
+  if (first) open(first);
+}, {immediate: true});
 const confirmationVersion = () => JSON.stringify([props.list.generation, props.initialBatch || '', props.initialTransaction || '', filter.value,
   selected.value.map(name => visibleItems.value.find(item => item.draft?.name === name))]);
 const confirmationValid = computed(() => confirmation.value === confirmationVersion());
@@ -125,10 +122,17 @@ async function postBatch() {
 <template>
   <section aria-labelledby="review-title">
     <h2 id="review-title">待办中心</h2>
-    <p v-if="initialBatch">当前范围：批次 {{ initialBatch }}</p>
+    <p v-if="initialBatch">当前范围：本次导入批次</p>
     <p>异常优先。人工修改会保留操作人，并重新验证科目、金额与会计期间。</p>
+    <p v-if="classificationRun?.status === 'loading'" role="status">正在自动分类并生成草稿…</p>
+    <dl v-else-if="classificationRun?.summary" class="ledger-counts" aria-label="自动分类结果" aria-live="polite">
+      <div><dt>已自动分类并生成草稿</dt><dd>{{ classificationRun.summary.created }}</dd></div>
+      <div><dt>需要人工分类</dt><dd>{{ classificationRun.summary.manual }}</dd></div>
+      <div><dt>规则冲突</dt><dd>{{ classificationRun.summary.conflict }}</dd></div>
+      <div><dt>失败</dt><dd>{{ classificationRun.summary.failed }}</dd></div>
+    </dl>
+    <p v-if="classificationRun?.error" role="alert">{{ classificationRun.error }}</p>
     <div role="group" aria-label="审核状态筛选"><button v-for="label in filters" :key="label" :aria-pressed="filter === label" :disabled="busy" @click="filter = label">{{ label }}（{{ scopedItems.filter(item => stage(item) === label).length }}）</button></div>
-    <button v-if="canWrite" :disabled="busy || dirty || !selectedTransactions.length" @click="prepareBatch">批量生成凭证（{{ selectedTransactions.length }}）</button>
     <button v-if="canWrite" :disabled="!canPreview" @click="confirmPosting">审核并过账选中项（{{ listReady ? selected.length : 0 }}）</button>
     <p v-if="list.status === 'loading'" role="status">正在载入…</p><p v-else-if="listReady && !visibleItems.length">当前筛选没有流水。</p>
     <p v-if="error && !active" role="alert">{{ error }}</p>
@@ -156,11 +160,10 @@ async function postBatch() {
       <div>
       <ul class="ledger-items">
         <li v-for="item in pagedItems" :key="item.transaction.name">
-          <label v-if="canWrite && eligible(item)"><input v-model="selectedTransactions" type="checkbox" :value="item.transaction.name" :disabled="busy">选择生成凭证</label>
-          <label v-if="canWrite && postEligible(item)"><input v-model="selected" type="checkbox" :value="item.draft.name" :disabled="busy">选择 {{ item.draft.name }}</label>
-          <strong>{{ item.error || item.draft?.rejection_reason || draftStatuses[item.draft?.status] || stage(item) }}</strong>
-          <span>{{ item.transaction.counterparty }} · {{ item.transaction.amount }}</span>
-          <button :disabled="busy" @click="open(item)">查看 {{ item.transaction.name }}</button>
+          <label v-if="canWrite && postEligible(item)"><input v-model="selected" type="checkbox" :value="item.draft.name" :disabled="busy">选择审核过账</label>
+          <strong>{{ item.transaction.counterparty || '未提供交易对象' }} · {{ money(item.transaction.amount) }} · {{ item.transaction.occurred_at }}</strong>
+          <span>{{ item.error || item.draft?.rejection_reason || draftStatuses[item.draft?.status] || stage(item) }}</span>
+          <button :disabled="busy" @click="open(item)">查看明细</button>
         </li>
       </ul>
       <nav v-if="visibleItems.length" class="ledger-pagination" aria-label="待办分页">
@@ -170,17 +173,18 @@ async function postBatch() {
       </nav>
       </div>
       <div v-if="active" class="ledger-detail">
-        <h3>原流水</h3>
-        <dl><dt>流水编号 / 批次</dt><dd>{{ active.transaction.name }} / {{ active.transaction.import_batch }}</dd>
+        <h3>{{ active.transaction.counterparty || '未提供交易对象' }} · {{ money(active.transaction.amount) }} · {{ active.transaction.occurred_at }}</h3>
+        <dl>
           <dt>时间 / 来源</dt><dd>{{ active.transaction.occurred_at }} / {{ sources[active.transaction.source] || '未知来源' }}</dd>
           <dt>交易对象</dt><dd>{{ active.transaction.counterparty }}</dd><dt>摘要</dt><dd>{{ active.transaction.summary }}</dd>
           <dt>方向 / 金额 / 资金科目</dt><dd>{{ directions[active.transaction.direction] || '未知方向' }} / {{ active.transaction.amount }} / {{ active.transaction.payment_account }}</dd></dl>
-        <p v-if="active.classification">分类结果：{{ classificationStatuses[active.classification.status] || '待核对' }} · {{ classificationStatuses[active.classification.reason] || active.classification.reason }}</p>
+        <h4>业务分类</h4>
+        <p v-if="active.classification">分类结果：{{ classificationStatuses[active.classification.status] || '待核对' }}</p>
+        <p>业务类型：{{ transactionTypes[active.draft?.transaction_type] || '待人工确认' }}</p>
+        <p>分类依据：{{ active.draft?.classification_reason || active.classification?.reason || '尚未确认业务分类' }}</p>
         <p v-if="active.error" role="alert">{{ active.error }}</p><p v-if="error" role="alert">{{ error }}</p>
         <template v-if="active.draft">
           <h3>凭证草稿 · {{ draftStatuses[active.draft.status] }}</h3>
-          <p>业务类型：{{ transactionTypes[active.draft.transaction_type] || '待核对' }}</p>
-          <p>{{ classificationStatuses[active.draft.classification_reason] || active.draft.classification_reason }} · {{ active.draft.classification_rule }}</p>
           <p v-if="active.draft.is_manual_override">人工覆盖：{{ active.draft.manual_override_by }}</p>
           <form @submit.prevent="save">
             <fieldset :disabled="busy || !editing">
@@ -200,6 +204,11 @@ async function postBatch() {
         <a v-else-if="duplicate(active)" :href="`/app/ledger-workbench/duplicates/疑似重复/${encodeURIComponent(active.transaction.import_batch)}/${encodeURIComponent(active.transaction.name)}`">前往重复流水复核</a>
         <ManualClassificationForm v-else-if="canWrite && active.can_classify" :transaction="active.transaction" :disabled="busy" @classified="classified" />
         <button v-else-if="canWrite" :disabled="busy || !!active.error" @click="act('prepare_draft', {tx_name: active.transaction.name})">分类并生成待审核草稿</button>
+        <details v-if="!active.draft"><summary>技术信息</summary>
+          <dl><dt>流水编号</dt><dd>{{ active.transaction.name }}</dd><dt>批次编号</dt><dd>{{ active.transaction.import_batch }}</dd>
+            <dt>草稿编号</dt><dd>{{ active.draft?.name || '尚未生成' }}</dd>
+            <dt>规则编号</dt><dd>{{ active.draft?.classification_rule || active.classification?.rule_name || '无' }}</dd></dl>
+        </details>
       </div>
       <p v-else>选择一笔流水，在此核对原流水与借贷分录。</p>
     </div>

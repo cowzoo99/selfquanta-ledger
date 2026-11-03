@@ -40,7 +40,7 @@ function compile(file, realChildren = false) {
     if (name.endsWith('labels')) return labels;
     if (name.endsWith('api')) return {call: async (method, args = {}) =>
       (await frappe.call({method: 'internal_ledger.api.review_api.' + method, args})).message, errorMessage: e => e.message};
-    if (realChildren && /\/(Dashboard|ReviewCenter|DuplicateReview)\.vue$/.test(name)) {
+    if (realChildren && /\/(Dashboard|ReviewCenter|DuplicateReview|DraftLines)\.vue$/.test(name)) {
       return compile(path.posix.normalize(path.posix.join(path.posix.dirname(file), name)), true);
     }
     return {name, render() {return Vue.h('test-child', {'data-component': name});}};
@@ -93,7 +93,72 @@ function item(id, batch = 'new', values = {}) {
     error: null, can_approve: true};
 }
 async function run(name) {
-  if (name === 'batch_scope') {
+  if (name === 'auto_classification') {
+    const sweep = deferred(), summary = {created: 2, manual: 3, conflict: 1, duplicate: 0, skipped: 0, failed: 1};
+    let pendingSweep = sweep.promise;
+    frappe.call = async args => {
+      calls.push(args);
+      if (args.method.endsWith('auto_classify_pending')) return pendingSweep;
+      return {message: args.method.endsWith('list_review_items') ? [] : {month: '2026-10'}};
+    };
+    const page = mount('App.vue', {view: 'classification'}, true);
+    assert.equal(calls[0]?.method, 'internal_ledger.api.review_api.auto_classify_pending');
+    assert.equal(calls[0]?.type, 'POST');
+    assert.equal(calls.length, 1, 'list reads wait for the sweep');
+    assert.equal(page.state.classificationRun.status, 'loading');
+    sweep.resolve({message: {outcomes: [], summary}}); await settle();
+    assert.equal(page.state.classificationRun.status, 'success');
+    assert.deepEqual({...page.state.classificationRun.summary}, summary);
+    for (const label of ['已自动分类并生成草稿', '需要人工分类', '规则冲突', '失败']) assert.match(text(page.root), new RegExp(label));
+    assert.match(text(page.root), /已自动分类并生成草稿\s*2/);
+    assert.match(text(page.root), /需要人工分类\s*3/);
+    const writes = () => calls.filter(row => row.method.endsWith('auto_classify_pending')).length;
+    await page.state.refresh(); assert.equal(writes(), 1, 'single item refresh is read-only');
+    const retry = deferred(); pendingSweep = retry.promise;
+    descendants(page.root).find(el => el.type === 'button' && text(el) === '刷新').props.onClick();
+    assert.equal(writes(), 2); assert.equal(page.state.classificationRun.status, 'loading');
+    retry.reject(new Error('服务暂不可用')); await settle();
+    assert.equal(page.state.classificationRun.status, 'error');
+    assert.match(text(page.root), /自动分类失败.*服务暂不可用/);
+    assert.equal(page.state.list.status, 'success', 'failed sweep still reads the queue');
+    page.app.unmount();
+    calls = []; frappe.session.user = 'viewer'; frappe.user_roles = ['账务查看者'];
+    const viewer = mount('App.vue', {view: 'review', filter: '待分类'}, true); await settle();
+    await viewer.state.refreshPage(); await settle();
+    assert.equal(writes(), 0, 'viewers never run a write sweep');
+    assert.ok(calls.every(row => /list_review_items|get_dashboard_counts/.test(row.method)));
+    viewer.app.unmount();
+  } else if (name === 'classification_detail') {
+    const rows = Array.from({length: 12}, (_, index) => ({...item(`abcde${index}`, 'fdtn-batch'),
+      transaction: {...item(`abcde${index}`, 'fdtn-batch').transaction, counterparty: `办公用品商店${index}`, summary: '办公用品'},
+      draft: null, classification: {status: index === 0 ? 'conflict' : 'unmatched', reason: '需要核对业务分类'}, can_classify: true}));
+    const page = mount('pages/ReviewCenter.vue', {list: {status: 'success', data: rows}, canWrite: true, initialFilter: '待分类'}, true);
+    await Vue.nextTick();
+    assert.equal(page.state.active?.transaction.name, 'tx-abcde0', 'open the first unresolved item after loading');
+    assert.match(text(page.root), /业务分类/);
+    assert.doesNotMatch(text(page.root), /批量生成凭证|选择生成凭证/);
+    const primaryListText = text(descendants(page.root).find(el => el.props.class === 'ledger-items'));
+    assert.doesNotMatch(primaryListText, /fdtn|fdsc|tx-[a-z0-9]{6}/);
+    assert.match(primaryListText, /办公用品商店0.*10\.00.*2026-10-01/);
+    assert.match(primaryListText, /查看明细/);
+    for (const label of ['上一页', '下一页']) assert.match(text(page.root), new RegExp(label));
+    page.props.classificationRun = {status: 'loading'}; await Vue.nextTick();
+    assert.equal(page.state.active, null, 'a new sweep hides stale classification details');
+    page.props.classificationRun = {status: 'success'}; await Vue.nextTick();
+    assert.equal(page.state.active?.transaction.name, 'tx-abcde0');
+    page.state.nextPage(); await Vue.nextTick(); assert.equal(page.state.active?.transaction.name, 'tx-abcde10');
+    const draft = {...item('fdsc-draft'), classification: {status: 'matched', reason: '按交易摘要匹配'},
+      draft: {...item('fdsc-draft').draft, name: 'fdsc-draft', imported_transaction: 'tx-abcde0', transaction_type: 'expense',
+        classification_reason: '按交易摘要匹配', classification_rule: 'fdtn-rule', posting_date: '2026-10-01'}};
+    page.state.open(draft); await Vue.nextTick();
+    for (const label of ['业务分类', '费用支出', '分类依据', '借方科目', '贷方科目', '技术信息']) assert.match(text(page.root), new RegExp(label));
+    const technical = descendants(page.root).filter(el => el.type === 'details');
+    assert.ok(technical.some(el => /fdtn-rule/.test(text(el))));
+    const voucher = descendants(page.root).find(el => el.props.class === 'ledger-voucher');
+    const primaryVoucherText = voucher.children.filter(el => el.type !== 'details').map(text).join('');
+    assert.doesNotMatch(primaryVoucherText, /fdsc-draft|tx-abcde0|fdtn-rule/);
+    page.app.unmount();
+  } else if (name === 'batch_scope') {
     const current = item('current'), old = item('older', 'old');
     const page = mount('pages/ReviewCenter.vue', {list: {status: 'success', data: [old, current]}, canWrite: true,
       initialFilter: '待审核', initialBatch: 'new'});
@@ -405,7 +470,7 @@ async function run(name) {
       const retry = next(); page.state.refresh();
       retry.list.resolve({message: [item('A'), item('B'), item('new')]}); await settle();
       assert.deepEqual([...review.selected], ['A'], 'revalidated selection preserves exclusions');
-      assert.match(text(page.root), /tx-A/); assert.equal(button('审核并过账选中项').props.disabled, false);
+      assert.match(text(page.root), /A · 10\.00/); assert.equal(button('审核并过账选中项').props.disabled, false);
       review.confirmation = oldConfirmation;
       await review.postBatch(); assert.equal(postingCalls().length, 0, 'retry requires fresh explicit confirmation');
       review.confirmPosting(); const afterPost = next(); await review.postBatch(); await settle();
