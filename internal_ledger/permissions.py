@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import frappe
 from frappe.utils import cint, now_datetime
 
@@ -130,11 +132,41 @@ def protect_source_file(doc, method=None):
 
 
 class ProtectedLedgerFile:
+    def _is_controlled_attachment(self):
+        return ((self.attached_to_doctype == "Ledger Evidence"
+                 and self.flags.evidence_file_write is _EVIDENCE_FILE_WRITE)
+                or (self.attached_to_doctype == "Internal Ledger Source File"
+                    and self.flags.source_insert is _SOURCE_INSERT))
+
     def save_file(self, *args, **kwargs):
         protect_source_file(self, "save_file")
+        if self.is_new() and self._is_controlled_attachment():
+            # Native File can reuse a URL both during storage and after storage on a duplicate assignment.
+            kwargs["ignore_existing_file_check"] = True
+            self.flags.ignore_duplicate_entry_error = True
         if not self.is_new() and not self.is_remote_file:
             self._protect_shared_blob()
         return super().save_file(*args, **kwargs)
+
+    def write_file(self):
+        if not self.is_new() or not self._is_controlled_attachment():
+            return super().write_file()
+        # Reserve only the final, disambiguated path before native validation/write/fsync.
+        path = Path(self.get_full_path())
+        path.touch(exist_ok=False)
+        try:
+            return super().write_file()
+        except Exception:
+            path.unlink(missing_ok=True)
+            raise
+
+    def _delete_file_on_disk(self):
+        if not self.file_url or not self._is_controlled_attachment():
+            return super()._delete_file_on_disk()
+        references = frappe.db.get_values("File", {"name": ["!=", self.name], "file_url": self.file_url},
+                                          "file_url", pluck=True, for_update=True)
+        # Distinct paths with identical bytes must be unlinked independently.
+        return self.delete_file_data_content(only_thumbnail=self.file_url in references)
 
     def handle_is_private_changed(self):
         protect_source_file(self, "handle_is_private_changed")

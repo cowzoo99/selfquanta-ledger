@@ -405,6 +405,92 @@ def test_failure_after_file_mutation_restores_database_audit_and_blob():
     assert not frappe.db.exists("Internal Ledger Audit Event", {"reference_name": tx, "action": "delete_evidence"})
 
 
+def test_invalid_same_name_jpeg_preserves_original_blob():
+    from io import BytesIO
+    from PIL import Image, UnidentifiedImageError
+    from internal_ledger.api import evidence_api as api
+
+    frappe.db.set_single_value("System Settings", "strip_exif_metadata_from_uploaded_images", 1)
+    frappe.clear_cache(doctype="System Settings")
+    tx = transaction()
+    filename = f"proof-{uuid4().hex}.jpg"
+    stream = BytesIO()
+    Image.new("RGB", (2, 2), "green").save(stream, format="JPEG")
+    saved = api.upload_evidence(tx, filename, encoded(stream.getvalue()), "image/jpeg")
+    doc = frappe.get_doc("File", saved["attachments"][0]["name"])
+    path = Path(doc.get_full_path())
+    original = path.read_bytes()
+    siblings = set(path.parent.glob(f"{path.stem}*"))
+    with unittest.TestCase().assertRaises(UnidentifiedImageError):
+        api.upload_evidence(tx, filename, encoded(b"\xff\xd8\xff\x00"), "image/jpeg")
+    assert path.read_bytes() == original
+    assert set(path.parent.glob(f"{path.stem}*")) == siblings
+    assert api.get_evidence(tx) == saved
+
+
+def test_same_content_same_parent_keeps_both_physical_paths_until_removal():
+    from internal_ledger.api import evidence_api as api
+
+    tx = transaction()
+    payload = encoded(uuid4().hex.encode())
+    filename = f"same-{uuid4().hex}.txt"
+    first, = api.upload_evidence(tx, filename, payload, "text/plain")["attachments"]
+    saved = api.upload_evidence(tx, filename, payload, "text/plain")
+    second, = [row for row in saved["attachments"] if row["name"] != first["name"]]
+    assert first["file_url"] != second["file_url"]
+    first_path = Path(frappe.get_doc("File", first["name"]).get_full_path())
+    second_path = Path(frappe.get_doc("File", second["name"]).get_full_path())
+    api.delete_evidence_file(tx, second["name"])
+    assert not second_path.exists() and encoded(first_path.read_bytes()) == payload
+
+
+def test_public_same_content_does_not_keep_deleted_private_blob():
+    from internal_ledger.api import evidence_api as api
+
+    tx = transaction()
+    content = uuid4().hex.encode()
+    public = frappe.get_doc({"doctype": "File", "file_name": f"pub-{uuid4().hex}.txt",
+                             "content": content, "is_private": 0}).insert()
+    saved = api.upload_evidence(tx, f"priv-{uuid4().hex}.txt", encoded(content), "text/plain")
+    doc = frappe.get_doc("File", saved["attachments"][0]["name"])
+    assert doc.content_hash == public.content_hash and doc.file_url != public.file_url
+    path = Path(doc.get_full_path())
+    api.delete_evidence_file(tx, doc.name)
+    assert not path.exists()
+    assert Path(public.get_full_path()).read_bytes() == content
+
+
+def test_public_same_content_does_not_keep_rolled_back_private_blob():
+    from internal_ledger.api import evidence_api as api
+
+    tx = transaction()
+    content = uuid4().hex.encode()
+    public = frappe.get_doc({"doctype": "File", "file_name": f"pub-{uuid4().hex}.txt",
+                             "content": content, "is_private": 0}).insert()
+    filename = f"priv-{uuid4().hex}.txt"
+    path = Path(frappe.get_site_path("private", "files", filename))
+    with patch.object(api, "_serialize_evidence", side_effect=RuntimeError("response failed")):
+        with unittest.TestCase().assertRaisesRegex(RuntimeError, "response failed"):
+            api.upload_evidence(tx, filename, encoded(content), "text/plain")
+    assert not path.exists()
+    assert not frappe.db.exists("File", {"file_name": filename})
+    assert Path(public.get_full_path()).read_bytes() == content
+
+
+def test_failure_during_private_file_write_removes_partial_blob():
+    from internal_ledger.api import evidence_api as api
+
+    tx = transaction()
+    filename = f"partial-{uuid4().hex}.txt"
+    path = Path(frappe.get_site_path("private", "files", filename))
+    with patch("frappe.core.doctype.file.file.os.fsync", side_effect=OSError("disk failure")):
+        with unittest.TestCase().assertRaisesRegex(OSError, "disk failure"):
+            api.upload_evidence(tx, filename, encoded(uuid4().hex.encode()), "text/plain")
+    assert not path.exists()
+    assert not frappe.db.exists("File", {"file_name": filename})
+    assert not frappe.db.exists("Ledger Evidence", {"imported_transaction": tx})
+
+
 def tear_down():
     frappe.set_user("Administrator")
     frappe.db.rollback()

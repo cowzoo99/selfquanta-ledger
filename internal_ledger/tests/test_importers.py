@@ -210,6 +210,42 @@ def test_confirm_reparses_content_and_recomputes_hash():
     assert Decimal(str(next(row.amount for row in rows if row.source_id == "BANK-001"))) == Decimal("12.50")
 
 
+def test_import_after_identical_evidence_keeps_separate_viewer_download_permissions():
+    from frappe.core.doctype.file.utils import find_file_by_url
+    from frappe.handler import download_file
+    from frappe.utils.response import download_private_file
+    from werkzeug.exceptions import Forbidden
+    from internal_ledger.api.evidence_api import delete_evidence_file, upload_evidence
+    from internal_ledger.api.import_api import confirm_import, preview_import
+    from internal_ledger.tests.test_classifier import transaction
+    from internal_ledger.tests.test_permissions import user
+
+    set_up_import_classification()
+    content = fixture("bank")
+    encoded = base64.b64encode(content).decode()
+    tx = transaction()
+    evidence_file, = upload_evidence(tx, "对账.csv", encoded, "text/csv")["attachments"]
+    preview = preview_import("bank", encoded, account("1001"))
+    result = confirm_import("bank", encoded, account("1001"), preview["file_hash"])
+    source = frappe.get_doc("Internal Ledger Source File", {"import_batch": result["batch_name"]})
+    assert source.raw_file != evidence_file["file_url"]
+    for url in (source.raw_file, evidence_file["file_url"]):
+        assert Path(find_file_by_url(url).get_full_path()).read_bytes() == content
+    frappe.set_user(user("账务查看者"))
+    download_file(evidence_file["file_url"])
+    assert frappe.local.response.filecontent.encode() == content
+    assert not find_file_by_url(source.raw_file)
+    with unittest.TestCase().assertRaises(frappe.PermissionError):
+        download_file(source.raw_file)
+    with unittest.TestCase().assertRaises(Forbidden):
+        download_private_file(source.raw_file)
+    frappe.set_user("Administrator")
+    evidence_path = Path(find_file_by_url(evidence_file["file_url"]).get_full_path())
+    delete_evidence_file(tx, evidence_file["name"])
+    assert not evidence_path.exists()
+    assert Path(find_file_by_url(source.raw_file).get_full_path()).read_bytes() == content
+
+
 def test_confirm_blocks_errors_and_api_rejects_invalid_base64():
     from internal_ledger.api.import_api import preview_import, confirm_import
     content = fixture("bank").replace(b"12.50", b"NaN")

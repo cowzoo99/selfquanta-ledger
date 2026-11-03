@@ -142,12 +142,13 @@ def upload_evidence(tx_name: str, filename: str, content_base64: str, mime_type:
         attachment = frappe.get_doc({"doctype": "File", "file_name": safe_name, "content": content,
             "attached_to_doctype": evidence.doctype, "attached_to_name": evidence.name, "is_private": 1})
         attachment.flags.evidence_file_write = _EVIDENCE_FILE_WRITE
-        # A SQL savepoint does not trigger File's native full-rollback callback.
-        undo_files.callback(attachment.on_rollback)
+        def discard_created_blob():
+            # Before native storage succeeds, original_content contains the incoming bytes.
+            if attachment.flags.new_file:
+                attachment.on_rollback()
+
+        undo_files.callback(discard_created_blob)
         attachment.insert()
-        if frappe.db.get_value("File", {"file_url": attachment.file_url,
-                "attached_to_doctype": "Internal Ledger Source File"}, for_update=True):
-            frappe.throw("附件不能与导入原始文件共用下载地址")
         return _serialize_evidence(evidence)
 
 

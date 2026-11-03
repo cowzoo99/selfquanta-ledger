@@ -406,8 +406,8 @@ def test_private_source_is_immutable_and_viewer_cannot_list_or_download():
     save_evidence(tx, "导入凭据")
     with unittest.TestCase().assertRaises(frappe.PermissionError):
         delete_evidence_file(tx, attachment.name)
-    with unittest.TestCase().assertRaisesRegex(frappe.ValidationError, "原始文件"):
-        upload_evidence(tx, "复用原始文件.csv", encoded, "text/csv")
+    info, = upload_evidence(tx, "复用原始文件.csv", encoded, "text/csv")["attachments"]
+    assert info["file_url"] != original_url
     assert Path(attachment.get_full_path()).read_bytes() == fixture("bank")
     batch.file_hash = "forged"
     with unittest.TestCase().assertRaises(frappe.PermissionError):
@@ -419,7 +419,9 @@ def test_private_source_is_immutable_and_viewer_cannot_list_or_download():
     from frappe.client import get
 
     assert not get("Import Batch", name).get("raw_file")
-    assert get_evidence(tx)["attachments"] == []
+    assert get_evidence(tx)["attachments"] == [info]
+    download_file(info["file_url"])
+    assert frappe.local.response.filecontent.encode() == fixture("bank")
     assert not find_file_by_url(original_url)
     assert not frappe.has_permission("Internal Ledger Source File", "read", attachment.attached_to_name)
     with unittest.TestCase().assertRaises(frappe.PermissionError):
