@@ -62,6 +62,11 @@ function child(vnode, name) {
     if (next && typeof next === 'object') {const found = child(next, name); if (found) return found;}
   }
 }
+function deferred() {
+  let resolve, reject;
+  const promise = new Promise((yes, no) => {resolve = yes; reject = no;});
+  return {promise, resolve, reject};
+}
 const settle = async () => {await new Promise(resolve => setImmediate(resolve)); await Vue.nextTick();};
 function descendants(root) {return [root, ...root.children.flatMap(descendants)];}
 function text(root) {return root.text + root.children.map(text).join('');}
@@ -233,6 +238,61 @@ async function run(name) {
     const page = mount('App.vue', {view: 'duplicates', batch: 'new', transaction: 'tx-new'}, true); await settle();
     const duplicate = child(page.root._vnode, 'DuplicateReview');
     assert.equal(duplicate.props.batch, 'new'); assert.equal(duplicate.props.transaction, 'tx-new'); page.app.unmount();
+  } else if (name === 'retry_after_failure') {
+    const first = deferred(), retry = deferred(), queue = [first, retry];
+    frappe.call = async args => {calls.push(args);
+      return args.method.endsWith('list_review_items') ? queue.shift().promise : {message: []};};
+    const page = mount('App.vue', {view: 'review', filter: '待审核', batch: 'new'}, true);
+    const review = () => child(page.root._vnode, 'ReviewCenter').setupState;
+    first.reject(new Error('合成首次请求失败')); await settle();
+    assert.equal(page.state.loading, false); assert.match(page.state.error, /合成首次请求失败/);
+    const refresh = page.state.refresh(); retry.resolve({message: [item('retry')]}); await refresh; await settle();
+    assert.deepEqual([...review().selected], ['retry'], 'first successful list after a rejected request must initialize selection');
+    page.app.unmount();
+    const empty = deferred(), later = deferred(), emptyQueue = [empty, later];
+    frappe.call = async args => {calls.push(args);
+      return args.method.endsWith('list_review_items') ? emptyQueue.shift().promise : {message: []};};
+    const emptyPage = mount('App.vue', {view: 'review', filter: '待审核', batch: 'new'}, true);
+    empty.resolve({message: []}); await settle();
+    const emptyRefresh = emptyPage.state.refresh(); later.resolve({message: [item('later')]}); await emptyRefresh; await settle();
+    assert.deepEqual([...child(emptyPage.root._vnode, 'ReviewCenter').setupState.selected], [],
+      'a successful empty list initializes the scope, so a later refresh does not newly default-select');
+    emptyPage.app.unmount();
+  } else if (['overlap_pending', 'overlap_stale_last'].includes(name)) {
+    const boot = deferred(), first = deferred(), second = deferred(), queue = [boot, first, second];
+    let countRequest = 0;
+    frappe.call = async args => {calls.push(args);
+      if (args.method.endsWith('get_dashboard_counts')) return {message: {request: countRequest++}};
+      if (args.method.endsWith('list_review_items')) return queue.length ? queue.shift().promise : {message: [item('one')]};
+      return {message: []};};
+    const page = mount('App.vue', {view: 'review', filter: '待审核', batch: 'new'}, true);
+    const review = () => child(page.root._vnode, 'ReviewCenter').setupState;
+    boot.resolve({message: [item('one')]}); await settle();
+    review().confirmPosting(); assert.ok(review().confirmation);
+    const request1 = page.state.refresh(), request2 = page.state.refresh(); await Vue.nextTick();
+    assert.equal(review().confirmation, '');
+    if (name === 'overlap_pending') {
+      first.resolve({message: [item('one', 'new', {summary: '旧请求先返回'})]}); await request1; await settle();
+      const stillPending = page.state.loading;
+      review().confirmPosting(); const reopened = review().confirmation;
+      review().confirmation = review().confirmationVersion(); await review().postBatch();
+      assert.equal(calls.filter(row => row.method.endsWith('approve_and_post')).length, 0,
+        'an obsolete response cannot unlock posting while the current refresh is pending');
+      assert.equal(stillPending, true); assert.equal(reopened, '');
+      assert.equal(page.state.items[0].transaction.summary, undefined, 'obsolete response is not published');
+      second.resolve({message: [item('one', 'new', {summary: '最新请求'})]}); await request2; await settle();
+      assert.equal(page.state.loading, false); assert.equal(page.state.items[0].transaction.summary, '最新请求');
+      review().confirmPosting(); assert.ok(review().confirmation); await review().postBatch(); await settle();
+      assert.equal(calls.filter(row => row.method.endsWith('approve_and_post')).length, 1,
+        'explicit confirmation can post only after the current request completes');
+    } else {
+      second.resolve({message: [item('newest')]}); await request2; await settle();
+      assert.deepEqual(page.state.items.map(row => row.draft.name), ['newest']); assert.equal(page.state.loading, false);
+      first.resolve({message: [item('stale')]}); await request1; await settle();
+      assert.deepEqual(page.state.items.map(row => row.draft.name), ['newest'], 'a late obsolete response cannot replace current items');
+      assert.equal(page.state.counts.request, 2, 'counts come from the same current refresh as items');
+    }
+    page.app.unmount();
   } else throw new Error('unknown case ' + name);
   console.log('PASS ' + name);
 }

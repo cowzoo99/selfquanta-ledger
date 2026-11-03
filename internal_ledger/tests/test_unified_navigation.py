@@ -343,6 +343,18 @@ def test_duplicate_route_and_app_preserve_selected_transaction():
     _run_review_component_case("duplicate_route_scope")
 
 
+def test_first_failed_review_request_does_not_consume_successful_initialization():
+    _run_review_component_case("retry_after_failure")
+
+
+def test_obsolete_refresh_cannot_unlock_posting_while_latest_request_is_pending():
+    _run_review_component_case("overlap_pending")
+
+
+def test_late_obsolete_refresh_cannot_overwrite_current_review_items():
+    _run_review_component_case("overlap_stale_last")
+
+
 def load_tests(loader, tests, pattern):
     return unittest.TestSuite(unittest.FunctionTestCase(test, setUp=set_up, tearDown=tear_down)
                               for name, test in sorted(globals().items()) if name.startswith("test_"))

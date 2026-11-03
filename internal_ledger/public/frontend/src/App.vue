@@ -8,7 +8,7 @@ import DuplicateReview from './pages/DuplicateReview.vue';
 import {call, errorMessage, setLanguage} from './api';
 const props = defineProps({view: {type: String, default: 'dashboard'}, filter: {type: String, default: ''}, batch: {type: String, default: ''}, transaction: {type: String, default: ''}});
 const month = ref(frappe.datetime.get_today().slice(0, 7));
-const counts = ref(null), items = ref([]), loading = ref(true), error = ref('');
+const counts = ref(null), items = ref([]), loading = ref(true), listLoaded = ref(false), error = ref('');
 const language = ref((frappe.boot?.lang || '').startsWith('zh') ? 'zh' : 'en');
 const savingLanguage = ref(false);
 const canWrite = frappe.session.user === 'Administrator' || frappe.user_roles.includes('账套管理员');
@@ -16,13 +16,19 @@ const navigation = [['dashboard', '业务总览'], ['import', '文件智能导�
 const page = computed(() => navigation.some(entry => entry[0] === props.view) || ['duplicates', 'classification'].includes(props.view) ? props.view : 'dashboard');
 const taskPage = computed(() => ['duplicates', 'classification'].includes(page.value) ? 'review' : page.value);
 const reviewFilter = computed(() => page.value === 'classification' ? '待分类' : (props.filter || '待审核'));
+let refreshGeneration = 0;
 async function refresh() {
+  const generation = ++refreshGeneration;
   loading.value = true; error.value = '';
-  try {
-    const result = await Promise.all([call('get_dashboard_counts', {month: month.value}), call('list_review_items')]);
-    counts.value = result[0]; items.value = result[1];
-  } catch (e) { error.value = errorMessage(e); }
-  finally { loading.value = false; }
+  const result = await Promise.allSettled([call('get_dashboard_counts', {month: month.value}), call('list_review_items')]);
+  if (generation !== refreshGeneration) return;
+  if (result[0].status === 'fulfilled') counts.value = result[0].value;
+  if (result[1].status === 'fulfilled') {
+    items.value = result[1].value; listLoaded.value = true;
+  }
+  const failure = result.find(row => row.status === 'rejected');
+  if (failure) error.value = errorMessage(failure.reason);
+  loading.value = false;
 }
 async function changeLanguage() {
   savingLanguage.value = true; error.value = '';
@@ -59,7 +65,7 @@ onMounted(refresh);
       <ImportPreview v-else-if="page === 'import'" :can-write="canWrite" @imported="refresh" />
       <DuplicateReview v-else-if="page === 'duplicates'" :can-write="canWrite" :batch="batch" :transaction="transaction" @refresh="refresh" />
       <EnterpriseMembers v-else-if="page === 'members' && canWrite" :active="page === 'members'" />
-      <ReviewCenter v-else :items="items" :loading="loading" :can-write="canWrite" :initial-filter="reviewFilter" :initial-batch="batch" :initial-transaction="transaction" @refresh="refresh" />
+      <ReviewCenter v-else :items="items" :loading="loading" :list-loaded="listLoaded" :can-write="canWrite" :initial-filter="reviewFilter" :initial-batch="batch" :initial-transaction="transaction" @refresh="refresh" />
     </main>
   </div>
 </template>

@@ -4,7 +4,7 @@ import DraftLines from '../components/DraftLines.vue';
 import ManualClassificationForm from '../components/ManualClassificationForm.vue';
 import {call, errorMessage} from '../api';
 import {directions, sources, transactionTypes, draftStatuses, processingStatuses, classificationStatuses} from '../labels';
-const props = defineProps({items: Array, canWrite: Boolean, loading: Boolean, initialFilter: String, initialBatch: String, initialTransaction: String});
+const props = defineProps({items: Array, canWrite: Boolean, loading: Boolean, listLoaded: {type: Boolean, default: true}, initialFilter: String, initialBatch: String, initialTransaction: String});
 const emit = defineEmits(['refresh']);
 const selected = ref([]), active = ref(null), busy = ref(false), error = ref(''), outcomes = ref([]), reason = ref('');
 const savedVersion = ref(''), filter = ref('待分类'), selectedTransactions = ref([]), confirmation = ref('');
@@ -78,7 +78,7 @@ const postingSummary = computed(() => {
   return summary;
 });
 let initializedScope = '';
-watch(() => [filter.value, props.initialBatch, props.initialTransaction, props.items, props.loading, props.canWrite], () => {
+watch(() => [filter.value, props.initialBatch, props.initialTransaction, props.items, props.loading, props.listLoaded, props.canWrite], () => {
   confirmation.value = ''; selectedTransactions.value = [];
   active.value = null; savedVersion.value = '';
   const scope = JSON.stringify([filter.value, props.initialBatch || '', props.initialTransaction || '']);
@@ -86,8 +86,9 @@ watch(() => [filter.value, props.initialBatch, props.initialTransaction, props.i
   if (!props.canWrite || filter.value !== '待审核') {
     selected.value = []; initializedScope = '';
   } else if (initializedScope !== scope) {
-    selected.value = props.loading ? [] : names;
-    if (!props.loading) initializedScope = scope;
+    const ready = props.listLoaded && !props.loading;
+    selected.value = ready ? names : [];
+    if (ready) initializedScope = scope;
   } else {
     selected.value = selected.value.filter(name => names.includes(name));
   }
