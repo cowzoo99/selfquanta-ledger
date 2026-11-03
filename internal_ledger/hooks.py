@@ -9,9 +9,11 @@ app_include_js = "/assets/internal_ledger/js/internal_ledger_desk.js"
 after_install = "internal_ledger.install.ensure_roles"
 after_migrate = "internal_ledger.install.ensure_roles"
 
+extend_doctype_class = {"File": ["internal_ledger.permissions.ProtectedLedgerFile"]}
+
 _ledger_doctypes = ("Import Batch", "Imported Transaction", "Classification Rule", "Voucher Draft",
                     "Posting Link", "Internal Ledger Settings", "Internal Ledger Audit Event",
-                    "Internal Ledger Source File")
+                    "Internal Ledger Source File", "Ledger Evidence")
 has_permission = {doctype: "internal_ledger.permissions.has_ledger_permission" for doctype in _ledger_doctypes}
 permission_query_conditions = {doctype: "internal_ledger.permissions.company_query"
                               for doctype in _ledger_doctypes if doctype != "Internal Ledger Settings"}
@@ -26,6 +28,11 @@ doc_events["File"] = {"before_validate": "internal_ledger.permissions.protect_so
 for _doctype in ("Import Batch", "Imported Transaction"):
     doc_events[_doctype] = {"before_validate": "internal_ledger.permissions.protect_import_write",
                            "on_trash": "internal_ledger.permissions.protect_import_write"}
+doc_events["Ledger Evidence"] = {
+    "before_validate": "internal_ledger.permissions.protect_evidence_write",
+    "on_trash": "internal_ledger.permissions.protect_evidence_write",
+}
+
 doc_events["Journal Entry"] = {event: "internal_ledger.permissions.protect_journal_write" for event in (
     "before_validate", "before_submit", "before_update_after_submit", "before_cancel", "on_trash")}
 for _doctype in ("Classification Rule", "Internal Ledger Settings"):

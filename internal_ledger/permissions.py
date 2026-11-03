@@ -4,11 +4,13 @@ from frappe.utils import now_datetime
 
 LEDGER_DOCTYPES = ("Import Batch", "Imported Transaction", "Classification Rule", "Voucher Draft",
                   "Posting Link", "Internal Ledger Settings", "Internal Ledger Audit Event",
-                  "Internal Ledger Source File")
+                  "Internal Ledger Source File", "Ledger Evidence")
 _AUDIT_INSERT = object()
 _SOURCE_INSERT = object()
 _IMPORT_WRITE = object()
 _JOURNAL_WRITE = object()
+_EVIDENCE_WRITE = object()
+_EVIDENCE_FILE_WRITE = object()
 
 
 def require_ledger_admin() -> None:
@@ -84,6 +86,12 @@ def protect_import_write(doc, method=None):
         frappe.throw("导入批次与流水只能由导入服务写入", frappe.PermissionError)
 
 
+def protect_evidence_write(doc, method=None):
+    require_ledger_admin()
+    if doc.flags.ledger_evidence_write is not _EVIDENCE_WRITE:
+        frappe.throw("流水备注与附件只能由佐证服务写入", frappe.PermissionError)
+
+
 def protect_journal_write(doc, method=None):
     company = frappe.db.get_single_value("Internal Ledger Settings", "company")
     old = doc.get_doc_before_save()
@@ -103,6 +111,21 @@ def protect_source_file(doc, method=None):
             frappe.throw("原始文件只读保存", frappe.PermissionError)
         if not doc.is_private:
             frappe.throw("原始文件必须私有", frappe.PermissionError)
+    evidence = doc.attached_to_doctype == "Ledger Evidence" or (
+        old and old.attached_to_doctype == "Ledger Evidence")
+    if evidence:
+        require_ledger_admin()
+        if doc.flags.evidence_file_write is not _EVIDENCE_FILE_WRITE:
+            frappe.throw("流水备注与附件只能由佐证服务写入", frappe.PermissionError)
+        if doc.is_private != 1:
+            frappe.throw("流水附件必须私有", frappe.PermissionError)
+
+
+class ProtectedLedgerFile:
+    def on_trash(self):
+        # File's native on_trash removes the blob before doc_events run.
+        protect_source_file(self, "on_trash")
+        return super().on_trash()
 
 
 def record_audit(action: str, reference_doctype: str, reference_name: str, result: str) -> None:

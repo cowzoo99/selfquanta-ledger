@@ -1,0 +1,14 @@
+{
+ "doctype": "DocType", "name": "Ledger Evidence", "module": "Internal Ledger",
+ "autoname": "hash", "engine": "InnoDB",
+ "field_order": ["imported_transaction", "company", "note_html"],
+ "fields": [
+  {"fieldname": "imported_transaction", "label": "Imported Transaction", "fieldtype": "Link", "options": "Imported Transaction", "reqd": 1, "unique": 1, "read_only": 1},
+  {"fieldname": "company", "label": "Company", "fieldtype": "Link", "options": "Company", "reqd": 1, "read_only": 1},
+  {"fieldname": "note_html", "label": "Note", "fieldtype": "Text Editor"}
+ ],
+ "permissions": [
+  {"role": "账套管理员", "read": 1, "write": 1, "create": 1, "delete": 1, "report": 1},
+  {"role": "账务查看者", "read": 1, "report": 1}
+ ]
+}
