@@ -246,6 +246,61 @@ def test_release_processing_audit_failure_rolls_back_release_and_draft():
     assert frappe.db.count("Internal Ledger Audit Event") == audit_count
 
 
+def test_duplicate_scope_limits_reads_and_writes_and_keeps_legacy_history():
+    from internal_ledger.api.duplicate_api import list_duplicates, resolve_duplicate
+    from internal_ledger.tests.test_permissions import user
+
+    candidates = []
+    for count in (2, 3):
+        source_id = uuid4().hex
+        batch = save_batch("wechat", uuid4().hex, [
+            tx(source_id=source_id, payment_account=account("1001"), raw_row=row + 2)
+            for row in range(count)])
+        candidates.append(frappe.get_all("Imported Transaction", filters={"import_batch": batch,
+            "status": "Duplicate"}, fields=["name", "import_batch"], order_by="raw_row"))
+    older, (current, sibling) = candidates[0][0], candidates[1]
+    scope = {"batch": current.import_batch, "transaction": current.name}
+    assert [row["candidate"]["name"] for row in list_duplicates(**scope)] == [current.name]
+    assert {row["candidate"]["name"] for row in list_duplicates(batch=current.import_batch)} == {current.name, sibling.name}
+    assert [row["candidate"]["name"] for row in list_duplicates(transaction=current.name)] == [current.name]
+    before = {name: frappe.get_doc("Imported Transaction", name).as_dict() for name in (older.name, sibling.name)}
+    audit_count = frappe.db.count("Internal Ledger Audit Event")
+    with unittest.TestCase().assertRaises(frappe.PermissionError):
+        list_duplicates(batch=older.import_batch, transaction=current.name)
+    for name in (older.name, sibling.name):
+        with unittest.TestCase().assertRaises(frappe.PermissionError):
+            resolve_duplicate(name, "release", "越界请求", **scope)
+        assert frappe.get_doc("Imported Transaction", name).as_dict() == before[name]
+    with unittest.TestCase().assertRaises(frappe.PermissionError):
+        resolve_duplicate(older.name, "release", "批次范围越界", batch=current.import_batch)
+    assert frappe.get_doc("Imported Transaction", older.name).as_dict() == before[older.name]
+    assert frappe.db.count("Internal Ledger Audit Event") == audit_count
+    viewer = user("账务查看者")
+    try:
+        frappe.set_user(viewer)
+        assert [row["candidate"]["name"] for row in list_duplicates(**scope)] == [current.name]
+        with unittest.TestCase().assertRaises(frappe.PermissionError):
+            resolve_duplicate(current.name, "release", "查看者请求", **scope)
+    finally:
+        frappe.set_user("Administrator")
+    frappe.db.set_single_value("Internal Ledger Settings", "company", "")
+    try:
+        with unittest.TestCase().assertRaises(frappe.PermissionError):
+            list_duplicates(**scope)
+        with unittest.TestCase().assertRaises(frappe.PermissionError):
+            resolve_duplicate(current.name, "release", "跨账套请求", **scope)
+    finally:
+        frappe.db.set_single_value("Internal Ledger Settings", "company", frappe.flags.classification_company)
+    result = resolve_duplicate(current.name, "release", "本批独立交易", **scope)
+    assert result["processing"]["status"] == "manual"
+    assert frappe.get_doc("Imported Transaction", older.name).as_dict() == before[older.name]
+    resolve_duplicate(older.name, "confirm", "旧直达兼容")
+    history = {row["candidate"]["name"]: row["candidate"]["duplicate_review_status"] for row in list_duplicates()
+               if row["candidate"]["name"] in {older.name, current.name, sibling.name}}
+    assert history == {older.name: "Confirmed", current.name: "Released", sibling.name: "Pending"}
+    assert frappe.db.count("Journal Entry") == frappe.flags.classification_journals
+
+
 def load_tests(loader, tests, pattern):
     return unittest.TestSuite(unittest.FunctionTestCase(test, setUp=set_up, tearDown=tear_down)
                               for name, test in sorted(globals().items()) if name.startswith("test_"))

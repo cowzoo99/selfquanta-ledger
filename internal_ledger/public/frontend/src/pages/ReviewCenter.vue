@@ -4,7 +4,7 @@ import DraftLines from '../components/DraftLines.vue';
 import ManualClassificationForm from '../components/ManualClassificationForm.vue';
 import {call, errorMessage} from '../api';
 import {directions, sources, transactionTypes, draftStatuses, processingStatuses, classificationStatuses} from '../labels';
-const props = defineProps({items: Array, canWrite: Boolean, loading: Boolean, initialFilter: String, initialBatch: String});
+const props = defineProps({items: Array, canWrite: Boolean, loading: Boolean, initialFilter: String, initialBatch: String, initialTransaction: String});
 const emit = defineEmits(['refresh']);
 const selected = ref([]), active = ref(null), busy = ref(false), error = ref(''), outcomes = ref([]), reason = ref('');
 const savedVersion = ref(''), filter = ref('待分类'), selectedTransactions = ref([]), confirmation = ref('');
@@ -18,7 +18,8 @@ function stage(item) {
   if (!item.draft) return '待分类';
   return item.draft.status === 'Rejected' ? '待审核' : item.draft.status === 'Approved' ? '待过账' : draftStatuses[item.draft.status];
 }
-const scopedItems = computed(() => props.items.filter(item => !props.initialBatch || item.transaction.import_batch === props.initialBatch));
+const scopedItems = computed(() => props.items.filter(item => (!props.initialBatch || item.transaction.import_batch === props.initialBatch) &&
+  (!props.initialTransaction || item.transaction.name === props.initialTransaction)));
 const visibleItems = computed(() => scopedItems.value.filter(item => stage(item) === filter.value));
 const eligible = item => !duplicate(item) && item.transaction.status === 'Imported' && !item.draft && item.classification?.status === 'matched';
 const editing = computed(() => props.canWrite && active.value?.draft?.status === 'Draft');
@@ -77,10 +78,10 @@ const postingSummary = computed(() => {
   return summary;
 });
 let initializedScope = '';
-watch(() => [filter.value, props.initialBatch, props.items, props.loading, props.canWrite], () => {
+watch(() => [filter.value, props.initialBatch, props.initialTransaction, props.items, props.loading, props.canWrite], () => {
   confirmation.value = ''; selectedTransactions.value = [];
   active.value = null; savedVersion.value = '';
-  const scope = JSON.stringify([filter.value, props.initialBatch || '']);
+  const scope = JSON.stringify([filter.value, props.initialBatch || '', props.initialTransaction || '']);
   const names = visibleItems.value.filter(item => postEligible(item) && !postingTotals(item).anomaly).map(item => item.draft.name);
   if (!props.canWrite || filter.value !== '待审核') {
     selected.value = []; initializedScope = '';
@@ -91,16 +92,16 @@ watch(() => [filter.value, props.initialBatch, props.items, props.loading, props
     selected.value = selected.value.filter(name => names.includes(name));
   }
 }, {deep: true, immediate: true});
-const confirmationVersion = () => JSON.stringify([props.initialBatch || '', filter.value,
+const confirmationVersion = () => JSON.stringify([props.initialBatch || '', props.initialTransaction || '', filter.value,
   selected.value.map(name => visibleItems.value.find(item => item.draft?.name === name))]);
 const confirmationValid = computed(() => confirmation.value === confirmationVersion());
 const money = value => Number(value).toLocaleString('zh-CN', {minimumFractionDigits: 2, maximumFractionDigits: 2});
 function confirmPosting() {
-  if (!props.canWrite || busy.value || dirty.value || !selected.value.length) return;
+  if (!props.canWrite || props.loading || busy.value || dirty.value || !selected.value.length) return;
   confirmation.value = confirmationVersion(); error.value = '';
 }
 async function postBatch() {
-  if (!props.canWrite || busy.value || dirty.value || !selected.value.length || !confirmation.value || !confirmationValid.value || postingSummary.value.anomalies) return;
+  if (!props.canWrite || props.loading || busy.value || dirty.value || !selected.value.length || !confirmation.value || !confirmationValid.value || postingSummary.value.anomalies) return;
   busy.value = true; outcomes.value = []; error.value = '';
   try {
     const response = await frappe.call({method: 'internal_ledger.api.posting_api.approve_and_post',
@@ -119,7 +120,7 @@ async function postBatch() {
     <p>异常优先。人工修改会保留操作人，并重新验证科目、金额与会计期间。</p>
     <div role="group" aria-label="审核状态筛选"><button v-for="label in filters" :key="label" :aria-pressed="filter === label" :disabled="busy" @click="filter = label">{{ label }}（{{ scopedItems.filter(item => stage(item) === label).length }}）</button></div>
     <button v-if="canWrite" :disabled="busy || dirty || !selectedTransactions.length" @click="prepareBatch">批量生成凭证（{{ selectedTransactions.length }}）</button>
-    <button v-if="canWrite" :disabled="busy || dirty || !selected.length" @click="confirmPosting">审核并过账选中项（{{ selected.length }}）</button>
+    <button v-if="canWrite" :disabled="loading || busy || dirty || !selected.length" @click="confirmPosting">审核并过账选中项（{{ selected.length }}）</button>
     <p v-if="loading" role="status">正在载入…</p><p v-else-if="!visibleItems.length">当前筛选没有流水。</p>
     <p v-if="error && !active" role="alert">{{ error }}</p>
     <div v-if="canWrite && confirmation" role="region" aria-label="审核过账确认">
@@ -131,7 +132,7 @@ async function postBatch() {
         <dt>异常数量</dt><dd>{{ postingSummary.anomalies }}</dd></dl>
       <p>确认后将逐笔审核并生成正式记账凭证；失败项保留原状态，可修复后重试。</p>
       <p v-if="!confirmationValid" role="alert">选中项或汇总已变化，请重新预览确认。</p>
-      <button :disabled="busy || dirty || !confirmationValid || !!postingSummary.anomalies" @click="postBatch">确认审核并过账</button>
+      <button :disabled="loading || busy || dirty || !confirmationValid || !!postingSummary.anomalies" @click="postBatch">确认审核并过账</button>
       <button :disabled="busy" @click="confirmation = ''">取消</button>
     </div>
     <table v-if="outcomes.length" aria-live="polite">
@@ -180,7 +181,7 @@ async function postBatch() {
             <button v-if="active.draft.status === 'Rejected'" :disabled="busy" @click="act('reopen_draft', {name: active.draft.name})">重开为草稿</button>
           </template>
         </template>
-        <a v-else-if="duplicate(active)" href="/app/ledger-workbench/duplicates">前往重复流水复核</a>
+        <a v-else-if="duplicate(active)" :href="`/app/ledger-workbench/duplicates/疑似重复/${encodeURIComponent(active.transaction.import_batch)}/${encodeURIComponent(active.transaction.name)}`">前往重复流水复核</a>
         <ManualClassificationForm v-else-if="canWrite && active.can_classify" :transaction="active.transaction" :disabled="busy" @classified="classified" />
         <button v-else-if="canWrite" :disabled="busy || !!active.error" @click="act('prepare_draft', {tx_name: active.transaction.name})">分类并生成待审核草稿</button>
       </div>

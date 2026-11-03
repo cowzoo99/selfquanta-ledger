@@ -319,6 +319,30 @@ def test_workbench_route_passes_batch_through_cached_mount_and_app():
     _run_review_component_case("route_scope")
 
 
+def test_app_initial_request_initializes_review_selection_after_response():
+    _run_review_component_case("async_initial_selection")
+
+
+def test_pending_review_refresh_disables_both_confirmation_buttons():
+    _run_review_component_case("pending_buttons")
+
+
+def test_pending_review_refresh_handlers_cannot_send_posting_rpc():
+    _run_review_component_case("pending_handlers")
+
+
+def test_review_duplicate_link_preserves_batch_and_selected_transaction():
+    _run_review_component_case("duplicate_scope_link")
+
+
+def test_duplicate_component_enforces_scope_and_preserves_legacy_history():
+    _run_review_component_case("duplicate_scoped_component")
+
+
+def test_duplicate_route_and_app_preserve_selected_transaction():
+    _run_review_component_case("duplicate_route_scope")
+
+
 def load_tests(loader, tests, pattern):
     return unittest.TestSuite(unittest.FunctionTestCase(test, setUp=set_up, tearDown=tear_down)
                               for name, test in sorted(globals().items()) if name.startswith("test_"))

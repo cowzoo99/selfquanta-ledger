@@ -12,10 +12,10 @@ frappe.pages['ledger-workbench'].on_page_load = function(wrapper) {
 frappe.pages['ledger-workbench'].on_page_show = function(wrapper) {
   if (!wrapper.ledger_ready) return;
   const route = frappe.get_route();
-  const view = route[1] || 'dashboard', filter = route[2] || '', batch = route[3] || '';
-  const key = JSON.stringify([view, filter, batch]);
+  const view = route[1] || 'dashboard', filter = route[2] || '', batch = route[3] || '', transaction = route[4] || '';
+  const key = JSON.stringify([view, filter, batch, transaction]);
   if (wrapper.ledger_route === key) return;
   wrapper.ledger_app?.unmount();
-  wrapper.ledger_app = internal_ledger.mount_workbench(wrapper.ledger_root, {view, filter, batch});
+  wrapper.ledger_app = internal_ledger.mount_workbench(wrapper.ledger_root, {view, filter, batch, transaction});
   wrapper.ledger_route = key;
 };
