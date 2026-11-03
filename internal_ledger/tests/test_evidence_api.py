@@ -1,5 +1,7 @@
+import base64
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 from uuid import uuid4
 
 import frappe
@@ -261,6 +263,146 @@ def test_unrelated_file_can_still_change_privacy():
     doc.is_private = 1
     doc.save(ignore_permissions=True)
     assert private_path.read_bytes() == content
+
+
+def encoded(content):
+    return base64.b64encode(content).decode("ascii")
+
+
+def test_admin_saves_sanitized_note_private_attachment_and_audit():
+    from internal_ledger.api import evidence_api as api
+
+    tx = transaction()
+    actor = user("账套管理员")
+    frappe.set_user(actor)
+    assert api.get_evidence(tx) == {"name": None, "transaction": tx, "note_html": "", "attachments": []}
+    assert not frappe.db.exists("Ledger Evidence", {"imported_transaction": tx})
+    saved = api.save_evidence(tx, '<p>业务说明</p><script>alert(1)</script><table><tr><td>合同</td></tr></table>')
+    assert "业务说明" in saved["note_html"] and "<table" in saved["note_html"]
+    assert "script" not in saved["note_html"].lower()
+    content = b"\x89PNG\r\n\x1a\n" + uuid4().bytes
+    result = api.upload_evidence(tx, "回单.png", encoded(content), "image/png")
+    info, = result["attachments"]
+    doc = frappe.get_doc("File", info["name"])
+    assert doc.is_private and doc.file_url.startswith("/private/files/")
+    assert (doc.attached_to_doctype, doc.attached_to_name) == ("Ledger Evidence", saved["name"])
+    assert Path(doc.get_full_path()).read_bytes() == content
+    assert info == {"name": doc.name, "file_name": "回单.png", "file_url": doc.file_url,
+                    "file_size": len(content), "extension": ".png", "is_image": True}
+    assert api.get_evidence(tx) == result
+    assert api.delete_evidence_file(tx, doc.name) == saved
+    assert not frappe.db.exists("File", doc.name)
+    assert not Path(doc.get_full_path()).exists()
+    actions = frappe.get_all("Internal Ledger Audit Event", filters={
+        "reference_doctype": "Imported Transaction", "reference_name": tx, "actor": actor,
+        "result": "success"}, pluck="action")
+    assert sorted(actions) == ["delete_evidence", "update_evidence_note", "upload_evidence"]
+
+
+def test_upload_rejects_invalid_encoding_size_mime_and_signatures():
+    from internal_ledger.api.evidence_api import upload_evidence
+
+    tx = transaction()
+    for filename, payload, mime, reason in (
+        ("过大.pdf", encoded(b"%PDF-" + b"x" * (10 * 1024 * 1024 - 4)), "application/pdf", "10 MiB"),
+        ("文档.pdf", "%%%!!", "application/pdf", "Base64"),
+        ("文档.pdf", encoded(b"%PDF-"), "image/png", "MIME"),
+        ("脚本.html", encoded(b"<script/>"), "text/html", "不支持"),
+        ("文档.pdf", encoded(b"document"), "application/pdf", "文件内容"),
+        ("图片.png", encoded(b"PNG"), "image/png", "文件内容"),
+        ("图片.jpg", encoded(b"JPEG"), "image/jpeg", "文件内容"),
+        ("图片.webp", encoded(b"RIFF0000WAVE"), "image/webp", "文件内容"),
+        ("文档.doc", encoded(b"DOC"), "application/msword", "文件内容"),
+        ("表.xls", encoded(b"XLS"), "application/vnd.ms-excel", "文件内容"),
+        ("文档.docx", encoded(b"PK"), "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "文件内容"),
+        ("表.xlsx", encoded(b"PK"), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "文件内容"),
+        ("表.csv", encoded(b"a\x00b"), "text/csv", "文件内容"),
+        ("备注.txt", encoded(b"a\x00b"), "text/plain", "文件内容"),
+    ):
+        with unittest.TestCase().assertRaisesRegex(frappe.ValidationError, reason):
+            upload_evidence(tx, filename, payload, mime)
+    assert not frappe.db.exists("Ledger Evidence", {"imported_transaction": tx})
+
+
+def test_attachment_count_limit_and_transaction_ownership():
+    from internal_ledger.api import evidence_api as api
+
+    tx, other = transaction(), transaction()
+    api.save_evidence(other, "")
+    for index in range(10):
+        files = api.upload_evidence(tx, f"{index}.txt", encoded(uuid4().bytes.hex().encode()), "text/plain")
+    assert len(files["attachments"]) == 10
+    with unittest.TestCase().assertRaises(frappe.ValidationError):
+        api.upload_evidence(tx, "overflow.txt", encoded(b"11"), "text/plain")
+    with unittest.TestCase().assertRaises(frappe.PermissionError):
+        api.delete_evidence_file(other, files["attachments"][0]["name"])
+    assert api.get_evidence(tx)["attachments"] == files["attachments"]
+
+
+def test_viewer_reads_private_evidence_but_cannot_mutate_it():
+    from internal_ledger.api import evidence_api as api
+    from frappe.handler import download_file
+
+    tx = transaction()
+    content = uuid4().hex
+    result = api.upload_evidence(tx, "说明.txt", encoded(content.encode()), "text/plain")
+    info, = result["attachments"]
+    frappe.set_user(user("账务查看者"))
+    assert api.get_evidence(tx) == result
+    assert frappe.has_permission("File", "read", info["name"])
+    download_file(info["file_url"])
+    assert frappe.local.response.filecontent == content
+    for operation in (lambda: api.save_evidence(tx, "越权"),
+                      lambda: api.upload_evidence(tx, "禁止.txt", encoded(b"x"), "text/plain"),
+                      lambda: api.delete_evidence_file(tx, info["name"])):
+        with unittest.TestCase().assertRaises(frappe.PermissionError):
+            operation()
+
+
+def test_audit_failure_preserves_note_attachment_and_blob():
+    from internal_ledger.api import evidence_api as api
+
+    tx = transaction()
+    filename = f"failed-{uuid4().hex}.txt"
+    failed_path = Path(frappe.get_site_path("private", "files", filename))
+    with patch.object(api, "record_audit", side_effect=RuntimeError("audit unavailable")):
+        for operation in (lambda: api.save_evidence(tx, "不能无审计保存"),
+                          lambda: api.upload_evidence(tx, filename, encoded(uuid4().hex.encode()), "text/plain")):
+            with unittest.TestCase().assertRaisesRegex(RuntimeError, "audit unavailable"):
+                operation()
+            assert not frappe.db.exists("Ledger Evidence", {"imported_transaction": tx})
+        assert not failed_path.exists()
+    content = uuid4().hex.encode()
+    saved = api.upload_evidence(tx, filename, encoded(content), "text/plain")
+    info, = saved["attachments"]
+    with patch.object(api, "record_audit", side_effect=RuntimeError("audit unavailable")):
+        with unittest.TestCase().assertRaisesRegex(RuntimeError, "audit unavailable"):
+            api.delete_evidence_file(tx, info["name"])
+    assert api.get_evidence(tx) == saved
+    assert failed_path.read_bytes() == content
+
+
+def test_failure_after_file_mutation_restores_database_audit_and_blob():
+    from internal_ledger.api import evidence_api as api
+
+    tx = transaction()
+    saved = api.save_evidence(tx, "原备注")
+    filename = f"rollback-{uuid4().hex}.txt"
+    path = Path(frappe.get_site_path("private", "files", filename))
+    content = uuid4().hex.encode()
+    with patch.object(api, "_serialize_evidence", side_effect=RuntimeError("response failed")):
+        with unittest.TestCase().assertRaisesRegex(RuntimeError, "response failed"):
+            api.upload_evidence(tx, filename, encoded(content), "text/plain")
+    assert api.get_evidence(tx) == saved
+    assert not path.exists()
+    assert not frappe.db.exists("Internal Ledger Audit Event", {"reference_name": tx, "action": "upload_evidence"})
+    result = api.upload_evidence(tx, filename, encoded(content), "text/plain")
+    with patch.object(api, "_serialize_evidence", side_effect=RuntimeError("response failed")):
+        with unittest.TestCase().assertRaisesRegex(RuntimeError, "response failed"):
+            api.delete_evidence_file(tx, result["attachments"][0]["name"])
+    assert api.get_evidence(tx) == result
+    assert path.read_bytes() == content
+    assert not frappe.db.exists("Internal Ledger Audit Event", {"reference_name": tx, "action": "delete_evidence"})
 
 
 def tear_down():

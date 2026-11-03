@@ -400,6 +400,15 @@ def test_private_source_is_immutable_and_viewer_cannot_list_or_download():
     download_file(source.raw_file)
     assert frappe.local.response.filecontent.encode() == fixture("bank")
     original_url = source.raw_file
+    from internal_ledger.api.evidence_api import delete_evidence_file, get_evidence, save_evidence, upload_evidence
+
+    tx = frappe.db.get_value("Imported Transaction", {"import_batch": name}, "name")
+    save_evidence(tx, "导入凭据")
+    with unittest.TestCase().assertRaises(frappe.PermissionError):
+        delete_evidence_file(tx, attachment.name)
+    with unittest.TestCase().assertRaisesRegex(frappe.ValidationError, "原始文件"):
+        upload_evidence(tx, "复用原始文件.csv", encoded, "text/csv")
+    assert Path(attachment.get_full_path()).read_bytes() == fixture("bank")
     batch.file_hash = "forged"
     with unittest.TestCase().assertRaises(frappe.PermissionError):
         batch.save()
@@ -410,6 +419,7 @@ def test_private_source_is_immutable_and_viewer_cannot_list_or_download():
     from frappe.client import get
 
     assert not get("Import Batch", name).get("raw_file")
+    assert get_evidence(tx)["attachments"] == []
     assert not find_file_by_url(original_url)
     assert not frappe.has_permission("Internal Ledger Source File", "read", attachment.attached_to_name)
     with unittest.TestCase().assertRaises(frappe.PermissionError):
