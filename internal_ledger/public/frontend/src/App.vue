@@ -1,5 +1,5 @@
 <script setup>
-import {ref, computed, onMounted} from 'vue';
+import {ref, reactive, computed, onMounted} from 'vue';
 import Dashboard from './pages/Dashboard.vue';
 import ImportPreview from './pages/ImportPreview.vue';
 import ReviewCenter from './pages/ReviewCenter.vue';
@@ -8,35 +8,43 @@ import DuplicateReview from './pages/DuplicateReview.vue';
 import {call, errorMessage, setLanguage} from './api';
 const props = defineProps({view: {type: String, default: 'dashboard'}, filter: {type: String, default: ''}, batch: {type: String, default: ''}, transaction: {type: String, default: ''}});
 const month = ref(frappe.datetime.get_today().slice(0, 7));
-const counts = ref(null), items = ref([]), loading = ref(true), listLoaded = ref(false), error = ref('');
+const counts = reactive({status: 'idle', data: null, error: ''});
+const list = reactive({status: 'idle', data: null, error: ''});
+const loading = computed(() => counts.status === 'loading' || list.status === 'loading');
+const currentCounts = computed(() => counts.status === 'success' && counts.data?.month === month.value ? counts.data : null);
 const language = ref((frappe.boot?.lang || '').startsWith('zh') ? 'zh' : 'en');
-const savingLanguage = ref(false);
+const savingLanguage = ref(false), languageError = ref('');
+const error = computed(() => languageError.value || counts.error || list.error);
 const canWrite = frappe.session.user === 'Administrator' || frappe.user_roles.includes('账套管理员');
 const navigation = [['dashboard', '业务总览'], ['import', '文件智能导入'], ['review', '待办中心'], ...(canWrite ? [['members', '企业成员']] : [])];
 const page = computed(() => navigation.some(entry => entry[0] === props.view) || ['duplicates', 'classification'].includes(props.view) ? props.view : 'dashboard');
 const taskPage = computed(() => ['duplicates', 'classification'].includes(page.value) ? 'review' : page.value);
 const reviewFilter = computed(() => page.value === 'classification' ? '待分类' : (props.filter || '待审核'));
 let refreshGeneration = 0;
-async function refresh() {
-  const generation = ++refreshGeneration;
-  loading.value = true; error.value = '';
-  const result = await Promise.allSettled([call('get_dashboard_counts', {month: month.value}), call('list_review_items')]);
-  if (generation !== refreshGeneration) return;
-  if (result[0].status === 'fulfilled') counts.value = result[0].value;
-  if (result[1].status === 'fulfilled') {
-    items.value = result[1].value; listLoaded.value = true;
+async function load(resource, request, generation) {
+  Object.assign(resource, {status: 'loading', data: null, error: '', generation});
+  try {
+    const data = await request;
+    if (generation === refreshGeneration) Object.assign(resource, {data, status: 'success'});
+  } catch (e) {
+    if (generation === refreshGeneration) Object.assign(resource, {error: errorMessage(e), status: 'error'});
   }
-  const failure = result.find(row => row.status === 'rejected');
-  if (failure) error.value = errorMessage(failure.reason);
-  loading.value = false;
+}
+function refresh() {
+  const generation = ++refreshGeneration;
+  languageError.value = '';
+  return Promise.all([
+    load(counts, call('get_dashboard_counts', {month: month.value}), generation),
+    load(list, call('list_review_items'), generation),
+  ]);
 }
 async function changeLanguage() {
-  savingLanguage.value = true; error.value = '';
+  savingLanguage.value = true; languageError.value = '';
   try {
     await setLanguage(language.value);
     window.location.reload();
   } catch (e) {
-    error.value = errorMessage(e);
+    languageError.value = errorMessage(e);
     savingLanguage.value = false;
   }
 }
@@ -61,11 +69,11 @@ onMounted(refresh);
       <label for="ledger-month">月度摘要</label><input id="ledger-month" v-model="month" type="month" @change="refresh"><button :disabled="loading" @click="refresh">刷新</button>
       </header>
       <p v-if="error" role="alert">{{ error }}</p>
-      <Dashboard v-if="page === 'dashboard'" :items="items" :counts="counts" :month="month" :can-write="canWrite" :loading="loading" />
+      <Dashboard v-if="page === 'dashboard'" :items="list.data" :counts="currentCounts" :month="month" :can-write="canWrite" :loading="counts.status === 'loading'" />
       <ImportPreview v-else-if="page === 'import'" :can-write="canWrite" @imported="refresh" />
       <DuplicateReview v-else-if="page === 'duplicates'" :can-write="canWrite" :batch="batch" :transaction="transaction" @refresh="refresh" />
       <EnterpriseMembers v-else-if="page === 'members' && canWrite" :active="page === 'members'" />
-      <ReviewCenter v-else :items="items" :loading="loading" :list-loaded="listLoaded" :can-write="canWrite" :initial-filter="reviewFilter" :initial-batch="batch" :initial-transaction="transaction" @refresh="refresh" />
+      <ReviewCenter v-else :list="list" :can-write="canWrite" :initial-filter="reviewFilter" :initial-batch="batch" :initial-transaction="transaction" @refresh="refresh" />
     </main>
   </div>
 </template>

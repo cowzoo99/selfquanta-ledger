@@ -4,7 +4,7 @@ import DraftLines from '../components/DraftLines.vue';
 import ManualClassificationForm from '../components/ManualClassificationForm.vue';
 import {call, errorMessage} from '../api';
 import {directions, sources, transactionTypes, draftStatuses, processingStatuses, classificationStatuses} from '../labels';
-const props = defineProps({items: Array, canWrite: Boolean, loading: Boolean, listLoaded: {type: Boolean, default: true}, initialFilter: String, initialBatch: String, initialTransaction: String});
+const props = defineProps({list: {type: Object, required: true}, canWrite: Boolean, initialFilter: String, initialBatch: String, initialTransaction: String});
 const emit = defineEmits(['refresh']);
 const selected = ref([]), active = ref(null), busy = ref(false), error = ref(''), outcomes = ref([]), reason = ref('');
 const savedVersion = ref(''), filter = ref('待分类'), selectedTransactions = ref([]), confirmation = ref('');
@@ -18,8 +18,9 @@ function stage(item) {
   if (!item.draft) return '待分类';
   return item.draft.status === 'Rejected' ? '待审核' : item.draft.status === 'Approved' ? '待过账' : draftStatuses[item.draft.status];
 }
-const scopedItems = computed(() => props.items.filter(item => (!props.initialBatch || item.transaction.import_batch === props.initialBatch) &&
-  (!props.initialTransaction || item.transaction.name === props.initialTransaction)));
+const listReady = computed(() => props.list.status === 'success');
+const scopedItems = computed(() => listReady.value ? props.list.data.filter(item => (!props.initialBatch || item.transaction.import_batch === props.initialBatch) &&
+  (!props.initialTransaction || item.transaction.name === props.initialTransaction)) : []);
 const visibleItems = computed(() => scopedItems.value.filter(item => stage(item) === filter.value));
 const eligible = item => !duplicate(item) && item.transaction.status === 'Imported' && !item.draft && item.classification?.status === 'matched';
 const editing = computed(() => props.canWrite && active.value?.draft?.status === 'Draft');
@@ -78,31 +79,31 @@ const postingSummary = computed(() => {
   return summary;
 });
 let initializedScope = '';
-watch(() => [filter.value, props.initialBatch, props.initialTransaction, props.items, props.loading, props.listLoaded, props.canWrite], () => {
+watch(() => [filter.value, props.initialBatch, props.initialTransaction, props.list, props.canWrite], () => {
   confirmation.value = ''; selectedTransactions.value = [];
   active.value = null; savedVersion.value = '';
   const scope = JSON.stringify([filter.value, props.initialBatch || '', props.initialTransaction || '']);
-  const names = visibleItems.value.filter(item => postEligible(item) && !postingTotals(item).anomaly).map(item => item.draft.name);
-  if (!props.canWrite || filter.value !== '待审核') {
+  const autoSelect = props.canWrite && filter.value === '待审核';
+  if (!autoSelect || initializedScope !== scope) {
     selected.value = []; initializedScope = '';
-  } else if (initializedScope !== scope) {
-    const ready = props.listLoaded && !props.loading;
-    selected.value = ready ? names : [];
-    if (ready) initializedScope = scope;
-  } else {
-    selected.value = selected.value.filter(name => names.includes(name));
   }
+  if (!autoSelect || !listReady.value) return;
+  const names = visibleItems.value.filter(item => postEligible(item) && !postingTotals(item).anomaly).map(item => item.draft.name);
+  selected.value = initializedScope === scope ? selected.value.filter(name => names.includes(name)) : names;
+  initializedScope = scope;
 }, {deep: true, immediate: true});
-const confirmationVersion = () => JSON.stringify([props.initialBatch || '', props.initialTransaction || '', filter.value,
+const confirmationVersion = () => JSON.stringify([props.list.generation, props.initialBatch || '', props.initialTransaction || '', filter.value,
   selected.value.map(name => visibleItems.value.find(item => item.draft?.name === name))]);
 const confirmationValid = computed(() => confirmation.value === confirmationVersion());
 const money = value => Number(value).toLocaleString('zh-CN', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+const canPreview = computed(() => listReady.value && props.canWrite && !busy.value && !dirty.value && selected.value.length > 0);
+const canPost = computed(() => canPreview.value && confirmationValid.value && !postingSummary.value.anomalies);
 function confirmPosting() {
-  if (!props.canWrite || props.loading || busy.value || dirty.value || !selected.value.length) return;
+  if (!canPreview.value) return;
   confirmation.value = confirmationVersion(); error.value = '';
 }
 async function postBatch() {
-  if (!props.canWrite || props.loading || busy.value || dirty.value || !selected.value.length || !confirmation.value || !confirmationValid.value || postingSummary.value.anomalies) return;
+  if (!canPost.value) return;
   busy.value = true; outcomes.value = []; error.value = '';
   try {
     const response = await frappe.call({method: 'internal_ledger.api.posting_api.approve_and_post',
@@ -121,8 +122,8 @@ async function postBatch() {
     <p>异常优先。人工修改会保留操作人，并重新验证科目、金额与会计期间。</p>
     <div role="group" aria-label="审核状态筛选"><button v-for="label in filters" :key="label" :aria-pressed="filter === label" :disabled="busy" @click="filter = label">{{ label }}（{{ scopedItems.filter(item => stage(item) === label).length }}）</button></div>
     <button v-if="canWrite" :disabled="busy || dirty || !selectedTransactions.length" @click="prepareBatch">批量生成凭证（{{ selectedTransactions.length }}）</button>
-    <button v-if="canWrite" :disabled="loading || busy || dirty || !selected.length" @click="confirmPosting">审核并过账选中项（{{ selected.length }}）</button>
-    <p v-if="loading" role="status">正在载入…</p><p v-else-if="!visibleItems.length">当前筛选没有流水。</p>
+    <button v-if="canWrite" :disabled="!canPreview" @click="confirmPosting">审核并过账选中项（{{ listReady ? selected.length : 0 }}）</button>
+    <p v-if="list.status === 'loading'" role="status">正在载入…</p><p v-else-if="listReady && !visibleItems.length">当前筛选没有流水。</p>
     <p v-if="error && !active" role="alert">{{ error }}</p>
     <div v-if="canWrite && confirmation" role="region" aria-label="审核过账确认">
       <h3>审核过账确认</h3>
@@ -133,7 +134,7 @@ async function postBatch() {
         <dt>异常数量</dt><dd>{{ postingSummary.anomalies }}</dd></dl>
       <p>确认后将逐笔审核并生成正式记账凭证；失败项保留原状态，可修复后重试。</p>
       <p v-if="!confirmationValid" role="alert">选中项或汇总已变化，请重新预览确认。</p>
-      <button :disabled="loading || busy || dirty || !confirmationValid || !!postingSummary.anomalies" @click="postBatch">确认审核并过账</button>
+      <button :disabled="!canPost" @click="postBatch">确认审核并过账</button>
       <button :disabled="busy" @click="confirmation = ''">取消</button>
     </div>
     <table v-if="outcomes.length" aria-live="polite">

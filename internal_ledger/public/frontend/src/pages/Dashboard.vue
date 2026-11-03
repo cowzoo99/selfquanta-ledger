@@ -1,9 +1,9 @@
 <script setup>
 import {computed} from 'vue';
 const props = defineProps({items: Array, counts: Object, month: String, canWrite: Boolean, loading: Boolean});
-const monthly = computed(() => props.items.filter(item => String(item.transaction.occurred_at).startsWith(props.month)));
-const pendingDuplicates = computed(() => monthly.value.filter(item => item.transaction.status === 'Duplicate' && item.transaction.duplicate_review_status === 'Pending').length);
-const pendingPosting = computed(() => monthly.value.filter(item => item.transaction.status === 'Imported' && !['Pending', 'Confirmed'].includes(item.transaction.duplicate_review_status) && item.draft?.status === 'Approved').length);
+const monthly = computed(() => props.items?.filter(item => String(item.transaction.occurred_at).startsWith(props.month)));
+const pendingDuplicates = computed(() => monthly.value?.filter(item => item.transaction.status === 'Duplicate' && item.transaction.duplicate_review_status === 'Pending').length ?? '—');
+const pendingPosting = computed(() => monthly.value?.filter(item => item.transaction.status === 'Imported' && !['Pending', 'Confirmed'].includes(item.transaction.duplicate_review_status) && item.draft?.status === 'Approved').length ?? '—');
 const erpLinks = [['selling', '销售'], ['buying', '采购'], ['stock', '库存'], ['manufacturing', '制造']];
 const cards = computed(() => [
   ['review/疑似重复', '疑似重复', pendingDuplicates.value, '核对是否为同一笔交易'],
@@ -37,7 +37,8 @@ const cards = computed(() => [
       <p>自动生成凭证草稿 {{ counts.latest_batch.created }} 笔 · 疑似重复 {{ counts.latest_batch.duplicate }} 笔 · 待人工分类 {{ counts.latest_batch.manual }} 笔</p>
       <a href="/app/ledger-workbench/review/待审核">前往待办中心</a>
     </div>
-    <p v-else>尚无导入记录，请先导入账单。</p>
+    <p v-else-if="counts">尚无导入记录，请先导入账单。</p>
+    <p v-else>本月摘要尚未载入。</p>
     <h3>企业经营管理</h3>
     <div class="ledger-cards"><a v-for="entry in erpLinks" :key="entry[0]" class="ledger-card ledger-module-card" :href="`/app/${entry[0]}`"><strong>{{ entry[1] }}</strong><span>进入{{ entry[1] }}模块</span></a></div>
   </section>

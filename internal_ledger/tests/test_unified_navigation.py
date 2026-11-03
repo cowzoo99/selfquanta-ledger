@@ -355,6 +355,18 @@ def test_late_obsolete_refresh_cannot_overwrite_current_review_items():
     _run_review_component_case("overlap_stale_last")
 
 
+def test_failed_current_list_freezes_posting_until_revalidated():
+    _run_review_component_case("latest_list_failure")
+
+
+def test_dashboard_only_displays_latest_counts_for_the_selected_month():
+    _run_review_component_case("current_month_counts")
+
+
+def test_viewer_cannot_send_a_posting_rpc_after_successful_list():
+    _run_review_component_case("viewer_posting")
+
+
 def load_tests(loader, tests, pattern):
     return unittest.TestSuite(unittest.FunctionTestCase(test, setUp=set_up, tearDown=tear_down)
                               for name, test in sorted(globals().items()) if name.startswith("test_"))

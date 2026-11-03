@@ -5,7 +5,8 @@ const vm = require('node:vm');
 const {createRequire} = require('node:module');
 const benchRequire = createRequire(path.resolve(__dirname, '../../../frappe/package.json'));
 const Vue = benchRequire('vue');
-global.document = {activeElement: null};
+global.Document = class { activeElement = null; };
+global.document = new Document();
 const {parse, compileScript, compileTemplate} = benchRequire('@vue/compiler-sfc');
 const src = path.resolve(__dirname, '../public/frontend/src');
 let calls = [];
@@ -14,7 +15,8 @@ global.frappe = {session: {user: 'Administrator'}, user_roles: [], boot: {lang: 
 const labels = new Function(fs.readFileSync(path.join(src, 'labels.js'), 'utf8').replaceAll('export const ', 'const ') +
   '; return {directions,sources,transactionTypes,draftStatuses,processingStatuses,classificationStatuses};')();
 function node(type, text = '') {
-  return {type, text, children: [], props: {}, parent: null, options: [], addEventListener() {}, removeEventListener() {}};
+  return {type, text, children: [], props: {}, parent: null, options: [], getRootNode: () => document,
+    addEventListener() {}, removeEventListener() {}};
 }
 const renderer = Vue.createRenderer({
   createElement: node, createText: text => node('#text', text), createComment: text => node('#comment', text),
@@ -38,7 +40,7 @@ function compile(file, realChildren = false) {
     if (name.endsWith('labels')) return labels;
     if (name.endsWith('api')) return {call: async (method, args = {}) =>
       (await frappe.call({method: 'internal_ledger.api.review_api.' + method, args})).message, errorMessage: e => e.message};
-    if (realChildren && /\/(ReviewCenter|DuplicateReview)\.vue$/.test(name)) {
+    if (realChildren && /\/(Dashboard|ReviewCenter|DuplicateReview)\.vue$/.test(name)) {
       return compile(path.posix.normalize(path.posix.join(path.posix.dirname(file), name)), true);
     }
     return {name, render() {return Vue.h('test-child', {'data-component': name});}};
@@ -68,6 +70,20 @@ function deferred() {
   return {promise, resolve, reject};
 }
 const settle = async () => {await new Promise(resolve => setImmediate(resolve)); await Vue.nextTick();};
+function controlRefreshes() {
+  const lists = [], counts = [];
+  frappe.call = async args => {
+    calls.push(args);
+    if (args.method.endsWith('list_review_items')) return lists.shift().promise;
+    if (args.method.endsWith('get_dashboard_counts')) return counts.shift().promise;
+    return {message: []};
+  };
+  return () => {
+    const list = deferred(), count = deferred();
+    lists.push(list); counts.push(count);
+    return {list, count};
+  };
+}
 function descendants(root) {return [root, ...root.children.flatMap(descendants)];}
 function text(root) {return root.text + root.children.map(text).join('');}
 function item(id, batch = 'new', values = {}) {
@@ -79,7 +95,7 @@ function item(id, batch = 'new', values = {}) {
 async function run(name) {
   if (name === 'batch_scope') {
     const current = item('current'), old = item('older', 'old');
-    const page = mount('pages/ReviewCenter.vue', {items: [old, current], canWrite: true, loading: false,
+    const page = mount('pages/ReviewCenter.vue', {list: {status: 'success', data: [old, current]}, canWrite: true,
       initialFilter: '待审核', initialBatch: 'new'});
     assert.deepEqual(page.state.visibleItems.map(row => row.transaction.name), ['tx-current']);
     assert.deepEqual([...page.state.selected], ['current']);
@@ -93,27 +109,27 @@ async function run(name) {
     assert.equal(page.state.visibleItems.length, 2, 'generic queue remains unscoped');
     page.app.unmount();
   } else if (name === 'refresh_selection') {
-    const page = mount('pages/ReviewCenter.vue', {items: [item('one'), item('two')], canWrite: true,
-      loading: false, initialFilter: '待审核'});
+    const page = mount('pages/ReviewCenter.vue', {list: {status: 'success', data: [item('one'), item('two')]}, canWrite: true,
+      initialFilter: '待审核'});
     page.state.selected = ['one']; page.state.confirmPosting(); assert.ok(page.state.confirmation);
-    page.props.loading = true; await Vue.nextTick();
-    page.props.items = [item('one'), item('two'), item('new-on-refresh')]; page.props.loading = false;
+    page.props.list = {status: 'loading'}; await Vue.nextTick();
+    page.props.list = {status: 'success', data: [item('one'), item('two'), item('new-on-refresh')]};
     await Vue.nextTick();
     assert.deepEqual([...page.state.selected], ['one'], 'refresh must preserve explicit exclusions');
     assert.equal(page.state.confirmation, '', 'refresh invalidates the old confirmation');
     await page.state.postBatch(); assert.equal(calls.length, 0);
-    page.props.items = [item('two')]; await Vue.nextTick();
+    page.props.list.data = [item('two')]; await Vue.nextTick();
     assert.deepEqual([...page.state.selected], [], 'remove invalid selection');
     page.state.filter = '待分类'; await Vue.nextTick();
     page.state.filter = '待审核'; await Vue.nextTick();
     assert.deepEqual([...page.state.selected], ['two'], 'new scope initializes once');
     page.app.unmount();
-    const loading = mount('pages/ReviewCenter.vue', {items: [], canWrite: true, loading: true, initialFilter: '待审核'});
-    loading.props.items = [item('loaded')]; loading.props.loading = false; await Vue.nextTick();
+    const loading = mount('pages/ReviewCenter.vue', {list: {status: 'loading'}, canWrite: true, initialFilter: '待审核'});
+    loading.props.list = {status: 'success', data: [item('loaded')]}; await Vue.nextTick();
     assert.deepEqual([...loading.state.selected], ['loaded']); loading.app.unmount();
   } else if (name === 'validation_form') {
     const row = {...item('invalid'), draft: null, classification: null, error: '资金账户验证失败', can_classify: true};
-    const page = mount('pages/ReviewCenter.vue', {items: [row], canWrite: true, loading: false, initialFilter: '待分类'});
+    const page = mount('pages/ReviewCenter.vue', {list: {status: 'success', data: [row]}, canWrite: true, initialFilter: '待分类'});
     page.state.open(row); await Vue.nextTick();
     const manual = () => descendants(page.root).filter(el => el.props['data-component']?.includes('ManualClassificationForm'));
     assert.equal(manual().length, 1, 'validation failures need the existing manual repair form');
@@ -124,7 +140,7 @@ async function run(name) {
   } else if (name === 'pending_duplicates') {
     const pending = {...item('pending', 'new', {status: 'Duplicate', duplicate_review_status: 'Pending'}), draft: null};
     const confirmed = {...item('confirmed', 'new', {status: 'Duplicate', duplicate_review_status: 'Confirmed'}), draft: null};
-    const page = mount('pages/ReviewCenter.vue', {items: [pending, confirmed], canWrite: true, loading: false, initialFilter: '疑似重复'});
+    const page = mount('pages/ReviewCenter.vue', {list: {status: 'success', data: [pending, confirmed]}, canWrite: true, initialFilter: '疑似重复'});
     assert.deepEqual(page.state.visibleItems.map(row => row.transaction.name), ['tx-pending']);
     const home = mount('pages/Dashboard.vue', {items: [pending, confirmed], month: '2026-10', counts: {}, loading: false});
     assert.equal(home.state.cards[0][2], page.state.visibleItems.length);
@@ -170,7 +186,13 @@ async function run(name) {
       review().selected = ['one']; review().confirmPosting();
       const oldConfirmation = review().confirmation; assert.ok(oldConfirmation);
       pending = new Promise(resolve => {finish = resolve;});
-      const refresh = page.state.refresh(); await Vue.nextTick();
+      const refresh = page.state.refresh();
+      if (name === 'pending_handlers') {
+        await review().postBatch();
+        assert.equal(calls.filter(row => row.method.endsWith('approve_and_post')).length, 0,
+          'starting a refresh invalidates posting even before the next render');
+      }
+      await Vue.nextTick();
       assert.equal(review().confirmation, '', 'pending refresh invalidates the old confirmation');
       if (name === 'pending_buttons') {
         const preview = descendants(page.root).find(el => el.type === 'button' && text(el).includes('审核并过账选中项'));
@@ -191,7 +213,7 @@ async function run(name) {
     page.app.unmount();
   } else if (name === 'duplicate_scope_link') {
     const row = {...item('new'), draft: null}; row.transaction.status = 'Duplicate'; row.transaction.duplicate_review_status = 'Pending';
-    const page = mount('pages/ReviewCenter.vue', {items: [row], canWrite: true, loading: false,
+    const page = mount('pages/ReviewCenter.vue', {list: {status: 'success', data: [row]}, canWrite: true,
       initialFilter: '疑似重复', initialBatch: 'new'});
     page.state.open(row); await Vue.nextTick();
     const link = descendants(page.root).find(el => el.type === 'a' && text(el) === '前往重复流水复核');
@@ -221,7 +243,7 @@ async function run(name) {
     const legacy = mount('pages/DuplicateReview.vue', {canWrite: true}); await settle();
     assert.deepEqual(legacy.state.items.map(row => row.candidate.name), ['tx-old', 'tx-new']);
     assert.match(text(legacy.root), /已确认重复/); legacy.app.unmount();
-    const review = mount('pages/ReviewCenter.vue', {items: [item('one'), item('two')], canWrite: true, loading: false,
+    const review = mount('pages/ReviewCenter.vue', {list: {status: 'success', data: [item('one'), item('two')]}, canWrite: true,
       initialFilter: '待审核', initialBatch: 'new', initialTransaction: 'tx-one'});
     assert.deepEqual(review.state.visibleItems.map(row => row.transaction.name), ['tx-one']); review.app.unmount();
   } else if (name === 'duplicate_route_scope') {
@@ -279,20 +301,84 @@ async function run(name) {
       assert.equal(calls.filter(row => row.method.endsWith('approve_and_post')).length, 0,
         'an obsolete response cannot unlock posting while the current refresh is pending');
       assert.equal(stillPending, true); assert.equal(reopened, '');
-      assert.equal(page.state.items[0].transaction.summary, undefined, 'obsolete response is not published');
+      assert.deepEqual([...review().visibleItems], [], 'no previous or obsolete rows are displayed while pending');
       second.resolve({message: [item('one', 'new', {summary: '最新请求'})]}); await request2; await settle();
-      assert.equal(page.state.loading, false); assert.equal(page.state.items[0].transaction.summary, '最新请求');
+      assert.equal(page.state.loading, false); assert.equal(review().visibleItems[0].transaction.summary, '最新请求');
       review().confirmPosting(); assert.ok(review().confirmation); await review().postBatch(); await settle();
       assert.equal(calls.filter(row => row.method.endsWith('approve_and_post')).length, 1,
         'explicit confirmation can post only after the current request completes');
     } else {
       second.resolve({message: [item('newest')]}); await request2; await settle();
-      assert.deepEqual(page.state.items.map(row => row.draft.name), ['newest']); assert.equal(page.state.loading, false);
+      assert.deepEqual(review().visibleItems.map(row => row.draft.name), ['newest']); assert.equal(page.state.loading, false);
       first.resolve({message: [item('stale')]}); await request1; await settle();
-      assert.deepEqual(page.state.items.map(row => row.draft.name), ['newest'], 'a late obsolete response cannot replace current items');
-      assert.equal(page.state.counts.request, 2, 'counts come from the same current refresh as items');
+      assert.deepEqual(review().visibleItems.map(row => row.draft.name), ['newest'], 'a late obsolete response cannot replace current items');
+      assert.equal(page.state.counts.data.request, 2, 'counts come from the same current refresh as items');
     }
     page.app.unmount();
+  } else if (['latest_list_failure', 'viewer_posting'].includes(name)) {
+    if (name === 'viewer_posting') {frappe.session.user = 'viewer'; frappe.user_roles = ['账务查看者'];}
+    const next = controlRefreshes(), boot = next();
+    const page = mount('App.vue', {view: 'review', filter: '待审核'}, true);
+    const review = child(page.root._vnode, 'ReviewCenter').setupState;
+    const button = label => descendants(page.root).find(el => el.type === 'button' && text(el).includes(label));
+    const postingCalls = () => calls.filter(row => row.method.endsWith('approve_and_post'));
+    boot.list.resolve({message: [item('A'), item('B')]}); boot.count.resolve({message: {month: '2026-10'}}); await settle();
+    if (name === 'viewer_posting') {
+      assert.equal(button('审核并过账选中项'), undefined);
+      review.selected = ['A']; review.confirmPosting(); assert.equal(review.confirmation, '');
+      review.confirmation = review.confirmationVersion(); await review.postBatch();
+      assert.equal(calls.length, 2, 'only the two mounted read RPCs may run for a viewer');
+    } else {
+      review.selected = ['A']; review.confirmPosting(); const oldConfirmation = review.confirmation;
+      assert.ok(oldConfirmation);
+      const obsolete = next(); page.state.refresh();
+      const latest = next(); page.state.refresh(); await Vue.nextTick();
+      assert.equal(review.confirmation, '');
+      latest.count.resolve({message: {month: '2026-10'}}); latest.list.reject(new Error('当前列表失败')); await settle();
+      const disabled = button('审核并过账选中项').props.disabled;
+      review.confirmPosting(); const reopened = review.confirmation;
+      review.confirmation = oldConfirmation; await Vue.nextTick();
+      const submitDisabled = button('确认审核并过账')?.props.disabled ?? true;
+      await review.postBatch();
+      assert.equal(postingCalls().length, 0, 'failed current list cannot authorize a write on the previously selected A');
+      assert.equal(reopened, ''); assert.equal(disabled, true); assert.equal(submitDisabled, true);
+      obsolete.list.resolve({message: [item('obsolete')]}); obsolete.count.reject(new Error('过期汇总错误')); await settle();
+      assert.doesNotMatch(text(page.root), /tx-obsolete|tx-A|过期汇总错误/); assert.match(text(page.root), /当前列表失败/);
+      assert.equal(button('审核并过账选中项').props.disabled, true);
+      const retry = next(); page.state.refresh();
+      retry.list.resolve({message: [item('A'), item('B'), item('new')]}); await settle();
+      assert.deepEqual([...review.selected], ['A'], 'revalidated selection preserves exclusions');
+      assert.match(text(page.root), /tx-A/); assert.equal(button('审核并过账选中项').props.disabled, false);
+      review.confirmation = oldConfirmation;
+      await review.postBatch(); assert.equal(postingCalls().length, 0, 'retry requires fresh explicit confirmation');
+      review.confirmPosting(); const afterPost = next(); await review.postBatch(); await settle();
+      assert.deepEqual(postingCalls().map(row => JSON.parse(row.args.draft_names)), [['A']]);
+      retry.count.resolve({message: {month: '2026-10'}}); afterPost.list.resolve({message: []});
+      afterPost.count.resolve({message: {month: '2026-10'}}); await settle();
+    }
+    page.app.unmount();
+  } else if (name === 'current_month_counts') {
+    frappe.datetime.get_today = () => '2026-11-01';
+    const next = controlRefreshes(), boot = next();
+    const page = mount('App.vue', {view: 'dashboard'}, true);
+    const nov = {month: '2026-11', income: '11001.25', expense: '11002.75', pending_review: 19};
+    boot.count.resolve({message: nov}); boot.list.resolve({message: []}); await settle();
+    assert.match(text(page.root), /11001\.25/);
+    const obsolete = next(); page.state.refresh();
+    const month = descendants(page.root).find(el => el.props.id === 'ledger-month');
+    const latest = next(); month.props['onUpdate:modelValue']('2026-10'); month.props.onChange(); await Vue.nextTick();
+    const pendingView = text(page.root);
+    latest.list.resolve({message: []}); latest.count.reject(new Error('十月汇总失败')); await settle();
+    assert.doesNotMatch(text(page.root), /11001\.25|11002\.75|待审核 · 19/, 'October must not show the November totals');
+    assert.doesNotMatch(pendingView, /11001\.25|11002\.75/);
+    obsolete.count.resolve({message: nov}); obsolete.list.reject(new Error('过期列表错误')); await settle();
+    assert.doesNotMatch(text(page.root), /11001\.25|11002\.75|过期列表错误/); assert.match(text(page.root), /十月汇总失败/);
+    const mismatch = next(); page.state.refresh(); mismatch.count.resolve({message: nov}); mismatch.list.resolve({message: []}); await settle();
+    assert.doesNotMatch(text(page.root), /11001\.25|11002\.75|待审核 · 19/, 'even a latest success must match the selected month');
+    const retry = next(); page.state.refresh();
+    retry.count.resolve({message: {...nov, month: '2026-10', income: '10001.50', expense: '10002.75'}}); await settle();
+    assert.match(text(page.root), /10001\.50/); assert.match(text(page.root), /10002\.75/);
+    retry.list.resolve({message: []}); await settle(); page.app.unmount();
   } else throw new Error('unknown case ' + name);
   console.log('PASS ' + name);
 }
