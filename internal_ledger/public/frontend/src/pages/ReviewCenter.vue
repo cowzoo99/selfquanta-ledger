@@ -2,6 +2,7 @@
 import {ref, computed, watch} from 'vue';
 import DraftLines from '../components/DraftLines.vue';
 import ManualClassificationForm from '../components/ManualClassificationForm.vue';
+import TransactionEvidence from '../components/TransactionEvidence.vue';
 import {call, errorMessage} from '../api';
 import {directions, sources, transactionTypes, draftStatuses, processingStatuses, classificationStatuses} from '../labels';
 const props = defineProps({list: {type: Object, required: true}, classificationRun: Object, canWrite: Boolean, initialFilter: String, initialBatch: String, initialTransaction: String});
@@ -148,7 +149,8 @@ async function postBatch() {
     <p v-if="error && !active" role="alert">{{ error }}</p>
     <div v-if="canWrite && confirmation" role="region" aria-label="审核过账确认">
       <h3>审核过账确认</h3>
-      <p>审核范围：{{ initialBatch ? '批次 ' + initialBatch : '全部批次' }} · {{ filter }}</p>
+      <p>审核范围：{{ initialBatch ? '本次导入批次' : '全部批次' }} · {{ filter }}</p>
+      <details v-if="initialBatch"><summary>技术信息</summary><p>批次编号：{{ initialBatch }}</p></details>
       <dl><dt>选中数量</dt><dd>{{ postingSummary.count }}</dd>
         <dt>收入合计</dt><dd>{{ money(postingSummary.income) }}</dd><dt>支出合计</dt><dd>{{ money(postingSummary.expense) }}</dd>
         <dt>借方合计</dt><dd>{{ money(postingSummary.debit) }}</dd><dt>贷方合计</dt><dd>{{ money(postingSummary.credit) }}</dd>
@@ -159,11 +161,11 @@ async function postBatch() {
       <button :disabled="busy" @click="confirmation = ''">取消</button>
     </div>
     <table v-if="outcomes.length" aria-live="polite">
-      <caption>逐项处理结果</caption><thead><tr><th scope="col">草稿 / 流水</th><th scope="col">状态</th><th scope="col">处理说明</th><th scope="col">凭证</th></tr></thead>
+      <caption>逐项处理结果</caption><thead><tr><th scope="col">处理项</th><th scope="col">状态</th><th scope="col">处理说明</th><th scope="col">凭证</th></tr></thead>
       <tbody><tr v-for="(outcome, index) in outcomes" :key="index">
-        <td>{{ outcome.name }}</td><td>{{ outcome.status === 'created' && outcome.journal_entry ? '已过账' : processingStatuses[outcome.status] || '处理结果待核对' }}</td><td>{{ outcome.message }}</td>
+        <td>第 {{ index + 1 }} 项<details><summary>技术信息</summary><p>草稿 / 流水编号：{{ outcome.name }}</p><p v-if="outcome.draft">草稿编号：{{ outcome.draft }}</p></details></td><td>{{ outcome.status === 'created' && outcome.journal_entry ? '已过账' : processingStatuses[outcome.status] || '处理结果待核对' }}</td><td>{{ outcome.message }}</td>
         <td><a v-if="outcome.journal_entry" :href="`/app/journal-entry/${encodeURIComponent(outcome.journal_entry)}`">正式凭证 {{ outcome.journal_entry }}</a>
-          <a v-else-if="outcome.draft" :href="`/app/voucher-draft/${encodeURIComponent(outcome.draft)}`">查看草稿 {{ outcome.draft }}</a></td>
+          <a v-else-if="outcome.draft" :href="`/app/voucher-draft/${encodeURIComponent(outcome.draft)}`">查看草稿</a></td>
       </tr></tbody>
     </table>
     <div class="ledger-review">
@@ -219,6 +221,7 @@ async function postBatch() {
             <dt>草稿编号</dt><dd>{{ active.draft?.name || '尚未生成' }}</dd>
             <dt>规则编号</dt><dd>{{ active.draft?.classification_rule || active.classification?.rule_name || '无' }}</dd></dl>
         </details>
+        <TransactionEvidence :transaction="active.transaction.name" :can-write="canWrite" />
       </div>
       <p v-else>选择一笔流水，在此核对原流水与借贷分录。</p>
     </div>

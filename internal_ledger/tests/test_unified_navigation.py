@@ -305,6 +305,14 @@ def test_classification_detail_frontend():
     _run_review_component_case("classification_detail")
 
 
+def test_transaction_evidence_admin_frontend():
+    _run_review_component_case("transaction_evidence_admin")
+
+
+def test_transaction_evidence_viewer_frontend():
+    _run_review_component_case("transaction_evidence_viewer")
+
+
 def test_review_refresh_preserves_exclusions_and_invalidates_confirmation():
     _run_review_component_case("refresh_selection")
 

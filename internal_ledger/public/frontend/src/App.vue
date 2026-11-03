@@ -157,6 +157,11 @@ onMounted(refreshPage);
 .ledger-step-footer { position: fixed; z-index: 30; left: max(300px, 18vw); right: 24px; bottom: 16px; display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 12px; padding: 12px 16px; border: 1px solid #9fb6c3; border-radius: 10px; background: rgba(255,255,255,.97); box-shadow: 0 6px 24px rgba(24,55,72,.2); }
 .ledger-step-footer > :last-child { justify-self: end; }
 .ledger-pagination { display: flex; align-items: center; justify-content: center; gap: 10px; margin: 12px 0; }
+.ledger-evidence-editor { min-height: 100px; padding: 10px; border: 1px solid #8b959e; border-radius: 4px; overflow-wrap: anywhere; overflow-x: auto; }
+.ledger-evidence-editor:focus { outline: 3px solid #2877a4; outline-offset: 2px; }
+.ledger-evidence-preview { display: block; max-width: 100%; max-height: 280px; object-fit: contain; }
+.ledger-evidence-attachments { display: grid; gap: 12px; padding-left: 20px; overflow-wrap: anywhere; }
+@media (max-width: 800px) { .ledger-evidence-attachments { grid-template-columns: minmax(0, 1fr); } }
 @media (max-width: 900px) { .ledger-hero { grid-template-columns: minmax(0, 1fr); padding: 20px; } }
 @media (max-width: 800px) { .ledger-review { grid-template-columns: minmax(0, 1fr); } .ledger-app { padding: 6px 6px 110px; } .ledger-workflow ol { grid-template-columns: 1fr; } .ledger-step-footer { left: 8px; right: 8px; bottom: 8px; font-size: 12px; } }
 </style>

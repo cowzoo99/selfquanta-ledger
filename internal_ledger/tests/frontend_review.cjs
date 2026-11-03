@@ -38,9 +38,9 @@ function compile(file, realChildren = false) {
   const component = new Function('load', compiled)(name => {
     if (name === 'vue') return Vue;
     if (name.endsWith('labels')) return labels;
-    if (name.endsWith('api')) return {call: async (method, args = {}) =>
-      (await frappe.call({method: 'internal_ledger.api.review_api.' + method, args})).message, errorMessage: e => e.message};
-    if (realChildren && /\/(Dashboard|ReviewCenter|DuplicateReview|DraftLines)\.vue$/.test(name)) {
+    if (name.endsWith('api')) return new Function(fs.readFileSync(path.join(src, 'api.js'), 'utf8').replaceAll('export ', '') +
+      '; return {call, evidenceCall: typeof evidenceCall === "function" ? evidenceCall : undefined, errorMessage};')();
+    if (realChildren && /\/(Dashboard|ReviewCenter|DuplicateReview|DraftLines|TransactionEvidence)\.vue$/.test(name)) {
       return compile(path.posix.normalize(path.posix.join(path.posix.dirname(file), name)), true);
     }
     return {name, render() {return Vue.h('test-child', {'data-component': name});}};
@@ -93,7 +93,73 @@ function item(id, batch = 'new', values = {}) {
     error: null, can_approve: true};
 }
 async function run(name) {
-  if (name === 'auto_classification') {
+  if (['transaction_evidence_admin', 'transaction_evidence_viewer'].includes(name)) {
+    const canWrite = name.endsWith('admin');
+    const evidence = (note = '<p>现有备注</p>') => ({note_html: note, attachments: [{name: 'file-one',
+      file_name: '原始收据.png', file_url: '/private/files/unique.png', is_image: true}]});
+    frappe.call = async args => {calls.push(args); return {message: evidence()};};
+    global.FileReader = class {readAsDataURL() {this.result = 'data:image/png;base64,aGVsbG8='; this.onload();}};
+    const page = mount('components/TransactionEvidence.vue', {transaction: 'tx-one', canWrite}); await settle();
+    for (const label of ['备注与附件', '图片预览', '下载']) assert.match(text(page.root), new RegExp(label));
+    assert.equal(calls[0].type, 'GET'); assert.equal(calls[0].args.tx_name, 'tx-one');
+    assert.equal(descendants(page.root).find(el => el.type === 'img').props.src, '/private/files/unique.png');
+    const link = descendants(page.root).find(el => el.type === 'a');
+    assert.equal(link.props.href, '/private/files/unique.png'); assert.match(text(link), /原始收据.png/);
+    if (canWrite) {
+      for (const label of ['加粗', '项目列表', '插入 2×2 表格', '保存备注', '上传附件', '删除附件']) assert.match(text(page.root), new RegExp(label));
+      const editor = descendants(page.root).find(el => el.props.role === 'textbox');
+      editor.innerHTML = '<p>新的备注</p>'; editor.props.onInput({target: editor});
+      await page.state.save(); await settle();
+      assert.equal(calls.find(row => row.method.endsWith('save_evidence')).args.note_html, '<p>新的备注</p>');
+      editor.innerHTML = '<p>尚未保存的备注</p>'; editor.props.onInput({target: editor});
+      await page.state.upload({target: {files: [{name: '收据.png', type: 'image/png', size: 5}], value: 'x'}}); await settle();
+      assert.equal(calls.find(row => row.method.endsWith('upload_evidence')).args.content_base64, 'aGVsbG8=');
+      assert.equal(page.state.note, '<p>尚未保存的备注</p>', 'upload must preserve unsaved note edits');
+      await page.state.remove(evidence().attachments[0]);
+      assert.equal(page.state.note, '<p>尚未保存的备注</p>', 'deletion must preserve unsaved note edits');
+      assert.equal(calls.find(row => row.method.endsWith('delete_evidence_file')).args.attachment_name, 'file-one');
+      assert.ok(calls.filter(row => !row.method.endsWith('get_evidence')).every(row => row.type === 'POST'));
+      frappe.call = async args => {calls.push(args); throw new Error('服务端拒绝附件');};
+      await page.state.upload({target: {files: [{name: '收据.png', type: 'image/png', size: 5}], value: 'x'}}); await settle();
+      assert.match(text(page.root), /服务端拒绝附件/);
+    } else {
+      assert.doesNotMatch(text(page.root), /保存备注|上传附件|删除附件|插入 2×2 表格/);
+      await page.state.save(); await page.state.remove(evidence().attachments[0]);
+      await page.state.upload({target: {files: [{name: '收据.png'}]}});
+      assert.equal(calls.length, 1, 'viewer handlers must not write');
+    }
+    const old = deferred(), latest = deferred();
+    frappe.call = async args => {calls.push(args); return args.args.tx_name === 'tx-two' ? old.promise : latest.promise;};
+    page.props.transaction = 'tx-two'; await Vue.nextTick();
+    assert.equal(page.state.note, '', 'switching clears the previous note');
+    page.props.transaction = 'tx-three'; await Vue.nextTick();
+    latest.resolve({message: evidence('<p>当前备注</p>')}); await settle();
+    old.resolve({message: evidence('<p>过期备注</p>')}); await settle();
+    assert.equal(page.state.note, '<p>当前备注</p>');
+    assert.equal(calls.filter(row => row.method.endsWith('get_evidence')).length, 3);
+    if (canWrite) {
+      const saved = deferred();
+      frappe.call = async args => {calls.push(args); return args.method.endsWith('save_evidence') ? saved.promise : {message: evidence('<p>另一笔备注</p>')};};
+      const saving = page.state.save(); page.props.transaction = 'tx-four'; await settle();
+      saved.resolve({message: evidence('<p>过期保存响应</p>')}); await saving; await settle();
+      assert.equal(page.state.note, '<p>另一笔备注</p>', 'late save response must not replace the selected transaction');
+      let reader;
+      global.FileReader = class {constructor() {reader = this;} readAsDataURL() {}};
+      const uploads = calls.filter(row => row.method.endsWith('upload_evidence')).length;
+      const uploading = page.state.upload({target: {files: [{name: 'unknown.exe', type: 'application/octet-stream', size: 11 * 1024 * 1024}], value: 'x'}});
+      await Vue.nextTick(); assert.match(text(page.root), /不支持的附件扩展名.*超过 10 MiB.*服务端将最终校验/);
+      page.props.transaction = 'tx-five'; await settle();
+      reader.result = 'data:application/octet-stream;base64,aGVsbG8='; reader.onload(); await uploading;
+      assert.equal(calls.filter(row => row.method.endsWith('upload_evidence')).length, uploads, 'stale FileReader must not send an upload for the new transaction');
+    }
+    page.app.unmount();
+    frappe.call = async args => {calls.push(args); return {message: evidence()};};
+    const row = {...item('integrated'), draft: null, can_classify: true};
+    const review = mount('pages/ReviewCenter.vue', {list: {status: 'success', data: [row]}, canWrite}, true);
+    review.state.open(row); await settle();
+    assert.match(text(review.root), /备注与附件/);
+    assert.equal(calls.at(-1).args.tx_name, 'tx-integrated'); review.app.unmount();
+  } else if (name === 'auto_classification') {
     const sweep = deferred(), summary = {created: 2, manual: 3, conflict: 1, duplicate: 0, skipped: 0, failed: 1};
     let pendingSweep = sweep.promise;
     frappe.call = async args => {
@@ -192,7 +258,14 @@ async function run(name) {
     assert.deepEqual([...page.state.selected], ['current']);
     page.state.confirmPosting(); await Vue.nextTick();
     assert.equal(page.state.postingSummary.count, 1); assert.equal(page.state.postingSummary.debit, 10);
-    assert.match(text(page.root), /批次.*new/);
+    const confirmation = descendants(page.root).find(el => el.props['aria-label'] === '审核过账确认');
+    assert.doesNotMatch(confirmation.children.filter(el => el.type !== 'details').map(text).join(''), /new/);
+    assert.match(text(descendants(confirmation).find(el => el.type === 'details')), /技术信息.*new/);
+    page.state.outcomes = [{name: 'random-draft-id', draft: 'random-draft-id', status: 'failed', message: '请核对'}];
+    await Vue.nextTick();
+    const result = descendants(page.root).find(el => el.type === 'tbody');
+    assert.doesNotMatch(descendants(result).filter(el => el.type === 'td').map(el => el.children.filter(child => child.type !== 'details').map(text).join('')).join(''), /random-draft-id/);
+    assert.match(text(result), /技术信息.*random-draft-id/);
     assert.equal(calls.length, 0, 'preview never writes');
     page.props.initialBatch = 'old'; await Vue.nextTick();
     assert.deepEqual([...page.state.selected], ['older']); assert.equal(page.state.confirmation, '');
