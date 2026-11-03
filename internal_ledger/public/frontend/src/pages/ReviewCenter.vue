@@ -8,6 +8,7 @@ const props = defineProps({list: {type: Object, required: true}, canWrite: Boole
 const emit = defineEmits(['refresh']);
 const selected = ref([]), active = ref(null), busy = ref(false), error = ref(''), outcomes = ref([]), reason = ref('');
 const savedVersion = ref(''), filter = ref('待分类'), selectedTransactions = ref([]), confirmation = ref('');
+const currentPage = ref(1), pageSize = 10;
 const filters = ['疑似重复', '待分类', '待审核', '待过账', '已过账'];
 watch(() => props.initialFilter, value => { filter.value = filters.includes(value) ? value : '待分类'; }, {immediate: true});
 function duplicate(item) {
@@ -22,6 +23,12 @@ const listReady = computed(() => props.list.status === 'success');
 const scopedItems = computed(() => listReady.value ? props.list.data.filter(item => (!props.initialBatch || item.transaction.import_batch === props.initialBatch) &&
   (!props.initialTransaction || item.transaction.name === props.initialTransaction)) : []);
 const visibleItems = computed(() => scopedItems.value.filter(item => stage(item) === filter.value));
+const pageCount = computed(() => Math.max(1, Math.ceil(visibleItems.value.length / pageSize)));
+const pagedItems = computed(() => visibleItems.value.slice((currentPage.value - 1) * pageSize, currentPage.value * pageSize));
+function previousPage() { currentPage.value = Math.max(1, currentPage.value - 1); active.value = null; }
+function nextPage() { currentPage.value = Math.min(pageCount.value, currentPage.value + 1); active.value = null; }
+watch(() => [filter.value, props.initialBatch, props.initialTransaction], () => { currentPage.value = 1; });
+watch(pageCount, value => { currentPage.value = Math.min(currentPage.value, value); });
 const eligible = item => !duplicate(item) && item.transaction.status === 'Imported' && !item.draft && item.classification?.status === 'matched';
 const editing = computed(() => props.canWrite && active.value?.draft?.status === 'Draft');
 const dirty = computed(() => active.value?.draft && JSON.stringify(active.value.draft) !== savedVersion.value);
@@ -146,8 +153,9 @@ async function postBatch() {
       </tr></tbody>
     </table>
     <div class="ledger-review">
+      <div>
       <ul class="ledger-items">
-        <li v-for="item in visibleItems" :key="item.transaction.name">
+        <li v-for="item in pagedItems" :key="item.transaction.name">
           <label v-if="canWrite && eligible(item)"><input v-model="selectedTransactions" type="checkbox" :value="item.transaction.name" :disabled="busy">选择生成凭证</label>
           <label v-if="canWrite && postEligible(item)"><input v-model="selected" type="checkbox" :value="item.draft.name" :disabled="busy">选择 {{ item.draft.name }}</label>
           <strong>{{ item.error || item.draft?.rejection_reason || draftStatuses[item.draft?.status] || stage(item) }}</strong>
@@ -155,6 +163,12 @@ async function postBatch() {
           <button :disabled="busy" @click="open(item)">查看 {{ item.transaction.name }}</button>
         </li>
       </ul>
+      <nav v-if="visibleItems.length" class="ledger-pagination" aria-label="待办分页">
+        <button :disabled="currentPage === 1" @click="previousPage">上一页</button>
+        <span>第 {{ currentPage }} / {{ pageCount }} 页 · 共 {{ visibleItems.length }} 笔</span>
+        <button :disabled="currentPage === pageCount" @click="nextPage">下一页</button>
+      </nav>
+      </div>
       <div v-if="active" class="ledger-detail">
         <h3>原流水</h3>
         <dl><dt>流水编号 / 批次</dt><dd>{{ active.transaction.name }} / {{ active.transaction.import_batch }}</dd>

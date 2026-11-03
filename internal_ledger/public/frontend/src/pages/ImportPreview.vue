@@ -8,6 +8,13 @@ const source = ref('auto'), payment = ref(''), file = ref(null), preview = ref(n
 const upload = ref(null), busy = ref(false), error = ref(''), result = ref(null);
 const paymentAccounts = ref([]);
 const canConfirm = computed(() => props.canWrite && preview.value?.rows.length && !preview.value.errors.length && !busy.value);
+function workflowRoute(value) {
+  const summary = value?.summary || {}, batch = encodeURIComponent(value?.batch_name || '');
+  if (summary.duplicate) return `/app/ledger-workbench/duplicates/疑似重复/${batch}`;
+  if (summary.manual || summary.conflict || summary.failed) return `/app/ledger-workbench/review/待分类/${batch}`;
+  if (summary.created) return `/app/ledger-workbench/review/待审核/${batch}`;
+  return '/app/ledger-workbench/dashboard';
+}
 const remainingRoute = computed(() => {
   const summary = result.value?.summary, batch = encodeURIComponent(result.value?.batch_name || '');
   if (summary?.duplicate) return `/app/ledger-workbench/review/疑似重复/${batch}`;
@@ -40,6 +47,7 @@ async function confirm() {
     }});
     result.value = response.message;
     preview.value = null; upload.value = null; emit('imported');
+    window.location.assign(workflowRoute(result.value));
   } catch (e) { error.value = errorMessage(e); }
   finally { busy.value = false; }
 }

@@ -140,7 +140,9 @@ def test_dashboard_orders_import_totals_four_tasks_latest_batch_and_erp():
         assert "counts.latest_batch." + field in template
     assert "ledger-flow" not in source and "异常优先" not in source
     app = (ROOT / "public/frontend/src/App.vue").read_text(encoding="utf-8")
-    assert 'href="/app/query-report/General%20Ledger"' in app
+    assert "['accounting', '会计中心']" in app
+    accounting = (ROOT / "public/frontend/src/pages/AccountingCenter.vue").read_text(encoding="utf-8")
+    assert 'href="/app/query-report/General%20Ledger"' in accounting
     navigation = app.split("const navigation =", 1)[1].split(";", 1)[0]
     assert "duplicates" not in navigation and "classification" not in navigation
 
@@ -313,6 +315,26 @@ def test_import_result_carries_batch_and_displays_total():
 
 def test_import_result_displays_total_count():
     _run_review_component_case("import_total")
+
+
+def test_confirmed_import_automatically_continues_to_current_batch_workflow():
+    _run_review_component_case("import_auto_route")
+
+
+def test_workflow_navigation_has_five_steps_and_bottom_previous_next_actions():
+    _run_review_component_case("workflow_navigation")
+
+
+def test_review_center_keeps_ten_item_pagination_with_previous_next_controls():
+    _run_review_component_case("review_pagination")
+
+
+def test_duplicate_review_is_one_item_per_page_with_previous_next_controls():
+    _run_review_component_case("duplicate_pagination")
+
+
+def test_accounting_center_exposes_drafts_formal_vouchers_and_general_ledger():
+    _run_review_component_case("accounting_center")
 
 
 def test_workbench_route_passes_batch_through_cached_mount_and_app():

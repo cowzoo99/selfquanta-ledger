@@ -158,6 +158,63 @@ async function run(name) {
       assert.equal(page.state.remainingRoute, '/app/ledger-workbench/review/待分类/batch%2F%E4%B8%80');
     }
     page.app.unmount();
+  } else if (name === 'import_auto_route') {
+    const assigned = [];
+    global.window = {location: {assign: value => assigned.push(value)}};
+    frappe.call = async args => {
+      calls.push(args);
+      if (args.method.endsWith('list_payment_accounts')) return {message: []};
+      if (args.method.endsWith('confirm_import')) return {message: {batch_name: 'batch/一',
+        summary: {total: 8, created: 0, duplicate: 8, manual: 0, conflict: 0, failed: 0}}};
+      return {message: []};
+    };
+    const page = mount('pages/ImportPreview.vue', {canWrite: true});
+    page.state.upload = {source: 'bank', payment_account: '100201', content_base64: 'dGVzdA==', filename: 'same.csv'};
+    page.state.preview = {rows: [{amount: 10}], errors: [], file_hash: 'hash'};
+    await Vue.nextTick(); await page.state.confirm();
+    assert.deepEqual(assigned, ['/app/ledger-workbench/duplicates/疑似重复/batch%2F%E4%B8%80'],
+      'confirming an import must continue into this batch duplicate review automatically');
+    page.app.unmount(); delete global.window;
+  } else if (name === 'workflow_navigation') {
+    const page = mount('components/WorkflowNavigation.vue', {currentStage: 2, batch: 'batch/一',
+      counts: {duplicates: 8, classification: 0, drafts: 0, posting: 0}});
+    const body = text(page.root);
+    for (const label of ['导入识别', '重复复核', '自动分类', '凭证草稿', '审核过账', '第 2 / 5 步']) assert.match(body, new RegExp(label));
+    const links = descendants(page.root).filter(el => el.type === 'a');
+    const href = label => links.find(el => text(el).includes(label))?.props.href;
+    assert.equal(href('上一步'), '/app/ledger-workbench/import');
+    assert.equal(href('重复复核'), '/app/ledger-workbench/duplicates/疑似重复/batch%2F%E4%B8%80');
+    assert.equal(href('下一步'), '/app/ledger-workbench/review/待分类/batch%2F%E4%B8%80');
+    assert.ok(links.some(el => text(el).includes('重复复核') && el.props['aria-current'] === 'step'));
+    page.app.unmount();
+  } else if (name === 'review_pagination') {
+    const rows = Array.from({length: 23}, (_, index) => item(`page-${index + 1}`));
+    const page = mount('pages/ReviewCenter.vue', {list: {status: 'success', data: rows}, canWrite: true, initialFilter: '待审核'});
+    assert.equal(page.state.pageCount, 3); assert.equal(page.state.pagedItems.length, 10);
+    assert.match(text(page.root), /第 1 \/ 3 页.*共 23 笔/s);
+    page.state.nextPage(); await Vue.nextTick(); assert.equal(page.state.currentPage, 2); assert.equal(page.state.pagedItems.length, 10);
+    page.state.nextPage(); await Vue.nextTick(); assert.equal(page.state.currentPage, 3); assert.equal(page.state.pagedItems.length, 3);
+    page.state.previousPage(); await Vue.nextTick(); assert.equal(page.state.currentPage, 2);
+    page.app.unmount();
+  } else if (name === 'duplicate_pagination') {
+    const pair = index => ({candidate: {...item(`dup-${index}`, 'new').transaction, status: 'Duplicate', duplicate_review_status: 'Pending'},
+      original: item(`source-${index}`, 'old').transaction});
+    frappe.call = async args => {calls.push(args); return {message: [pair(1), pair(2), pair(3)]};};
+    const page = mount('pages/DuplicateReview.vue', {canWrite: true, batch: 'new'}); await settle();
+    assert.equal(page.state.pageCount, 3); assert.equal(page.state.pagedItems.length, 1);
+    assert.match(text(page.root), /第 1 \/ 3 笔/); assert.match(text(page.root), /tx-dup-1/);
+    page.state.nextPage(); await Vue.nextTick(); assert.equal(page.state.currentPage, 2); assert.match(text(page.root), /tx-dup-2/);
+    page.state.previousPage(); await Vue.nextTick(); assert.equal(page.state.currentPage, 1);
+    page.app.unmount();
+  } else if (name === 'accounting_center') {
+    const page = mount('pages/AccountingCenter.vue', {});
+    const body = text(page.root);
+    for (const label of ['会计中心', '凭证草稿', '正式记账凭证', '总账报表']) assert.match(body, new RegExp(label));
+    const hrefs = descendants(page.root).filter(el => el.type === 'a').map(el => el.props.href);
+    assert.ok(hrefs.includes('/app/voucher-draft'));
+    assert.ok(hrefs.includes('/app/journal-entry'));
+    assert.ok(hrefs.includes('/app/query-report/General%20Ledger'));
+    page.app.unmount();
   } else if (name === 'route_scope') {
     const mounts = [], wrapper = {ledger_ready: true, ledger_root: {}};
     let route = ['ledger-workbench', 'review', '待审核', 'batch/一'];

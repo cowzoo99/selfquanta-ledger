@@ -5,6 +5,7 @@ import {directions, sources, processingStatuses} from '../labels';
 const props = defineProps({canWrite: Boolean, batch: String, transaction: String});
 const emit = defineEmits(['refresh']);
 const items = ref([]), notes = ref({}), loading = ref(true), busy = ref(false), error = ref(''), result = ref(null);
+const currentPage = ref(1), pageSize = 1;
 const inScope = item => (!props.batch || item.candidate.import_batch === props.batch) &&
   (!props.transaction || item.candidate.name === props.transaction);
 const scopeBatch = computed(() => props.batch || (props.transaction
@@ -12,12 +13,17 @@ const scopeBatch = computed(() => props.batch || (props.transaction
 const taskRoute = status => `/app/ledger-workbench/review/${status}` + (scopeBatch.value
   ? `/${encodeURIComponent(scopeBatch.value)}` + (props.transaction ? `/${encodeURIComponent(props.transaction)}` : '') : '');
 const statuses = {Pending: '待复核', Confirmed: '已确认重复，已忽略', Released: '已保留，进入正常入账流程'};
+const pageCount = computed(() => Math.max(1, Math.ceil(items.value.length / pageSize)));
+const pagedItems = computed(() => items.value.slice((currentPage.value - 1) * pageSize, currentPage.value * pageSize));
+function previousPage() { currentPage.value = Math.max(1, currentPage.value - 1); result.value = null; }
+function nextPage() { currentPage.value = Math.min(pageCount.value, currentPage.value + 1); result.value = null; }
 async function refresh() {
   loading.value = true;
   try {
     const response = await frappe.call({method: 'internal_ledger.api.duplicate_api.list_duplicates', type: 'GET',
       args: {batch: props.batch || '', transaction: props.transaction || ''}});
     items.value = response.message.filter(inScope);
+    currentPage.value = Math.min(currentPage.value, Math.max(1, Math.ceil(items.value.length / pageSize)));
   } finally { loading.value = false; }
 }
 async function resolve(item, decision) {
@@ -56,7 +62,7 @@ onMounted(async () => { try { await refresh(); } catch (e) { error.value = error
         <a :href="taskRoute('待分类')">前往待办中心重试</a>
       </template>
     </div>
-    <article v-for="item in items" :key="item.candidate.name" class="ledger-card">
+    <article v-for="item in pagedItems" :key="item.candidate.name" class="ledger-card">
       <h3>{{ item.candidate.name }} · {{ statuses[item.candidate.duplicate_review_status] }}</h3>
       <p>匹配依据：{{ item.candidate.duplicate_match_reason || '来源、时间、金额、方向、交易对象、摘要与资金账户的稳定指纹相同' }}</p>
       <div class="duplicate-evidence">
@@ -79,5 +85,10 @@ onMounted(async () => { try { await refresh(); } catch (e) { error.value = error
           <button :disabled="loading || busy || !(notes[item.candidate.name] || '').trim()" @click="resolve(item, 'release')">不是重复，保留并入账</button></div>
       </template>
     </article>
+    <nav v-if="items.length" class="ledger-pagination" aria-label="重复流水逐笔分页">
+      <button :disabled="currentPage === 1 || loading || busy" @click="previousPage">上一笔</button>
+      <span>第 {{ currentPage }} / {{ pageCount }} 笔</span>
+      <button :disabled="currentPage === pageCount || loading || busy" @click="nextPage">下一笔</button>
+    </nav>
   </section>
 </template>
