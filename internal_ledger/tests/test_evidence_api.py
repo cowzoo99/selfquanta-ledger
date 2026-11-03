@@ -11,6 +11,10 @@ from internal_ledger.tests.test_classifier import set_up, transaction
 from internal_ledger.tests.test_permissions import user
 
 
+def save_note(api, tx, note):
+    return api.save_evidence(tx, note, api.get_evidence(tx)["note_version"])
+
+
 def test_direct_evidence_insert_is_blocked():
     name = transaction()
     for actor in (user("账套管理员"), "Administrator"):
@@ -61,11 +65,11 @@ def test_json_note_payload_is_sanitized_on_save():
 
     tx = transaction()
     payload = json.dumps({"note": "<img src=x onerror=alert(1)>"})
-    result = api.save_evidence(tx, payload)
+    result = save_note(api, tx, payload)
     assert "onerror" not in result["note_html"]
     assert "onerror" not in frappe.db.get_value("Ledger Evidence", result["name"], "note_html")
     table = "<table><tbody><tr><td>核对</td><td>金额</td></tr></tbody></table>"
-    assert "<table>" in api.save_evidence(tx, table)["note_html"]
+    assert "<table>" in save_note(api, tx, table)["note_html"]
 
 
 def test_existing_dirty_json_note_is_sanitized_before_api_read():
@@ -78,6 +82,50 @@ def test_existing_dirty_json_note_is_sanitized_before_api_read():
     result = api.get_evidence(doc.imported_transaction)
     assert "onerror" not in result["note_html"]
     assert frappe.db.get_value("Ledger Evidence", doc.name, "note_html") == payload, "reads must not mutate stored notes"
+
+
+def test_note_whitelist_strips_forms_and_tracking_on_save_and_read():
+    from internal_ledger.api import evidence_api as api
+
+    tx = transaction()
+    payload = ('<p>说明<strong>加粗</strong></p><ul><li>项目</li></ul>'
+               '<table><tr><td>单元格</td></tr></table><a href="https://example.com">安全链接</a>'
+               '<a href="javascript:alert(1)">危险链接</a><form action="https://evil.test">'
+               '<input type="password"><button>提交</button></form><img src="https://evil.test/track">')
+    saved = save_note(api, tx, payload)
+    for html in (saved["note_html"],):
+        for allowed in ("<p>", "<strong>", "<ul>", "<li>", "<table>", "<tbody>", "<tr>", "<td>", 'href="https://example.com"'):
+            assert allowed in html
+        for denied in ("<form", "<input", "<button", "<img", "javascript:", "evil.test"):
+            assert denied not in html
+    frappe.db.set_value("Ledger Evidence", saved["name"], "note_html", json.dumps({"note": payload}))
+    html = api.get_evidence(tx)["note_html"]
+    for denied in ("<form", "<input", "<button", "<img", "javascript:", "evil.test"):
+        assert denied not in html, html
+
+
+def test_note_save_rejects_stale_versions_including_first_save():
+    from internal_ledger.api import evidence_api as api
+
+    tx = transaction()
+    alice, bob = user("账套管理员"), user("账套管理员")
+    frappe.set_user(alice)
+    first = api.get_evidence(tx)
+    frappe.set_user(bob)
+    second = api.get_evidence(tx)
+    frappe.set_user(alice)
+    saved = api.save_evidence(tx, "<p>管理员甲</p>", first["note_version"])
+    frappe.set_user(bob)
+    with unittest.TestCase().assertRaises(frappe.ValidationError):
+        api.save_evidence(tx, "<p>管理员乙</p>", second["note_version"])
+    assert api.get_evidence(tx)["note_html"] == saved["note_html"]
+    old = api.get_evidence(tx)
+    frappe.set_user(alice)
+    saved = api.save_evidence(tx, "<p>甲再次修改</p>", old["note_version"])
+    frappe.set_user(bob)
+    with unittest.TestCase().assertRaises(frappe.ValidationError):
+        api.save_evidence(tx, "<p>乙的旧版本</p>", old["note_version"])
+    assert api.get_evidence(tx)["note_html"] == saved["note_html"]
 
 
 def test_ledger_admin_can_create_evidence_without_a_stored_company():
@@ -468,9 +516,10 @@ def test_admin_saves_sanitized_note_private_attachment_and_audit():
     tx = transaction()
     actor = user("账套管理员")
     frappe.set_user(actor)
-    assert api.get_evidence(tx) == {"name": None, "transaction": tx, "note_html": "", "attachments": []}
+    empty = api.get_evidence(tx)
+    assert empty == {"name": None, "transaction": tx, "note_html": "", "note_version": empty["note_version"], "attachments": []}
     assert not frappe.db.exists("Ledger Evidence", {"imported_transaction": tx})
-    saved = api.save_evidence(tx, '<p>业务说明</p><script>alert(1)</script><table><tr><td>合同</td></tr></table>')
+    saved = save_note(api, tx, '<p>业务说明</p><script>alert(1)</script><table><tr><td>合同</td></tr></table>')
     assert "业务说明" in saved["note_html"] and "<table" in saved["note_html"]
     assert "script" not in saved["note_html"].lower()
     content = b"\x89PNG\r\n\x1a\n" + uuid4().bytes
@@ -521,7 +570,7 @@ def test_attachment_count_limit_and_transaction_ownership():
     from internal_ledger.api import evidence_api as api
 
     tx, other = transaction(), transaction()
-    api.save_evidence(other, "")
+    save_note(api, other, "")
     for index in range(10):
         files = api.upload_evidence(tx, f"{index}.txt", encoded(uuid4().bytes.hex().encode()), "text/plain")
     assert len(files["attachments"]) == 10
@@ -545,7 +594,7 @@ def test_viewer_reads_private_evidence_but_cannot_mutate_it():
     assert frappe.has_permission("File", "read", info["name"])
     download_file(info["file_url"])
     assert frappe.local.response.filecontent == content
-    for operation in (lambda: api.save_evidence(tx, "越权"),
+    for operation in (lambda: save_note(api, tx, "越权"),
                       lambda: api.upload_evidence(tx, "禁止.txt", encoded(b"x"), "text/plain"),
                       lambda: api.delete_evidence_file(tx, info["name"])):
         with unittest.TestCase().assertRaises(frappe.PermissionError):
@@ -558,7 +607,7 @@ def test_audit_failure_preserves_note_attachment_and_blob():
     tx = transaction()
     filename = f"failed-{uuid4().hex}.txt"
     with patch.object(api, "record_audit", side_effect=RuntimeError("audit unavailable")):
-        for operation in (lambda: api.save_evidence(tx, "不能无审计保存"),
+        for operation in (lambda: save_note(api, tx, "不能无审计保存"),
                           lambda: api.upload_evidence(tx, filename, encoded(uuid4().hex.encode()), "text/plain")):
             with unittest.TestCase().assertRaisesRegex(RuntimeError, "audit unavailable"):
                 operation()
@@ -578,7 +627,7 @@ def test_failure_after_file_mutation_restores_database_audit_and_blob():
     from internal_ledger.api import evidence_api as api
 
     tx = transaction()
-    saved = api.save_evidence(tx, "原备注")
+    saved = save_note(api, tx, "原备注")
     filename = f"rollback-{uuid4().hex}.txt"
     content = uuid4().hex.encode()
     with patch.object(api, "_serialize_evidence", side_effect=RuntimeError("response failed")):
@@ -649,6 +698,22 @@ def test_public_same_content_does_not_keep_deleted_private_blob():
     api.delete_evidence_file(tx, doc.name)
     assert not path.exists()
     assert Path(public.get_full_path()).read_bytes() == content
+
+
+def test_deleting_public_same_hash_removes_public_blob_but_keeps_evidence():
+    from frappe import client
+    from frappe.handler import download_file
+    from internal_ledger.api.evidence_api import upload_evidence
+
+    content = uuid4().hex.encode()
+    public = frappe.get_doc({"doctype": "File", "file_name": f"pub-{uuid4().hex}.txt",
+        "content": content, "is_private": 0}).insert()
+    public_path = Path(public.get_full_path())
+    info = upload_evidence(transaction(), "佐证.txt", encoded(content), "text/plain")["attachments"][0]
+    client.delete("File", public.name)
+    assert not public_path.exists()
+    download_file(info["file_url"])
+    assert frappe.local.response.filecontent.encode() == content
 
 
 def test_public_same_content_does_not_keep_rolled_back_private_blob():

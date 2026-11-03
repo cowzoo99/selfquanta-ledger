@@ -49,6 +49,48 @@ def test_reconcile_unprepared_transactions_creates_only_matched_drafts_and_is_id
     assert frappe.db.count("Journal Entry") == frappe.flags.classification_journals
 
 
+def test_reconcile_never_scans_another_company_for_any_administrator():
+    from internal_ledger.accounting.batch_workflow import reconcile_unprepared_transactions
+    from internal_ledger.tests.test_permissions import user
+
+    add_rule()
+    own, foreign = transaction(), transaction()
+    batch = frappe.db.get_value("Imported Transaction", foreign, "import_batch")
+    frappe.db.set_value("Import Batch", batch, "company", "其他公司")
+    for actor in (user("账套管理员"), "Administrator"):
+        frappe.set_user(actor)
+        result = reconcile_unprepared_transactions()
+        assert foreign not in [row["name"] for row in result["outcomes"]]
+        assert not frappe.db.exists("Voucher Draft", {"imported_transaction": foreign})
+        assert not frappe.db.exists("Internal Ledger Audit Event", {"reference_name": foreign})
+        assert result["summary"]["failed"] == 0
+    assert frappe.db.exists("Voucher Draft", {"imported_transaction": own})
+
+
+def test_latest_classification_failure_is_visible_to_viewer_without_writes():
+    from internal_ledger.accounting import batch_workflow
+    from internal_ledger.api import review_api
+    from internal_ledger.tests.test_permissions import user
+
+    add_rule()
+    name = transaction()
+    with patch.object(batch_workflow, "create_draft", side_effect=RuntimeError("private-id-secret")):
+        result = review_api.auto_classify_pending()
+    assert result["summary"]["failed"] == 1
+    count = frappe.db.count("Internal Ledger Audit Event")
+    frappe.set_user(user("账务查看者"))
+    try:
+        latest = review_api.get_latest_classification_run()
+        assert latest["summary"]["failed"] == 1
+        item = next(row for row in review_api.list_review_items() if row["transaction"]["name"] == name)
+        assert "生成失败" in item["error"]
+        assert name not in item["error"]
+        assert "private-id-secret" not in str(latest) + str(item)
+        assert frappe.db.count("Internal Ledger Audit Event") == count
+    finally:
+        frappe.set_user("Administrator")
+
+
 def test_process_transactions_reports_actionable_states_and_is_idempotent():
     from internal_ledger.accounting.batch_workflow import process_transactions
     add_rule()

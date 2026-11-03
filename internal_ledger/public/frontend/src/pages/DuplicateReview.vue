@@ -1,5 +1,6 @@
 <script setup>
 import {ref, computed, onMounted} from 'vue';
+import TransactionEvidence from '../components/TransactionEvidence.vue';
 import {errorMessage} from '../api';
 import {directions, sources, processingStatuses} from '../labels';
 const props = defineProps({canWrite: Boolean, batch: String, transaction: String});
@@ -63,20 +64,20 @@ onMounted(async () => { try { await refresh(); } catch (e) { error.value = error
       </template>
     </div>
     <article v-for="item in pagedItems" :key="item.candidate.name" class="ledger-card">
-      <h3>{{ item.candidate.name }} · {{ statuses[item.candidate.duplicate_review_status] }}</h3>
+      <h3>{{ item.candidate.counterparty || '未提供交易对象' }} · {{ item.candidate.amount }} · {{ item.candidate.occurred_at }} · {{ statuses[item.candidate.duplicate_review_status] }}</h3>
       <p>匹配依据：{{ item.candidate.duplicate_match_reason || '来源、时间、金额、方向、交易对象、摘要与资金账户的稳定指纹相同' }}</p>
       <div class="duplicate-evidence">
         <div v-for="side in ['candidate', 'original']" :key="side" class="ledger-detail">
           <h4>{{ side === 'candidate' ? '重复候选' : '原流水' }}</h4>
-          <dl><dt>流水编号</dt><dd>{{ item[side].name }}</dd><dt>导入批次</dt><dd>{{ item[side].import_batch }}</dd>
-            <dt>来源 / 时间</dt><dd>{{ sources[item[side].source] || '未知来源' }} / {{ item[side].occurred_at }}</dd>
-            <template v-if="canWrite && item[side].source_id"><dt>来源单号</dt><dd>{{ item[side].source_id }}</dd></template>
+          <dl><dt>来源 / 时间</dt><dd>{{ sources[item[side].source] || '未知来源' }} / {{ item[side].occurred_at }}</dd>
             <dt>交易对象</dt><dd>{{ item[side].counterparty }}</dd><dt>摘要</dt><dd>{{ item[side].summary }}</dd>
             <dt>方向 / 金额</dt><dd>{{ directions[item[side].direction] || '未知方向' }} / {{ item[side].amount }}</dd>
             <dt>资金科目</dt><dd>{{ item[side].payment_account }}</dd></dl>
+          <details><summary>技术信息</summary><p>流水编号：{{ item[side].name }}</p><p>导入批次：{{ item[side].import_batch }}</p><p v-if="canWrite && item[side].source_id">来源单号：{{ item[side].source_id }}</p></details>
+          <TransactionEvidence :transaction="item[side].name" :can-write="canWrite" />
         </div>
       </div>
-      <p>关联原流水：<a :href="`/app/imported-transaction/${encodeURIComponent(item.original.name)}`">{{ item.original.name }}</a></p>
+      <p>关联原流水：<a :href="`/app/imported-transaction/${encodeURIComponent(item.original.name)}`">查看原流水</a></p>
       <dl v-if="item.candidate.duplicate_reviewed_at" class="ledger-detail"><dt>复核人 / 时间</dt><dd>{{ item.candidate.duplicate_reviewed_by }} / {{ item.candidate.duplicate_reviewed_at }}</dd><dt>复核备注</dt><dd>{{ item.candidate.duplicate_review_note }}</dd></dl>
       <template v-if="canWrite && item.candidate.duplicate_review_status === 'Pending'">
         <label :for="`note-${item.candidate.name}`">复核备注（保留并入账时必填）</label>

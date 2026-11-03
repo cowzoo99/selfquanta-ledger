@@ -1,5 +1,5 @@
 <script setup>
-import {ref, reactive, computed, onMounted} from 'vue';
+import {ref, reactive, computed, onMounted, watch} from 'vue';
 import Dashboard from './pages/Dashboard.vue';
 import ImportPreview from './pages/ImportPreview.vue';
 import ReviewCenter from './pages/ReviewCenter.vue';
@@ -22,7 +22,10 @@ const canWrite = frappe.session.user === 'Administrator' || frappe.user_roles.in
 const navigation = [['dashboard', '业务总览'], ['import', '文件智能导入'], ['review', '待办中心'], ['accounting', '会计中心'], ...(canWrite ? [['members', '企业成员']] : [])];
 const page = computed(() => navigation.some(entry => entry[0] === props.view) || ['duplicates', 'classification'].includes(props.view) ? props.view : 'dashboard');
 const taskPage = computed(() => ['duplicates', 'classification'].includes(page.value) ? 'review' : page.value);
-const reviewFilter = computed(() => page.value === 'classification' ? '待分类' : (props.filter || '待审核'));
+const reviewFilter = ref(page.value === 'classification' ? '待分类' : (props.filter || '待审核'));
+watch(() => [props.view, props.filter], () => {
+  reviewFilter.value = page.value === 'classification' ? '待分类' : (props.filter || '待审核');
+});
 const workflowStage = computed(() => {
   if (page.value === 'import') return 1;
   if (page.value === 'duplicates' || reviewFilter.value === '疑似重复') return 2;
@@ -65,8 +68,20 @@ async function refreshPage() {
     } catch (e) {
       Object.assign(classificationRun, {status: 'error', summary: null, error: '自动分类失败：' + errorMessage(e)});
     }
+  } else if (workflowStage.value === 3) {
+    try {
+      const response = await frappe.call({method: 'internal_ledger.api.review_api.get_latest_classification_run', type: 'GET'});
+      Object.assign(classificationRun, {status: 'success', summary: response.message.summary, error: ''});
+    } catch (e) {
+      Object.assign(classificationRun, {status: 'error', summary: null, error: '读取分类结果失败：' + errorMessage(e)});
+    }
   }
   return refresh();
+}
+function changeFilter(value) {
+  const previous = reviewFilter.value;
+  reviewFilter.value = value;
+  if (value === '待分类' && previous !== value) refreshPage();
 }
 async function changeLanguage() {
   savingLanguage.value = true; languageError.value = '';
@@ -103,8 +118,8 @@ onMounted(refreshPage);
       <ImportPreview v-else-if="page === 'import'" :can-write="canWrite" @imported="refresh" />
       <DuplicateReview v-else-if="page === 'duplicates'" :can-write="canWrite" :batch="batch" :transaction="transaction" @refresh="refresh" />
       <EnterpriseMembers v-else-if="page === 'members' && canWrite" :active="page === 'members'" />
-      <AccountingCenter v-else-if="page === 'accounting'" />
-      <ReviewCenter v-else :list="list" :classification-run="classificationRun" :can-write="canWrite" :initial-filter="reviewFilter" :initial-batch="batch" :initial-transaction="transaction" @refresh="refresh" />
+      <AccountingCenter v-else-if="page === 'accounting'" :items="workflowItems" :can-write="canWrite" />
+      <ReviewCenter v-else :list="list" :classification-run="classificationRun" :can-write="canWrite" :initial-filter="reviewFilter" :initial-batch="batch" :initial-transaction="transaction" @refresh="refresh" @filter-change="changeFilter" />
     </main>
   </div>
 </template>

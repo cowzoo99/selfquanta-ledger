@@ -353,6 +353,18 @@ def test_duplicate_review_is_one_item_per_page_with_previous_next_controls():
     _run_review_component_case("duplicate_pagination")
 
 
+def test_filter_navigation_and_viewer_classification_results():
+    _run_review_component_case("navigation_filter_consistency")
+
+
+def test_evidence_entry_points_preserve_transaction_identity():
+    _run_review_component_case("evidence_entry_points")
+
+
+def test_classification_failure_is_shown_without_technical_id():
+    _run_review_component_case("classification_failure_display")
+
+
 def test_accounting_center_exposes_drafts_formal_vouchers_and_general_ledger():
     _run_review_component_case("accounting_center")
 

@@ -12,19 +12,27 @@ PROCESSING_STATUSES = ("created", "manual", "conflict", "duplicate", "skipped", 
 
 def reconcile_unprepared_transactions() -> dict:
     require_ledger_admin()
-    rows = frappe.get_all("Imported Transaction", filters={"status": "Imported"},
-                          fields=["name", "duplicate_review_status"], order_by="creation")
-    drafted = set(frappe.get_all("Voucher Draft", pluck="imported_transaction"))
+    company = frappe.db.get_single_value("Internal Ledger Settings", "company")
+    if not company:
+        frappe.throw("请先设置当前账套公司")
+    batches = frappe.get_all("Import Batch", filters={"company": company}, pluck="name")
+    rows = frappe.get_all("Imported Transaction", filters={"status": "Imported", "import_batch": ["in", batches]},
+                          fields=["name", "duplicate_review_status"], order_by="creation") if batches else []
+    drafted = set(frappe.get_all("Voucher Draft", filters={"imported_transaction": ["in", [row.name for row in rows]]},
+                                pluck="imported_transaction")) if rows else set()
     names = [row.name for row in rows if row.name not in drafted
              and row.duplicate_review_status not in {"Pending", "Confirmed"}]
     outcomes = process_transactions(names)
     summary = {status: 0 for status in PROCESSING_STATUSES}
     for row in outcomes:
         summary[row["status"]] += 1
-    if outcomes:
-        result = ";".join(f"{key}:{summary[key]}" for key in PROCESSING_STATUSES)
-        record_audit("auto_classification_sweep", "Internal Ledger Settings",
-                     "Internal Ledger Settings", result)
+    run_id = uuid4().hex
+    for outcome in outcomes:
+        if outcome["status"] == "failed":
+            record_audit("auto_classification_failure", "Imported Transaction", outcome["name"], run_id)
+    result = ";".join([run_id] + [f"{key}:{summary[key]}" for key in PROCESSING_STATUSES])
+    record_audit("auto_classification_sweep", "Internal Ledger Settings",
+                 "Internal Ledger Settings", result)
     return {"outcomes": outcomes, "summary": summary}
 
 

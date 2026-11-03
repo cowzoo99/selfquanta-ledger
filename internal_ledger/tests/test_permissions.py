@@ -403,7 +403,7 @@ def test_private_source_is_immutable_and_viewer_cannot_list_or_download():
     from internal_ledger.api.evidence_api import delete_evidence_file, get_evidence, save_evidence, upload_evidence
 
     tx = frappe.db.get_value("Imported Transaction", {"import_batch": name}, "name")
-    save_evidence(tx, "导入凭据")
+    save_evidence(tx, "导入凭据", get_evidence(tx)["note_version"])
     with unittest.TestCase().assertRaises(frappe.PermissionError):
         delete_evidence_file(tx, attachment.name)
     info, = upload_evidence(tx, "复用原始文件.csv", encoded, "text/csv")["attachments"]

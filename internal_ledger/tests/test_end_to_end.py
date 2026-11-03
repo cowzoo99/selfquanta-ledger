@@ -400,7 +400,8 @@ def test_import_reconcile_evidence_review_and_post_end_to_end():
     for row in unmatched:
         assert not frappe.db.exists("Voucher Draft", {"imported_transaction": row.name})
 
-    saved = save_evidence(original.name, "<p>合同已核对</p><table><tr><td>编号</td></tr></table>")
+    saved = save_evidence(original.name, "<p>合同已核对</p><table><tr><td>编号</td></tr></table>",
+                          get_evidence(original.name)["note_version"])
     assert "合同已核对" in saved["note_html"] and "<table" in saved["note_html"]
     png = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=")
     uploaded = upload_evidence(original.name, "回单.png", base64.b64encode(png).decode("ascii"), "image/png")
@@ -420,7 +421,7 @@ def test_import_reconcile_evidence_review_and_post_end_to_end():
     assert snapshot["docstatus"] == 1 and len(gl) == 2
     assert Decimal(str(snapshot["total_debit"])) == Decimal("12.50")
     assert snapshot["total_debit"] == snapshot["total_credit"]
-    save_evidence(original.name, "<p>过账后补充说明</p>")
+    save_evidence(original.name, "<p>过账后补充说明</p>", get_evidence(original.name)["note_version"])
     late = upload_evidence(original.name, "补充说明.txt", base64.b64encode("补充凭据".encode()).decode(), "text/plain")
     late_info = next(row for row in late["attachments"] if row["name"] != info["name"])
     final = delete_evidence_file(original.name, late_info["name"])

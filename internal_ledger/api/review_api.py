@@ -41,6 +41,32 @@ def _transaction_values(tx):
     return values
 
 
+def _latest_classification_run():
+    from internal_ledger.accounting.batch_workflow import PROCESSING_STATUSES
+
+    company = frappe.db.get_single_value("Internal Ledger Settings", "company")
+    if not company:
+        return None, set()
+    events = frappe.get_all("Internal Ledger Audit Event", filters={"company": company,
+        "action": "auto_classification_sweep"}, fields=["result"], order_by="creation desc, name desc", limit=1)
+    if not events:
+        return None, set()
+    parts = events[0].result.split(";")
+    values = dict(part.split(":", 1) for part in parts if ":" in part)
+    summary = {key: int(values.get(key, 0)) for key in PROCESSING_STATUSES}
+    run_id = parts[0] if ":" not in parts[0] else ""
+    failed = set(frappe.get_all("Internal Ledger Audit Event", filters={"company": company,
+        "action": "auto_classification_failure", "result": run_id}, pluck="reference_name")) if run_id else set()
+    return summary, failed
+
+
+@frappe.whitelist(methods=["GET", "POST"])
+def get_latest_classification_run():
+    frappe.has_permission("Imported Transaction", ptype="read", throw=True)
+    summary, _ = _latest_classification_run()
+    return {"summary": summary}
+
+
 @frappe.whitelist(methods=["GET", "POST"])
 def get_review_item(name: str):
     doc = _draft(name)
@@ -64,6 +90,7 @@ def get_review_item(name: str):
 
 @frappe.whitelist(methods=["GET", "POST"])
 def list_review_items():
+    _, failed = _latest_classification_run()
     items = [get_review_item(row.name) for row in frappe.get_list(
         "Voucher Draft", fields=["name"], order_by="creation desc", limit_page_length=0)]
     drafted = {item["transaction"]["name"] for item in items}
@@ -80,6 +107,8 @@ def list_review_items():
             error = None if result["status"] == "matched" else result["reason"]
         except frappe.ValidationError as exc:
             result, error = None, str(exc)
+        if tx.name in failed:
+            error = "生成失败，请检查流水权限、科目及会计期间后重试"
         items.append({"draft": None, "transaction": _transaction_values(tx), "classification": result,
                       "error": error, "can_approve": False,
                       "can_classify": result is None or result["status"] in {"unmatched", "conflict"}})

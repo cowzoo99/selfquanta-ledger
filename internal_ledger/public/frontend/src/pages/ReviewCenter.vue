@@ -6,7 +6,7 @@ import TransactionEvidence from '../components/TransactionEvidence.vue';
 import {call, errorMessage} from '../api';
 import {directions, sources, transactionTypes, draftStatuses, processingStatuses, classificationStatuses} from '../labels';
 const props = defineProps({list: {type: Object, required: true}, classificationRun: Object, canWrite: Boolean, initialFilter: String, initialBatch: String, initialTransaction: String});
-const emit = defineEmits(['refresh']);
+const emit = defineEmits(['refresh', 'filter-change']);
 const selected = ref([]), active = ref(null), busy = ref(false), error = ref(''), outcomes = ref([]), reason = ref('');
 const savedVersion = ref(''), filter = ref('待分类'), confirmation = ref('');
 const currentPage = ref(1), pageSize = 10;
@@ -143,7 +143,7 @@ async function postBatch() {
       <div><dt>失败</dt><dd>{{ classificationRun.summary.failed }}</dd></div>
     </dl>
     <p v-if="classificationRun?.error" role="alert">{{ classificationRun.error }}</p>
-    <div role="group" aria-label="审核状态筛选"><button v-for="label in filters" :key="label" :aria-pressed="filter === label" :disabled="busy" @click="filter = label">{{ label }}（{{ scopedItems.filter(item => stage(item) === label).length }}）</button></div>
+    <div role="group" aria-label="审核状态筛选"><button v-for="label in filters" :key="label" :aria-pressed="filter === label" :disabled="busy" @click="filter = label; emit('filter-change', label)">{{ label }}（{{ scopedItems.filter(item => stage(item) === label).length }}）</button></div>
     <button v-if="canWrite" :disabled="!canPreview" @click="confirmPosting">审核并过账选中项（{{ listReady ? selected.length : 0 }}）</button>
     <p v-if="list.status === 'loading'" role="status">正在载入…</p><p v-else-if="listReady && !visibleItems.length">当前筛选没有流水。</p>
     <p v-if="error && !active" role="alert">{{ error }}</p>

@@ -1,12 +1,13 @@
 import base64
 import binascii
+from hashlib import sha256
 from contextlib import ExitStack, contextmanager
 from pathlib import Path, PureWindowsPath
 from uuid import uuid4
 
 import frappe
 from frappe.core.doctype.file.utils import get_safe_file_name
-from frappe.utils import sanitize_html
+from internal_ledger.internal_ledger.doctype.ledger_evidence.ledger_evidence import clean_note
 
 from internal_ledger.permissions import (
     _EVIDENCE_FILE_WRITE, _EVIDENCE_WRITE, record_audit, require_ledger_admin,
@@ -91,7 +92,11 @@ def _serialize_evidence(evidence):
             row.extension = Path(row.file_name).suffix.lower()
             row.is_image = row.extension in IMAGE_EXTENSIONS
     return {"name": evidence.name, "transaction": evidence.imported_transaction,
-            "note_html": sanitize_html(evidence.note_html or "", always_sanitize=True), "attachments": files}
+            "note_html": clean_note(evidence.note_html), "note_version": _note_version(evidence), "attachments": files}
+
+
+def _note_version(evidence):
+    return sha256((evidence.note_html or "").encode("utf-8")).hexdigest()
 
 
 @contextmanager
@@ -120,9 +125,11 @@ def get_evidence(tx_name: str) -> dict:
 
 
 @frappe.whitelist(methods=["POST"])
-def save_evidence(tx_name: str, note_html: str) -> dict:
+def save_evidence(tx_name: str, note_html: str, expected_version: str = None) -> dict:
     tx = _transaction(tx_name, write=True)
     evidence = _evidence(tx, write=True)
+    if expected_version != _note_version(evidence):
+        frappe.throw("备注已被其他人修改，请重新核对后再保存")
     with _audited_write(tx, "update_evidence_note"):
         evidence.note_html = note_html
         evidence.save()

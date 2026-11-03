@@ -3,6 +3,7 @@ import {ref, computed, watch, onBeforeUnmount} from 'vue';
 import {evidenceCall, errorMessage} from '../api';
 const props = defineProps({transaction: {type: String, required: true}, canWrite: Boolean});
 const editor = ref(null), note = ref(''), renderedNote = ref(''), attachments = ref([]);
+const noteVersion = ref('');
 const busy = ref(false), loading = ref(false), error = ref(''), notice = ref('');
 const ready = ref(false);
 const canEdit = computed(() => props.canWrite && ready.value && !busy.value && !loading.value);
@@ -12,12 +13,12 @@ const mimeTypes = {png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp
   txt: 'text/plain', csv: 'text/csv'};
 let generation = 0;
 function apply(data) {
-  note.value = data.note_html; renderedNote.value = data.note_html; attachments.value = data.attachments;
+  note.value = data.note_html; renderedNote.value = data.note_html; attachments.value = data.attachments; noteVersion.value = data.note_version;
   if (editor.value) editor.value.innerHTML = data.note_html;
 }
 async function load() {
   const request = ++generation;
-  note.value = ''; renderedNote.value = ''; attachments.value = []; error.value = ''; notice.value = ''; busy.value = false;
+  note.value = ''; renderedNote.value = ''; attachments.value = []; noteVersion.value = ''; error.value = ''; notice.value = ''; busy.value = false;
   loading.value = true; ready.value = false;
   try {
     const data = await evidenceCall('get_evidence', {tx_name: props.transaction});
@@ -70,7 +71,7 @@ async function write(method, args) {
   } catch (e) { if (request === generation) error.value = errorMessage(e); }
   finally { if (request === generation) busy.value = false; }
 }
-function save() { return write('save_evidence', {note_html: note.value}); }
+function save() { return write('save_evidence', {note_html: note.value, expected_version: noteVersion.value}); }
 function remove(attachment) { return write('delete_evidence_file', {attachment_name: attachment.name}); }
 async function upload(event) {
   const file = event.target.files?.[0];

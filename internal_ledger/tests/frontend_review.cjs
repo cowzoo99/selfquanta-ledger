@@ -40,13 +40,13 @@ function compile(file, realChildren = false) {
     if (name.endsWith('labels')) return labels;
     if (name.endsWith('api')) return new Function(fs.readFileSync(path.join(src, 'api.js'), 'utf8').replaceAll('export ', '') +
       '; return {call, evidenceCall: typeof evidenceCall === "function" ? evidenceCall : undefined, errorMessage};')();
-    if (realChildren && /\/(Dashboard|ReviewCenter|DuplicateReview|DraftLines|TransactionEvidence)\.vue$/.test(name)) {
+    if (realChildren && /\/(Dashboard|ReviewCenter|DuplicateReview|AccountingCenter|DraftLines|TransactionEvidence)\.vue$/.test(name)) {
       return compile(path.posix.normalize(path.posix.join(path.posix.dirname(file), name)), true);
     }
     return {name, render() {return Vue.h('test-child', {'data-component': name});}};
   });
   const template = compileTemplate({source: descriptor.template.content, filename: file, id: file,
-    compilerOptions: {mode: 'function', bindingMetadata: script.bindings}});
+    compilerOptions: {mode: 'function', hoistStatic: false, bindingMetadata: script.bindings}});
   assert.deepEqual(template.errors, []);
   component.render = new Function('Vue', template.code)(Vue);
   return component;
@@ -116,7 +116,7 @@ async function run(name) {
     page.app.unmount();
   } else if (['transaction_evidence_admin', 'transaction_evidence_viewer'].includes(name)) {
     const canWrite = name.endsWith('admin');
-    const evidence = (note = '<p>现有备注</p>') => ({note_html: note, attachments: [{name: 'file-one',
+    const evidence = (note = '<p>现有备注</p>') => ({note_html: note, note_version: 'version-one', attachments: [{name: 'file-one',
       file_name: '原始收据.png', file_url: '/private/files/unique.png', is_image: true}]});
     frappe.call = async args => {calls.push(args); return {message: evidence()};};
     global.FileReader = class {readAsDataURL() {this.result = 'data:image/png;base64,aGVsbG8='; this.onload();}};
@@ -132,6 +132,7 @@ async function run(name) {
       editor.innerHTML = '<p>新的备注</p>'; editor.props.onInput({target: editor});
       await page.state.save(); await settle();
       assert.equal(calls.find(row => row.method.endsWith('save_evidence')).args.note_html, '<p>新的备注</p>');
+      assert.equal(calls.find(row => row.method.endsWith('save_evidence')).args.expected_version, 'version-one');
       editor.innerHTML = '<p>尚未保存的备注</p>'; editor.props.onInput({target: editor});
       await page.state.upload({target: {files: [{name: '收据.png', type: 'image/png', size: 5}], value: 'x'}}); await settle();
       assert.equal(calls.find(row => row.method.endsWith('upload_evidence')).args.content_base64, 'aGVsbG8=');
@@ -150,6 +151,11 @@ async function run(name) {
       frappe.call = async args => {calls.push(args); return {message: evidence()};};
       await page.state.save();
       assert.ok(calls.at(-1).method.endsWith('save_evidence'), 'operation errors must not discard successful read readiness');
+      editor.innerHTML = '<p>尚未保存的冲突草稿</p>'; editor.props.onInput({target: editor});
+      frappe.call = async args => {calls.push(args); throw new Error('备注已被其他人修改，请重新核对后再保存');};
+      await page.state.save(); await settle();
+      assert.match(text(page.root), /备注已被其他人修改/);
+      assert.equal(page.state.note, '<p>尚未保存的冲突草稿</p>');
     } else {
       assert.doesNotMatch(text(page.root), /保存备注|上传附件|删除附件|插入 2×2 表格/);
       await page.state.save(); await page.state.remove(evidence().attachments[0]);
@@ -187,6 +193,64 @@ async function run(name) {
     review.state.open(row); await settle();
     assert.match(text(review.root), /备注与附件/);
     assert.equal(calls.at(-1).args.tx_name, 'tx-integrated'); review.app.unmount();
+  } else if (name === 'classification_failure_display') {
+    const row = {...item('private-random-id'), draft: null, can_classify: false,
+      classification: {status: 'matched', reason: '规则匹配'}, error: '生成失败，请检查流水权限、科目及会计期间后重试'};
+    frappe.call = async () => ({message: {note_html: '', note_version: 'v', attachments: []}});
+    const page = mount('pages/ReviewCenter.vue', {list: {status: 'success', data: [row]}, canWrite: false,
+      initialFilter: '待分类', classificationRun: {status: 'success', summary: {created: 0, manual: 0, conflict: 0, failed: 1}}}, true);
+    await settle();
+    const list = descendants(page.root).find(el => el.props.class === 'ledger-items');
+    assert.match(text(list), /生成失败，请检查流水权限/);
+    assert.doesNotMatch(text(list), /tx-private-random-id/);
+    page.state.open(row); await settle();
+    assert.match(text(page.root), /生成失败，请检查流水权限/); page.app.unmount();
+  } else if (name === 'evidence_entry_points') {
+    const candidate = {...item('candidate').transaction, duplicate_review_status: 'Confirmed', status: 'Duplicate'};
+    const original = item('original').transaction;
+    frappe.call = async args => {
+      calls.push(args);
+      if (args.method.endsWith('list_duplicates')) return {message: [{candidate, original}]};
+      return {message: {note_html: `<p>${args.args?.tx_name || ''}</p>`, attachments: []}};
+    };
+    const duplicate = mount('pages/DuplicateReview.vue', {canWrite: false}, true); await settle();
+    assert.deepEqual(calls.filter(row => row.method.endsWith('get_evidence')).map(row => row.args.tx_name).sort(),
+      [candidate.name, original.name].sort());
+    const title = descendants(duplicate.root).find(el => el.type === 'h3');
+    assert.doesNotMatch(text(title), /tx-candidate/);
+    assert.match(text(duplicate.root), /技术信息/); duplicate.app.unmount();
+    calls = [];
+    const rows = [item('first'), item('second')];
+    const accounting = mount('pages/AccountingCenter.vue', {items: rows, canWrite: false}, true); await settle();
+    const buttons = descendants(accounting.root).filter(el => el.type === 'button' && text(el).includes('查看备注与附件'));
+    assert.equal(buttons.length, 2); buttons[1].props.onClick(); await settle();
+    assert.equal(calls.find(row => row.method.endsWith('get_evidence')).args.tx_name, rows[1].transaction.name);
+    assert.doesNotMatch(text(accounting.root), /保存备注|上传附件/); accounting.app.unmount();
+  } else if (name === 'navigation_filter_consistency') {
+    const summary = {created: 0, manual: 1, conflict: 0, duplicate: 0, skipped: 0, failed: 1};
+    frappe.call = async args => {
+      calls.push(args);
+      if (args.method.endsWith('auto_classify_pending')) return {message: {summary}};
+      if (args.method.endsWith('get_latest_classification_run')) return {message: {summary}};
+      return {message: args.method.endsWith('list_review_items') ? [] : {month: '2026-10'}};
+    };
+    const page = mount('App.vue', {view: 'review'}, true); await settle();
+    const filter = label => descendants(page.root).find(el => el.type === 'button' && text(el).startsWith(label + '（'));
+    const writes = () => calls.filter(row => row.method.endsWith('auto_classify_pending')).length;
+    filter('待分类').props.onClick(); await settle();
+    assert.equal(page.state.workflowStage, 3);
+    assert.equal(writes(), 1, 'entering classification triggers one sweep');
+    await page.state.refreshPage(); await settle(); assert.equal(writes(), 2, 'refresh triggers exactly one sweep');
+    filter('待审核').props.onClick(); await settle(); assert.equal(page.state.workflowStage, 4);
+    await page.state.refreshPage(); await settle(); assert.equal(writes(), 2, 'refresh elsewhere does not sweep');
+    page.app.unmount();
+    calls = []; frappe.session.user = 'viewer'; frappe.user_roles = ['账务查看者'];
+    const viewer = mount('App.vue', {view: 'review'}, true); await settle();
+    descendants(viewer.root).find(el => el.type === 'button' && text(el).startsWith('待分类（')).props.onClick();
+    await settle(); await viewer.state.refreshPage(); await settle();
+    assert.equal(writes(), 0); assert.match(text(viewer.root), /失败\s*1/);
+    assert.ok(calls.some(row => row.method.endsWith('get_latest_classification_run')));
+    viewer.app.unmount();
   } else if (name === 'auto_classification') {
     const sweep = deferred(), summary = {created: 2, manual: 3, conflict: 1, duplicate: 0, skipped: 0, failed: 1};
     let pendingSweep = sweep.promise;
@@ -220,7 +284,7 @@ async function run(name) {
     const viewer = mount('App.vue', {view: 'review', filter: '待分类'}, true); await settle();
     await viewer.state.refreshPage(); await settle();
     assert.equal(writes(), 0, 'viewers never run a write sweep');
-    assert.ok(calls.every(row => /list_review_items|get_dashboard_counts/.test(row.method)));
+    assert.ok(calls.every(row => /list_review_items|get_dashboard_counts|get_latest_classification_run/.test(row.method)));
     viewer.app.unmount();
   } else if (name === 'classification_detail') {
     const rows = Array.from({length: 12}, (_, index) => ({...item(`abcde${index}`, 'fdtn-batch'),

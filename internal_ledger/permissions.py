@@ -262,7 +262,10 @@ class ProtectedLedgerFile:
             raise
 
     def _delete_file_on_disk(self):
-        if not self.file_url or not self._is_controlled_attachment():
+        controlled_hash = self.content_hash and frappe.get_all("File", filters={
+            "name": ["!=", self.name], "content_hash": self.content_hash,
+            "attached_to_doctype": ["in", ["Ledger Evidence", "Internal Ledger Source File"]]}, limit=1)
+        if not self.file_url or not (self._is_controlled_attachment() or controlled_hash):
             return super()._delete_file_on_disk()
         references = frappe.db.get_values("File", {"name": ["!=", self.name], "file_url": self.file_url},
                                           "file_url", pluck=True, for_update=True)
