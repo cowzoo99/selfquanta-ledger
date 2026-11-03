@@ -396,6 +396,31 @@ def test_posted_reads_preserve_lines_and_messages_without_save_validation():
     assert frappe.get_doc("Journal Entry", journal).docstatus == 1
 
 
+def test_rule_validation_failure_remains_manually_repairable_with_server_validation():
+    from internal_ledger.api.review_api import list_review_items
+    from internal_ledger.api.classification_api import classify_manually
+    from internal_ledger.tests.test_permissions import user
+
+    add_rule(credit_account=account("1001"))
+    name = transaction(payment_account=account("100201"))
+    item = next(row for row in list_review_items() if row["transaction"]["name"] == name)
+    assert item["classification"] is None and item["error"]
+    assert item.get("can_classify") is True
+    args = (name, "expense", account("560201"), account("100201"), "人工修复", 0)
+    viewer = user("账务查看者")
+    try:
+        frappe.set_user(viewer)
+        with unittest.TestCase().assertRaises(frappe.PermissionError):
+            classify_manually(*args)
+    finally:
+        frappe.set_user("Administrator")
+    with unittest.TestCase().assertRaisesRegex(frappe.ValidationError, "资金账户"):
+        classify_manually(name, "expense", account("560201"), account("1001"), "错误科目", 0)
+    doc = classify_manually(*args)
+    assert doc.status == "Draft" and doc.is_manual_override
+    assert frappe.db.count("Journal Entry") == frappe.flags.classification_journals
+
+
 def load_tests(loader, tests, pattern):
     return unittest.TestSuite(unittest.FunctionTestCase(test, setUp=set_up, tearDown=tear_down)
                               for name, test in sorted(globals().items()) if name.startswith("test_"))

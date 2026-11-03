@@ -6,7 +6,7 @@ import ReviewCenter from './pages/ReviewCenter.vue';
 import EnterpriseMembers from './pages/EnterpriseMembers.vue';
 import DuplicateReview from './pages/DuplicateReview.vue';
 import {call, errorMessage, setLanguage} from './api';
-const props = defineProps({view: {type: String, default: 'dashboard'}, filter: {type: String, default: ''}});
+const props = defineProps({view: {type: String, default: 'dashboard'}, filter: {type: String, default: ''}, batch: {type: String, default: ''}});
 const month = ref(frappe.datetime.get_today().slice(0, 7));
 const counts = ref(null), items = ref([]), loading = ref(false), error = ref('');
 const language = ref((frappe.boot?.lang || '').startsWith('zh') ? 'zh' : 'en');
@@ -59,7 +59,7 @@ onMounted(refresh);
       <ImportPreview v-else-if="page === 'import'" :can-write="canWrite" @imported="refresh" />
       <DuplicateReview v-else-if="page === 'duplicates'" :can-write="canWrite" @refresh="refresh" />
       <EnterpriseMembers v-else-if="page === 'members' && canWrite" :active="page === 'members'" />
-      <ReviewCenter v-else :items="items" :loading="loading" :can-write="canWrite" :initial-filter="reviewFilter" @refresh="refresh" />
+      <ReviewCenter v-else :items="items" :loading="loading" :can-write="canWrite" :initial-filter="reviewFilter" :initial-batch="batch" @refresh="refresh" />
     </main>
   </div>
 </template>

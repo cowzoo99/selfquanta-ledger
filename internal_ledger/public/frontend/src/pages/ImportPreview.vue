@@ -9,9 +9,9 @@ const upload = ref(null), busy = ref(false), error = ref(''), result = ref(null)
 const paymentAccounts = ref([]);
 const canConfirm = computed(() => props.canWrite && preview.value?.rows.length && !preview.value.errors.length && !busy.value);
 const remainingRoute = computed(() => {
-  const summary = result.value?.summary;
-  if (summary?.duplicate) return '/app/ledger-workbench/review/疑似重复';
-  return summary && (summary.manual || summary.conflict || summary.failed) ? '/app/ledger-workbench/review/待分类' : '';
+  const summary = result.value?.summary, batch = encodeURIComponent(result.value?.batch_name || '');
+  if (summary?.duplicate) return `/app/ledger-workbench/review/疑似重复/${batch}`;
+  return summary && (summary.manual || summary.conflict || summary.failed) ? `/app/ledger-workbench/review/待分类/${batch}` : '';
 });
 function invalidate() { preview.value = null; upload.value = null; result.value = null; }
 function choose(event) { file.value = event.target.files[0] || null; invalidate(); }
@@ -71,6 +71,7 @@ onMounted(async () => {
     <p v-if="error" role="alert">{{ error }}</p>
     <div v-if="result" role="status" aria-label="导入处理结果">
       <h3>导入完成 · {{ result.batch_name }}</h3>
+      <p>共 {{ result.summary.total }} 笔</p>
       <p>识别来源：{{ sources[result.detected_source] || '未知来源' }}</p>
       <dl class="ledger-counts">
         <div><dt>自动生成凭证草稿</dt><dd>{{ result.summary.created }}</dd></div>
@@ -79,7 +80,7 @@ onMounted(async () => {
         <div><dt>规则冲突</dt><dd>{{ result.summary.conflict }}</dd></div>
         <div><dt>处理失败</dt><dd>{{ result.summary.failed }}</dd></div>
       </dl>
-      <a v-if="result.summary.created" href="/app/ledger-workbench/review/待审核">查看自动生成的凭证</a>
+      <a v-if="result.summary.created" :href="`/app/ledger-workbench/review/待审核/${encodeURIComponent(result.batch_name)}`">查看自动生成的凭证</a>
       <a v-if="remainingRoute" :href="remainingRoute">处理剩余事项</a>
     </div>
     <template v-if="canWrite && preview">

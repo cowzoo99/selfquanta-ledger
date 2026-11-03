@@ -67,8 +67,10 @@ def classify_manually(tx_name, transaction_type, debit_account, credit_account, 
             if not rules:
                 frappe.get_doc({"doctype": "Classification Rule", "company": batch.company,
                     "kind": "counterparty", "value": tx.counterparty, "direction": tx.direction,
-                    "transaction_type": transaction_type, "debit_account": debit_account,
-                    "credit_account": credit_account, "enabled": 1}).insert()
+                    "transaction_type": transaction_type,
+                    "debit_account": debit_account if tx.direction == "expense" else None,
+                    "credit_account": credit_account if tx.direction == "income" else None,
+                    "is_learned": 1, "enabled": 1}).insert()
             current = classify(tx_name)
             if existing:
                 if (doc.classification_rule, doc.classification_reason) != (current.rule_name, current.reason):

@@ -81,7 +81,8 @@ def list_review_items():
         except frappe.ValidationError as exc:
             result, error = None, str(exc)
         items.append({"draft": None, "transaction": _transaction_values(tx), "classification": result,
-                      "error": error, "can_approve": False})
+                      "error": error, "can_approve": False,
+                      "can_classify": result is None or result["status"] in {"unmatched", "conflict"}})
     return sorted(items, key=lambda item: not bool(item["error"] or (
         item["draft"] and item["draft"]["status"] == "Rejected")))
 

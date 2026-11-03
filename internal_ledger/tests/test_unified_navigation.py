@@ -284,6 +284,41 @@ console.log('PASS: actual Desk script tolerates null routes, waits for native si
     assert result.returncode == 0, result.stdout + result.stderr
 
 
+def _run_review_component_case(name):
+    import subprocess
+
+    result = subprocess.run(["node", str(ROOT / "tests/frontend_review.cjs"), name], capture_output=True, text=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_review_batch_scope_matches_list_selection_and_confirmation():
+    _run_review_component_case("batch_scope")
+
+
+def test_review_refresh_preserves_exclusions_and_invalidates_confirmation():
+    _run_review_component_case("refresh_selection")
+
+
+def test_review_validation_error_opens_existing_manual_form_only_for_writers():
+    _run_review_component_case("validation_form")
+
+
+def test_pending_duplicate_card_and_review_queue_exclude_confirmed_history():
+    _run_review_component_case("pending_duplicates")
+
+
+def test_import_result_carries_batch_and_displays_total():
+    _run_review_component_case("import_scope_total")
+
+
+def test_import_result_displays_total_count():
+    _run_review_component_case("import_total")
+
+
+def test_workbench_route_passes_batch_through_cached_mount_and_app():
+    _run_review_component_case("route_scope")
+
+
 def load_tests(loader, tests, pattern):
     return unittest.TestSuite(unittest.FunctionTestCase(test, setUp=set_up, tearDown=tear_down)
                               for name, test in sorted(globals().items()) if name.startswith("test_"))

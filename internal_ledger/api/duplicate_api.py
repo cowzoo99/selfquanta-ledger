@@ -1,11 +1,12 @@
 from typing import Literal
+from uuid import uuid4
 
 import frappe
 
 from internal_ledger.accounting.batch_workflow import process_transactions
 from internal_ledger.api.review_api import _transaction_values
 from internal_ledger.importing.duplicate_review import resolve
-from internal_ledger.permissions import require_ledger_admin
+from internal_ledger.permissions import require_ledger_admin, record_audit
 
 
 @frappe.whitelist(methods=["GET", "POST"])
@@ -29,10 +30,21 @@ def resolve_duplicate(name: str, decision: Literal["confirm", "release"], note: 
     tx = frappe.get_doc("Imported Transaction", name)
     tx.check_permission("read")
     tx.check_permission("write")
-    tx = resolve(name, decision, frappe.session.user, note)
-    if decision == "release":
-        processing = process_transactions([tx.name])[0]
-    else:
-        processing = {"name": tx.name, "status": "duplicate", "draft": None,
-                      "message": "疑似或已确认重复，未进入分类制证"}
+    savepoint = "ledger_duplicate_processing_" + uuid4().hex
+    frappe.db.savepoint(savepoint)
+    try:
+        tx = resolve(name, decision, frappe.session.user, note)
+        if decision == "release":
+            processing = process_transactions([tx.name])[0]
+            record_audit("duplicate_release_processing", "Imported Transaction", tx.name, processing["status"])
+        else:
+            processing = {"name": tx.name, "status": "duplicate", "draft": None,
+                          "message": "疑似或已确认重复，未进入分类制证"}
+    except frappe.QueryDeadlockError:
+        raise
+    except Exception:
+        frappe.db.rollback(save_point=savepoint)
+        frappe.db.release_savepoint(savepoint)
+        raise
+    frappe.db.release_savepoint(savepoint)
     return {"transaction": tx.as_dict(), "processing": processing}

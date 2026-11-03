@@ -4,7 +4,7 @@
  "module": "Internal Ledger",
  "autoname": "hash",
  "engine": "InnoDB",
- "field_order": ["company", "kind", "value", "direction", "transaction_type", "debit_account", "credit_account", "priority", "enabled", "confirmed"],
+ "field_order": ["company", "kind", "value", "direction", "transaction_type", "debit_account", "credit_account", "priority", "enabled", "confirmed", "is_learned"],
  "fields": [
   {"fieldname": "company", "label": "Company", "fieldtype": "Link", "options": "Company", "reqd": 1},
   {"fieldname": "kind", "label": "Kind", "fieldtype": "Select", "options": "counterparty\nkeyword\nconfirmed_history", "reqd": 1},
@@ -15,6 +15,7 @@
   {"fieldname": "credit_account", "label": "Credit Account", "fieldtype": "Link", "options": "Account"},
   {"fieldname": "priority", "label": "Priority", "fieldtype": "Int", "default": "0", "description": "Informational only; never resolves conflicts within a matching layer."},
   {"fieldname": "enabled", "label": "Enabled", "fieldtype": "Check", "default": "1"},
+  {"fieldname": "is_learned", "label": "Learned Counterparty Rule", "fieldtype": "Check", "default": "0", "read_only": 1},
   {"fieldname": "confirmed", "label": "Confirmed History", "fieldtype": "Check", "default": "0"}
  ],
  "permissions": [

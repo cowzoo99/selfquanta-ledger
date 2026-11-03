@@ -176,7 +176,7 @@ def test_leaf_accounts_are_enabled_current_company_with_only_public_fields():
 def test_leaf_accounts_only_expose_numbered_chinese_chart_accounts():
     from internal_ledger.api.classification_api import list_leaf_accounts
 
-    english = frappe.get_doc({"doctype": "Account", "account_name": "Travel Expenses",
+    english = frappe.get_doc({"doctype": "Account", "account_name": "_Test SelfLedger English Travel Expenses",
         "company": frappe.flags.classification_company, "root_type": "Expense",
         "report_type": "Profit and Loss", "is_group": 0,
         "parent_account": frappe.db.get_value("Account", account("560201"), "parent_account")}).insert()
@@ -186,7 +186,7 @@ def test_leaf_accounts_only_expose_numbered_chinese_chart_accounts():
     assert {"1001", "100201", "560201", "560202", "5001", "5603", "3001"} <= {
         row["account_number"] for row in rows}
     assert {row["root_label"] for row in rows} <= {"资产", "负债", "所有者权益", "收入", "成本费用"}
-    assert frappe.get_doc("Account", english.name).account_name == "Travel Expenses"
+    assert frappe.get_doc("Account", english.name).account_name == "_Test SelfLedger English Travel Expenses"
 
 
 def test_api_accepts_only_six_fields_and_is_post_only():
@@ -331,6 +331,43 @@ def test_existing_exact_draft_checks_new_conflicting_rules_before_return():
             classify_manual(name)
         assert frappe.get_doc("Voucher Draft", doc.name).as_dict() == before
         frappe.delete_doc("Classification Rule", conflict.name)
+
+def test_learned_rules_follow_current_funding_account_for_expense_and_income():
+    from internal_ledger.accounting.batch_workflow import process_transactions
+
+    for direction, kind, business in (("expense", "expense", "560201"), ("income", "income", "5001")):
+        party = "跨资金账户学习" + direction
+        initial = transaction(counterparty=party, direction=direction)
+        fields = {"transaction_type": kind,
+                  "debit_account": account("1001") if direction == "income" else account(business),
+                  "credit_account": account(business) if direction == "income" else account("1001")}
+        doc = classify_manual(initial, **fields)
+        rule = frappe.get_doc("Classification Rule", doc.classification_rule)
+        later = transaction(counterparty=party, direction=direction, payment_account=account("100201"))
+        outcome = process_transactions([later])[0]
+        assert outcome["status"] == "created", outcome
+        assert rule.get("is_learned") == 1
+        assert not rule.get("debit_account" if direction == "income" else "credit_account")
+        learned = frappe.get_doc("Voucher Draft", outcome["draft"])
+        assert [(line.account, bool(line.debit), bool(line.credit)) for line in learned.lines] == [
+            (account("100201") if direction == "income" else account(business), True, False),
+            (account(business) if direction == "income" else account("100201"), False, True)]
+    assert frappe.db.count("Journal Entry") == frappe.flags.classification_journals
+
+
+def test_learning_schema_sync_preserves_unproven_historical_fixed_rules():
+    from internal_ledger.accounting.classifier import classify
+
+    old = add_rule(credit_account=account("1001"))
+    before = old.as_dict()
+    assert frappe.get_meta("Classification Rule", cached=False).has_field("is_learned")
+    old.reload()
+    assert not old.get("is_learned")
+    assert (old.debit_account, old.credit_account) == (before["debit_account"], before["credit_account"])
+    assert classify(transaction()).status == "matched"
+    with unittest.TestCase().assertRaisesRegex(frappe.ValidationError, "资金账户"):
+        classify(transaction(payment_account=account("100201")))
+
 
 def load_tests(loader, tests, pattern):
     return unittest.TestSuite(unittest.FunctionTestCase(test, setUp=set_up, tearDown=tear_down)

@@ -205,6 +205,47 @@ def test_migration_backfills_only_legacy_duplicates_idempotently():
     assert frappe.get_doc("Imported Transaction", original.name).as_dict() == original_before
 
 
+def test_release_persists_stable_manual_and_conflict_processing_audit():
+    from internal_ledger.api.duplicate_api import resolve_duplicate
+
+    for expected in ("manual", "conflict"):
+        if expected == "conflict":
+            add_rule()
+            add_rule(debit_account=account("560202"))
+        source_id = uuid4().hex
+        batch = save_batch("wechat", uuid4().hex, [
+            tx(source_id=source_id, payment_account=account("1001")),
+            tx(source_id=source_id, payment_account=account("1001"), raw_row=3)])
+        duplicate = frappe.get_doc("Imported Transaction", {"import_batch": batch, "status": "Duplicate"})
+        result = resolve_duplicate(duplicate.name, "release", "两笔独立交易")
+        assert result["processing"]["status"] == expected
+        events = frappe.get_all("Internal Ledger Audit Event", filters={
+            "action": "duplicate_release_processing", "reference_name": duplicate.name}, fields=["*"])
+        assert len(events) == 1
+        event = events[0]
+        assert (event.reference_doctype, event.result, event.actor, event.company) == (
+            "Imported Transaction", expected, "Administrator", frappe.flags.classification_company)
+        assert event.timestamp
+        assert duplicate.summary not in str(event)
+        assert "未匹配" not in str(event) and "冲突" not in str(event)
+
+
+def test_release_processing_audit_failure_rolls_back_release_and_draft():
+    from internal_ledger.api.duplicate_api import resolve_duplicate
+
+    add_rule()
+    _, duplicate = duplicate_pair()
+    before = duplicate.as_dict()
+    audit_count = frappe.db.count("Internal Ledger Audit Event")
+    with patch("internal_ledger.api.duplicate_api.record_audit", create=True,
+               side_effect=RuntimeError("audit unavailable")):
+        with unittest.TestCase().assertRaisesRegex(RuntimeError, "audit unavailable"):
+            resolve_duplicate(duplicate.name, "release", "独立交易")
+    assert frappe.get_doc("Imported Transaction", duplicate.name).as_dict() == before
+    assert not frappe.db.exists("Voucher Draft", {"imported_transaction": duplicate.name})
+    assert frappe.db.count("Internal Ledger Audit Event") == audit_count
+
+
 def load_tests(loader, tests, pattern):
     return unittest.TestSuite(unittest.FunctionTestCase(test, setUp=set_up, tearDown=tear_down)
                               for name, test in sorted(globals().items()) if name.startswith("test_"))
