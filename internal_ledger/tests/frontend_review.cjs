@@ -142,11 +142,37 @@ async function run(name) {
     assert.match(primaryListText, /办公用品商店0.*10\.00.*2026-10-01/);
     assert.match(primaryListText, /查看明细/);
     for (const label of ['上一页', '下一页']) assert.match(text(page.root), new RegExp(label));
+    page.state.open(page.state.pagedItems[1]); await Vue.nextTick();
+    page.props.list = {status: 'success', data: JSON.parse(JSON.stringify(rows))}; await Vue.nextTick();
+    assert.equal(page.state.active?.transaction.name, 'tx-abcde1', 'a replacement list restores the still-valid manual choice');
+    page.props.list = {status: 'loading'}; await Vue.nextTick();
+    assert.equal(page.state.active, null, 'ordinary refresh hides stale details');
+    page.props.list = {status: 'success', data: JSON.parse(JSON.stringify(rows))}; await Vue.nextTick();
+    assert.equal(page.state.active?.transaction.name, 'tx-abcde1', 'ordinary refresh restores the manual choice');
     page.props.classificationRun = {status: 'loading'}; await Vue.nextTick();
     assert.equal(page.state.active, null, 'a new sweep hides stale classification details');
     page.props.classificationRun = {status: 'success'}; await Vue.nextTick();
-    assert.equal(page.state.active?.transaction.name, 'tx-abcde0');
+    assert.equal(page.state.active?.transaction.name, 'tx-abcde1', 'a sweep restores the manual choice');
+    for (const change of ['removed', 'moved', 'prepared']) {
+      page.props.list = {status: 'success', data: JSON.parse(JSON.stringify(rows))}; await Vue.nextTick();
+      page.state.open(page.state.pagedItems[1]); await Vue.nextTick();
+      const updated = JSON.parse(JSON.stringify(rows));
+      if (change === 'removed') updated.splice(1, 1);
+      if (change === 'moved') updated.push(...updated.splice(1, 1));
+      if (change === 'prepared') updated[1].draft = item('prepared').draft;
+      page.props.list = {status: 'loading'}; await Vue.nextTick();
+      page.props.list = {status: 'success', data: updated}; await Vue.nextTick();
+      assert.equal(page.state.active?.transaction.name, 'tx-abcde0', `${change} selection falls back to the first actionable item on this page`);
+    }
+    page.props.list = {status: 'success', data: JSON.parse(JSON.stringify(rows))}; await Vue.nextTick();
     page.state.nextPage(); await Vue.nextTick(); assert.equal(page.state.active?.transaction.name, 'tx-abcde10');
+    page.state.open(page.state.pagedItems[1]); await Vue.nextTick();
+    page.props.list = {status: 'loading'}; await Vue.nextTick();
+    page.props.list = {status: 'success', data: JSON.parse(JSON.stringify(rows))}; await Vue.nextTick();
+    assert.equal(page.state.currentPage, 2, 'pending refresh preserves the current page');
+    assert.equal(page.state.active?.transaction.name, 'tx-abcde11', 'refresh restores a manual choice on the second page');
+    page.state.previousPage(); await Vue.nextTick();
+    assert.equal(page.state.active?.transaction.name, 'tx-abcde0', 'changing pages resets the manual choice');
     const draft = {...item('fdsc-draft'), classification: {status: 'matched', reason: '按交易摘要匹配'},
       draft: {...item('fdsc-draft').draft, name: 'fdsc-draft', imported_transaction: 'tx-abcde0', transaction_type: 'expense',
         classification_reason: '按交易摘要匹配', classification_rule: 'fdtn-rule', posting_date: '2026-10-01'}};

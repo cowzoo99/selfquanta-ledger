@@ -9,6 +9,7 @@ const emit = defineEmits(['refresh']);
 const selected = ref([]), active = ref(null), busy = ref(false), error = ref(''), outcomes = ref([]), reason = ref('');
 const savedVersion = ref(''), filter = ref('待分类'), confirmation = ref('');
 const currentPage = ref(1), pageSize = 10;
+let activeTransaction = '';
 const filters = ['疑似重复', '待分类', '待审核', '待过账', '已过账'];
 watch(() => props.initialFilter, value => { filter.value = filters.includes(value) ? value : '待分类'; }, {immediate: true});
 function duplicate(item) {
@@ -25,13 +26,18 @@ const scopedItems = computed(() => listReady.value ? props.list.data.filter(item
 const visibleItems = computed(() => scopedItems.value.filter(item => stage(item) === filter.value));
 const pageCount = computed(() => Math.max(1, Math.ceil(visibleItems.value.length / pageSize)));
 const pagedItems = computed(() => visibleItems.value.slice((currentPage.value - 1) * pageSize, currentPage.value * pageSize));
-function previousPage() { currentPage.value = Math.max(1, currentPage.value - 1); active.value = null; }
-function nextPage() { currentPage.value = Math.min(pageCount.value, currentPage.value + 1); active.value = null; }
-watch(() => [filter.value, props.initialBatch, props.initialTransaction], () => { currentPage.value = 1; });
-watch(pageCount, value => { currentPage.value = Math.min(currentPage.value, value); });
+function previousPage() { activeTransaction = ''; currentPage.value = Math.max(1, currentPage.value - 1); active.value = null; }
+function nextPage() { activeTransaction = ''; currentPage.value = Math.min(pageCount.value, currentPage.value + 1); active.value = null; }
+watch(() => [filter.value, props.initialBatch, props.initialTransaction], () => {
+  activeTransaction = ''; active.value = null; currentPage.value = 1;
+});
+watch(() => [pageCount.value, listReady.value], ([value, ready]) => {
+  if (ready) currentPage.value = Math.min(currentPage.value, value);
+});
 const editing = computed(() => props.canWrite && active.value?.draft?.status === 'Draft');
 const dirty = computed(() => active.value?.draft && JSON.stringify(active.value.draft) !== savedVersion.value);
 function open(item) {
+  activeTransaction = item.transaction.name;
   active.value = JSON.parse(JSON.stringify(item)); savedVersion.value = JSON.stringify(active.value.draft);
   reason.value = ''; error.value = '';
 }
@@ -79,7 +85,8 @@ const postingSummary = computed(() => {
 let initializedScope = '';
 watch(() => [filter.value, props.initialBatch, props.initialTransaction, props.list, props.canWrite], () => {
   confirmation.value = '';
-  active.value = null; savedVersion.value = '';
+  if (filter.value !== '待分类') active.value = null;
+  savedVersion.value = '';
   const scope = JSON.stringify([filter.value, props.initialBatch || '', props.initialTransaction || '']);
   const autoSelect = props.canWrite && filter.value === '待审核';
   if (!autoSelect || initializedScope !== scope) {
@@ -93,8 +100,11 @@ watch(() => [filter.value, props.initialBatch, props.initialTransaction, props.l
 watch(() => [pagedItems.value, props.classificationRun?.status], () => {
   if (filter.value !== '待分类') return;
   if (!listReady.value) { active.value = null; return; }
-  const first = pagedItems.value.find(item => ['unmatched', 'conflict'].includes(item.classification?.status) || item.can_classify);
-  if (first) open(first);
+  const actionable = pagedItems.value.filter(item => !item.draft &&
+    (['unmatched', 'conflict'].includes(item.classification?.status) || item.can_classify));
+  const next = actionable.find(item => item.transaction.name === activeTransaction) || actionable[0];
+  if (next) open(next);
+  else { activeTransaction = ''; active.value = null; }
 }, {immediate: true});
 const confirmationVersion = () => JSON.stringify([props.list.generation, props.initialBatch || '', props.initialTransaction || '', filter.value,
   selected.value.map(name => visibleItems.value.find(item => item.draft?.name === name))]);
