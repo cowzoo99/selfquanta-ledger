@@ -239,6 +239,51 @@ def test_import_duplicate_and_task_center_expose_one_continuous_workflow():
     assert "确认审核并过账" in review
 
 
+
+def test_desk_startup_waits_for_route_and_sidebar_before_redirect():
+    import subprocess
+
+    script = ROOT / "public/js/internal_ledger_desk.js"
+    harness = r"""
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const vm = require('node:vm');
+const source = fs.readFileSync(process.argv[1], 'utf8');
+function boot(pathname, route, ready) {
+  const events = {}, assigned = [], routed = [];
+  const context = {document: {}, window: {location: {pathname, assign: value => assigned.push(value)}},
+    frappe: {session: {user: 'Administrator'}, user_roles: [], app: ready ? {sidebar: {}} : {},
+      get_route: () => route, set_route: (...values) => routed.push(values),
+      router: {on: (name, fn) => {events[name] = fn;}}},
+    $: () => ({on: (name, fn) => {events[name] = fn;}}),
+    setInterval: fn => {events.tick = fn; return 1;}, clearInterval: () => {}};
+  vm.runInNewContext(source, context);
+  return {context, events, assigned, routed, setRoute: value => {route = value;}};
+}
+const startup = boot('/desk', null, false);
+assert.doesNotThrow(() => startup.events.app_ready());
+assert.doesNotThrow(() => startup.events.change());
+assert.doesNotThrow(() => startup.events.tick());
+assert.equal(startup.assigned.length, 0);
+startup.setRoute(['']);
+startup.events.tick();
+assert.equal(startup.assigned.length, 0, 'do not route while native Desk sidebar is uninitialized');
+startup.context.frappe.app.sidebar = {};
+startup.events.tick();
+assert.equal(startup.assigned[0], '/desk/ledger-workbench/dashboard');
+const form = boot('/desk/journal-entry/SYNTHETIC', null, true);
+assert.doesNotThrow(() => form.events.app_ready());
+assert.doesNotThrow(() => form.events.tick());
+assert.equal(form.assigned.length + form.routed.length, 0);
+const legacy = boot('/desk/setup/home', ['Workspaces', 'Home'], true);
+legacy.events.app_ready();
+assert.equal(JSON.stringify(legacy.routed[0]), JSON.stringify(['ledger-workbench', 'dashboard']));
+console.log('PASS: actual Desk script tolerates null routes, waits for native sidebar, preserves native form and strict home redirect');
+"""
+    result = subprocess.run(["node", "-e", harness, str(script)], capture_output=True, text=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 def load_tests(loader, tests, pattern):
     return unittest.TestSuite(unittest.FunctionTestCase(test, setUp=set_up, tearDown=tear_down)
                               for name, test in sorted(globals().items()) if name.startswith("test_"))

@@ -55,6 +55,18 @@ def list_enterprise_members() -> dict:
 @frappe.whitelist(methods=["POST"])
 def create_enterprise_member(first_name: str, email: str, temporary_password: str, confirm_password: str) -> dict:
     require_ledger_admin()
+    # Only this request boundary may restart its transaction after a database deadlock.
+    for attempt in range(3):
+        try:
+            return _create_enterprise_member(first_name, email, temporary_password, confirm_password)
+        except frappe.QueryDeadlockError:
+            frappe.db.rollback()
+            if attempt == 2:
+                raise
+
+
+def _create_enterprise_member(first_name: str, email: str, temporary_password: str, confirm_password: str) -> dict:
+    require_ledger_admin()
     company = _company(for_update=True)
     first_name, email = first_name.strip(), email.strip().lower()
     if not first_name:
@@ -64,7 +76,7 @@ def create_enterprise_member(first_name: str, email: str, temporary_password: st
     if not temporary_password:
         frappe.throw("请输入临时密码")
     validate_temporary_password(temporary_password, confirm_password, (first_name, "", "", email, None))
-    if frappe.db.exists("User", email):
+    if frappe.db.get_value("User", email, "name", for_update=True):
         frappe.throw("该登录邮箱已存在")
     savepoint = "member_create_" + uuid4().hex
     frappe.db.savepoint(savepoint)
@@ -81,6 +93,9 @@ def create_enterprise_member(first_name: str, email: str, temporary_password: st
         frappe.get_doc({"doctype": "User Permission", "user": user.name, "allow": "Company",
             "for_value": company, "apply_to_all_doctypes": 1}).insert(ignore_permissions=True)
         record_member_audit("create_enterprise_member", user.name, company)
+    except frappe.QueryDeadlockError:
+        # MariaDB has already invalidated the transaction and its savepoints.
+        raise
     except Exception:
         frappe.db.rollback(save_point=savepoint)
         raise

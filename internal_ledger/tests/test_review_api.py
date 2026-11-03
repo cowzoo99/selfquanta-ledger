@@ -374,6 +374,28 @@ def test_manual_override_rejects_database_equivalent_child_names():
     assert_duplicate_child_rejected("Manual", canonical_alias=True)
 
 
+
+def test_posted_reads_preserve_lines_and_messages_without_save_validation():
+    from internal_ledger.accounting.posting import post_draft
+    from internal_ledger.api.review_api import approve_draft, get_review_item, list_review_items, get_dashboard_counts
+
+    doc = approve_draft(draft().name)
+    journal = post_draft(doc.name)
+    before = frappe.get_doc("Voucher Draft", doc.name).as_dict()
+    messages = list(frappe.local.message_log or [])
+    audit_count = frappe.db.count("Internal Ledger Audit Event")
+    for _ in range(2):
+        item = get_review_item(doc.name)
+        assert item["error"] is None and not item["can_approve"]
+        assert item["draft"]["status"] == "Posted"
+        assert any(row["draft"] and row["draft"]["name"] == doc.name for row in list_review_items())
+        assert get_dashboard_counts("2026-10")["posted"] == 1
+        assert list(frappe.local.message_log or []) == messages
+    assert frappe.get_doc("Voucher Draft", doc.name).as_dict() == before
+    assert frappe.db.count("Internal Ledger Audit Event") == audit_count
+    assert frappe.get_doc("Journal Entry", journal).docstatus == 1
+
+
 def load_tests(loader, tests, pattern):
     return unittest.TestSuite(unittest.FunctionTestCase(test, setUp=set_up, tearDown=tear_down)
                               for name, test in sorted(globals().items()) if name.startswith("test_"))

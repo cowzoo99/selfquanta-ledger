@@ -308,8 +308,8 @@ def test_two_connections_post_once_and_reverse_once():
     from internal_ledger.accounting.classifier import classify
     from internal_ledger.accounting.drafts import create_draft
     from internal_ledger.accounting.posting import post_draft
-    from internal_ledger.accounting.reversal import reverse_posting
     from internal_ledger.api.review_api import approve_draft
+    from internal_ledger.api.posting_api import reverse_posting as reverse_request
     from internal_ledger.install import install_chart
     from internal_ledger.tests.test_classifier import add_rule
     from internal_ledger.tests.test_dedupe import tx
@@ -358,7 +358,7 @@ def test_two_connections_post_once_and_reverse_once():
     def reverse_one():
         barrier.wait(timeout=20)
         try:
-            name = reverse_posting(link_for(fixture[4]), "并发冲销")
+            name = reverse_request(link_for(fixture[4]), "并发冲销")
             frappe.db.commit()
             return "reversed", name
         except frappe.ValidationError:
@@ -520,6 +520,39 @@ def test_two_connections_interleave_post_and_reverse_without_deadlock():
     old_link = next(row for row in links if row.name == fixture[6])
     assert old_link.status == "Reversed" and old_link.reversal_journal_entry == reversed_name
     print("MIXED LOCK EVIDENCE", posted, reversed_name, "no deadlock; 2 unique links; 3 submitted JE")
+
+
+
+def test_reverse_request_retries_deadlock_in_its_owned_transaction():
+    from internal_ledger.api import posting_api
+
+    with patch.object(posting_api.reversal, "reverse_posting", side_effect=[
+        frappe.QueryDeadlockError("injected reversal deadlock"), "SYNTHETIC-RETRY-JE",
+    ]) as reverse:
+        with patch.object(frappe.db, "rollback") as rollback, patch.object(frappe.db, "commit") as commit:
+            assert posting_api.reverse_posting("synthetic-link", "synthetic reason") == "SYNTHETIC-RETRY-JE"
+            assert reverse.call_count == 2 and rollback.call_count == 1
+            commit.assert_not_called()
+
+
+def test_reverse_request_retry_exhaustion_preserves_deadlock():
+    from internal_ledger.api import posting_api
+
+    with patch.object(posting_api.reversal, "reverse_posting", side_effect=frappe.QueryDeadlockError("injected exhaustion")) as reverse:
+        with patch.object(frappe.db, "rollback") as rollback:
+            with unittest.TestCase().assertRaises(frappe.QueryDeadlockError):
+                posting_api.reverse_posting("synthetic-link", "synthetic reason")
+            assert reverse.call_count == rollback.call_count == 3
+
+
+def test_reverse_service_does_not_rollback_its_callers_transaction_on_deadlock():
+    from internal_ledger.accounting import reversal
+
+    with patch.object(reversal.frappe, "get_doc", side_effect=frappe.QueryDeadlockError("injected service deadlock")):
+        with patch.object(frappe.db, "rollback") as rollback:
+            with unittest.TestCase().assertRaises(frappe.QueryDeadlockError):
+                reversal.reverse_posting("synthetic-link", "synthetic reason")
+            rollback.assert_not_called()
 
 
 def load_tests(loader, tests, pattern):

@@ -568,7 +568,7 @@ def test_member_five_viewers_and_admin_preview_capacity_smoke():
         assert len({connection for connection, _ in results}) == 6
         counts = [result for _, result in results[:5]]
         assert all(row == counts[0] for row in counts)
-        assert counts[0] == {"month": "2026-10", "income": "0", "expense": "0",
+        assert counts[0] == {"latest_batch": None, "month": "2026-10", "income": "0", "expense": "0",
                              "pending_classification": 0, "pending_review": 0, "posted": 0}
         assert len(results[-1][1]["rows"]) == 3 and not results[-1][1]["errors"]
         frappe.db.rollback()
@@ -934,6 +934,40 @@ class PasswordSafeFunctionTestCase(unittest.FunctionTestCase):
         # Frappe enables traceback locals; security tests must never print credentials or reset keys.
         self._test_result.tb_locals = False
         super().setUp()
+
+
+
+def test_member_deadlock_preserves_original_error_without_invalid_savepoint_rollback():
+    from frappe.core.doctype.user.user import User
+
+    with patch.object(User, "insert", side_effect=frappe.QueryDeadlockError("injected member deadlock")):
+        with patch.object(frappe.db, "rollback", wraps=frappe.db.rollback) as rollback:
+            with unittest.TestCase().assertRaises(frappe.QueryDeadlockError):
+                from internal_ledger.api.member_api import _create_enterprise_member
+                _create_enterprise_member("Synthetic", f"deadlock-{uuid4().hex}@example.invalid", MEMBER_PASSWORD, MEMBER_PASSWORD)
+            rollback.assert_not_called()
+
+
+
+def test_member_request_retries_deadlock_in_its_owned_transaction():
+    from internal_ledger.api import member_api
+
+    expected = {"email": "synthetic@example.invalid"}
+    with patch.object(member_api, "_create_enterprise_member", side_effect=[frappe.QueryDeadlockError("injected"), expected]) as create:
+        with patch.object(frappe.db, "rollback") as rollback, patch.object(frappe.db, "commit") as commit:
+            assert create_member() == expected
+            assert create.call_count == 2 and rollback.call_count == 1
+            commit.assert_not_called()
+
+
+def test_member_request_retry_exhaustion_preserves_deadlock():
+    from internal_ledger.api import member_api
+
+    with patch.object(member_api, "_create_enterprise_member", side_effect=frappe.QueryDeadlockError("injected")) as create:
+        with patch.object(frappe.db, "rollback") as rollback:
+            with unittest.TestCase().assertRaises(frappe.QueryDeadlockError):
+                create_member()
+            assert create.call_count == rollback.call_count == 3
 
 
 def load_tests(loader, tests, pattern):

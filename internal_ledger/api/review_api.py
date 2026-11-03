@@ -47,11 +47,12 @@ def get_review_item(name: str):
     tx = frappe.get_doc("Imported Transaction", doc.imported_transaction)
     tx.check_permission("read")
     error = None
-    try:
-        # Runs the same current classification, company and full-line checks as save.
-        doc.validate()
-    except frappe.ValidationError as exc:
-        error = str(exc)
+    # Posted lines are immutable; the save-only state guard does not apply to reads.
+    if doc.status != "Posted":
+        try:
+            doc.validate()
+        except frappe.ValidationError as exc:
+            error = str(exc)
     values = doc.as_dict()
     for line in values["lines"]:
         account = frappe.get_doc("Account", line["account"])

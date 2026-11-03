@@ -2,6 +2,7 @@ const ledgerRoles = new Set(["账套管理员", "账务查看者"]);
 
 function redirectSetupHomeToLedger() {
   const route = frappe.get_route();
+  if (!Array.isArray(route) || !frappe.app?.sidebar) return false;
   const canUseLedger = frappe.session.user === "Administrator"
     || (frappe.user_roles || []).some((role) => ledgerRoles.has(role));
   const isLegacySetupHome = route[0] === "setup" && route[1] === "home";

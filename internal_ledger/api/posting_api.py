@@ -13,7 +13,14 @@ def post_draft(draft_name: str) -> str:
 @frappe.whitelist(methods=["POST"])
 def reverse_posting(posting_link: str, reason: str) -> str:
     require_ledger_admin()
-    return reversal.reverse_posting(posting_link, reason)
+    # This request owns the transaction; the accounting service never rolls back its caller.
+    for attempt in range(3):
+        try:
+            return reversal.reverse_posting(posting_link, reason)
+        except frappe.QueryDeadlockError:
+            frappe.db.rollback()
+            if attempt == 2:
+                raise
 
 
 @frappe.whitelist(methods=["POST"])
