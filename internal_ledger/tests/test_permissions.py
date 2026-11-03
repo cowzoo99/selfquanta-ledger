@@ -442,6 +442,44 @@ def test_private_source_is_immutable_and_viewer_cannot_list_or_download():
     print("SOURCE EVIDENCE", source.name, attachment.name, "admin download; viewer list/read/API+private URL denied")
 
 
+def test_case_variant_evidence_filename_cannot_authorize_source_download():
+    from frappe.utils.response import download_private_file
+    from werkzeug.exceptions import Forbidden
+    from werkzeug.wrappers import Request
+    from internal_ledger.api.evidence_api import upload_evidence
+    from internal_ledger.api.import_api import confirm_import, preview_import
+
+    source_bytes = fixture("bank")
+    encoded = base64.b64encode(source_bytes).decode()
+    preview = preview_import("bank", encoded, account("1001"))
+    batch = confirm_import("bank", encoded, account("1001"), preview["file_hash"])["batch_name"]
+    source = frappe.get_doc("Internal Ledger Source File", {"import_batch": batch})
+    tx = frappe.db.get_value("Imported Transaction", {"import_batch": batch}, "name")
+    filename = Path(source.raw_file).name.swapcase()
+    evidence_bytes = b"viewer-readable,not-original"
+    info, = upload_evidence(tx, filename, base64.b64encode(evidence_bytes).decode(), "text/csv")["attachments"]
+    assert info["file_name"] == filename
+
+    def read_private(url):
+        response = download_private_file(url)
+        try:
+            response.direct_passthrough = False
+            return response.get_data()
+        finally:
+            response.close()
+
+    frappe.set_user(user("账务查看者"))
+    with patch.object(frappe.local, "request", Request.from_values(), create=True):
+        assert read_private(info["file_url"]) == evidence_bytes
+        with unittest.TestCase().assertRaises(Forbidden):
+            assert read_private(source.raw_file) == source_bytes
+
+    # This equality uses tabFile.file_url's real database collation.
+    assert not frappe.db.exists("File", {"name": info["name"], "file_url": source.raw_file})
+    assert Path(source.raw_file).name.startswith("source-")
+    assert Path(info["file_url"]).name.startswith("evidence-")
+
+
 def test_native_reporting_and_balances_cannot_read_another_company():
     from internal_ledger.api.report_api import get_account_balance
     from internal_ledger.install import install_chart

@@ -269,6 +269,22 @@ def encoded(content):
     return base64.b64encode(content).decode("ascii")
 
 
+def private_blobs(filename):
+    return set(Path(frappe.get_site_path("private", "files")).glob("*" + filename))
+
+
+def test_long_unicode_display_name_survives_generated_storage_name():
+    from internal_ledger.api.evidence_api import upload_evidence
+
+    filename = "凭据" * 40 + ".txt"
+    content = uuid4().hex.encode()
+    info, = upload_evidence(transaction(), filename, encoded(content), "text/plain")["attachments"]
+    physical = Path(frappe.get_doc("File", info["name"]).get_full_path())
+    assert info["file_name"] == filename and physical.name.startswith("evidence-")
+    assert len(physical.name.encode()) <= 255 and physical.name.endswith("凭据.txt")
+    assert physical.read_bytes() == content
+
+
 def test_admin_saves_sanitized_note_private_attachment_and_audit():
     from internal_ledger.api import evidence_api as api
 
@@ -364,14 +380,13 @@ def test_audit_failure_preserves_note_attachment_and_blob():
 
     tx = transaction()
     filename = f"failed-{uuid4().hex}.txt"
-    failed_path = Path(frappe.get_site_path("private", "files", filename))
     with patch.object(api, "record_audit", side_effect=RuntimeError("audit unavailable")):
         for operation in (lambda: api.save_evidence(tx, "不能无审计保存"),
                           lambda: api.upload_evidence(tx, filename, encoded(uuid4().hex.encode()), "text/plain")):
             with unittest.TestCase().assertRaisesRegex(RuntimeError, "audit unavailable"):
                 operation()
             assert not frappe.db.exists("Ledger Evidence", {"imported_transaction": tx})
-        assert not failed_path.exists()
+        assert not private_blobs(filename)
     content = uuid4().hex.encode()
     saved = api.upload_evidence(tx, filename, encoded(content), "text/plain")
     info, = saved["attachments"]
@@ -379,7 +394,7 @@ def test_audit_failure_preserves_note_attachment_and_blob():
         with unittest.TestCase().assertRaisesRegex(RuntimeError, "audit unavailable"):
             api.delete_evidence_file(tx, info["name"])
     assert api.get_evidence(tx) == saved
-    assert failed_path.read_bytes() == content
+    assert Path(frappe.get_doc("File", info["name"]).get_full_path()).read_bytes() == content
 
 
 def test_failure_after_file_mutation_restores_database_audit_and_blob():
@@ -388,20 +403,19 @@ def test_failure_after_file_mutation_restores_database_audit_and_blob():
     tx = transaction()
     saved = api.save_evidence(tx, "原备注")
     filename = f"rollback-{uuid4().hex}.txt"
-    path = Path(frappe.get_site_path("private", "files", filename))
     content = uuid4().hex.encode()
     with patch.object(api, "_serialize_evidence", side_effect=RuntimeError("response failed")):
         with unittest.TestCase().assertRaisesRegex(RuntimeError, "response failed"):
             api.upload_evidence(tx, filename, encoded(content), "text/plain")
     assert api.get_evidence(tx) == saved
-    assert not path.exists()
+    assert not private_blobs(filename)
     assert not frappe.db.exists("Internal Ledger Audit Event", {"reference_name": tx, "action": "upload_evidence"})
     result = api.upload_evidence(tx, filename, encoded(content), "text/plain")
     with patch.object(api, "_serialize_evidence", side_effect=RuntimeError("response failed")):
         with unittest.TestCase().assertRaisesRegex(RuntimeError, "response failed"):
             api.delete_evidence_file(tx, result["attachments"][0]["name"])
     assert api.get_evidence(tx) == result
-    assert path.read_bytes() == content
+    assert Path(frappe.get_doc("File", result["attachments"][0]["name"]).get_full_path()).read_bytes() == content
     assert not frappe.db.exists("Internal Ledger Audit Event", {"reference_name": tx, "action": "delete_evidence"})
 
 
@@ -420,11 +434,11 @@ def test_invalid_same_name_jpeg_preserves_original_blob():
     doc = frappe.get_doc("File", saved["attachments"][0]["name"])
     path = Path(doc.get_full_path())
     original = path.read_bytes()
-    siblings = set(path.parent.glob(f"{path.stem}*"))
+    siblings = private_blobs(filename)
     with unittest.TestCase().assertRaises(UnidentifiedImageError):
         api.upload_evidence(tx, filename, encoded(b"\xff\xd8\xff\x00"), "image/jpeg")
     assert path.read_bytes() == original
-    assert set(path.parent.glob(f"{path.stem}*")) == siblings
+    assert private_blobs(filename) == siblings
     assert api.get_evidence(tx) == saved
 
 
@@ -468,11 +482,10 @@ def test_public_same_content_does_not_keep_rolled_back_private_blob():
     public = frappe.get_doc({"doctype": "File", "file_name": f"pub-{uuid4().hex}.txt",
                              "content": content, "is_private": 0}).insert()
     filename = f"priv-{uuid4().hex}.txt"
-    path = Path(frappe.get_site_path("private", "files", filename))
     with patch.object(api, "_serialize_evidence", side_effect=RuntimeError("response failed")):
         with unittest.TestCase().assertRaisesRegex(RuntimeError, "response failed"):
             api.upload_evidence(tx, filename, encoded(content), "text/plain")
-    assert not path.exists()
+    assert not private_blobs(filename)
     assert not frappe.db.exists("File", {"file_name": filename})
     assert Path(public.get_full_path()).read_bytes() == content
 
@@ -482,11 +495,10 @@ def test_failure_during_private_file_write_removes_partial_blob():
 
     tx = transaction()
     filename = f"partial-{uuid4().hex}.txt"
-    path = Path(frappe.get_site_path("private", "files", filename))
     with patch("frappe.core.doctype.file.file.os.fsync", side_effect=OSError("disk failure")):
         with unittest.TestCase().assertRaisesRegex(OSError, "disk failure"):
             api.upload_evidence(tx, filename, encoded(uuid4().hex.encode()), "text/plain")
-    assert not path.exists()
+    assert not private_blobs(filename)
     assert not frappe.db.exists("File", {"file_name": filename})
     assert not frappe.db.exists("Ledger Evidence", {"imported_transaction": tx})
 

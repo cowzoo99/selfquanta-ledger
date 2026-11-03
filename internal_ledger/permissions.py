@@ -1,4 +1,5 @@
 from pathlib import Path
+from uuid import uuid4
 
 import frappe
 from frappe.utils import cint, now_datetime
@@ -144,6 +145,16 @@ class ProtectedLedgerFile:
             # Native File can reuse a URL both during storage and after storage on a duplicate assignment.
             kwargs["ignore_existing_file_check"] = True
             self.flags.ignore_duplicate_entry_error = True
+            # URL authorization uses a case-insensitive collation. Reserve distinct storage names.
+            domain = "evidence" if self.attached_to_doctype == "Ledger Evidence" else "source"
+            prefix = f"{domain}-{uuid4().hex}-"
+            display_name = self.file_name
+            suffix_bytes = 255 - len(prefix)
+            self.file_name = prefix + display_name.encode("utf-8")[-suffix_bytes:].decode("utf-8", errors="ignore")
+            try:
+                return super().save_file(*args, **kwargs)
+            finally:
+                self.file_name = display_name
         if not self.is_new() and not self.is_remote_file:
             self._protect_shared_blob()
         return super().save_file(*args, **kwargs)
