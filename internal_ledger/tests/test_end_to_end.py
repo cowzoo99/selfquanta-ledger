@@ -347,6 +347,127 @@ def test_real_three_source_workflow_balances_audit_and_source_trace():
           "18 GL; cash delta=2857.50; 3 duplicates; 31 audit events; viewer reads; 4 reports")
 
 
+def test_import_reconcile_evidence_review_and_post_end_to_end():
+    from frappe.handler import download_file
+    from frappe.utils.response import download_private_file
+    from werkzeug.exceptions import Forbidden
+    from werkzeug.wrappers import Request
+    from internal_ledger.api.evidence_api import (delete_evidence_file, get_evidence,
+                                                 save_evidence, upload_evidence)
+    from internal_ledger.api.import_api import confirm_import, preview_import
+    from internal_ledger.api.posting_api import approve_and_post
+    from internal_ledger.api.review_api import auto_classify_pending, get_review_item
+
+    admin, viewer = user("账套管理员"), user("账务查看者")
+    frappe.set_user(admin)
+    content = fixture("bank")
+    encoded = base64.b64encode(content).decode("ascii")
+    payment = account("1001")
+    preview = preview_import("bank", encoded, payment)
+    assert len(preview["rows"]) == 3 and not preview["errors"]
+    imported = confirm_import("bank", encoded, payment, preview["file_hash"])
+    assert imported["summary"] == {"total": 3, "created": 0, "duplicate": 0,
+                                   "manual": 3, "conflict": 0, "failed": 0}
+    rows = frappe.get_all("Imported Transaction", filters={"import_batch": imported["batch_name"]},
+                          fields=["*"], order_by="raw_row")
+    original, *unmatched = rows
+    repeated = confirm_import("bank", encoded, payment, preview["file_hash"])
+    assert repeated["summary"] == {"total": 3, "created": 0, "duplicate": 3,
+                                   "manual": 0, "conflict": 0, "failed": 0}
+    candidates = frappe.get_all("Imported Transaction", filters={"import_batch": repeated["batch_name"]},
+                                fields=["*"], order_by="raw_row")
+    assert len(candidates) == 3
+    for candidate, row in zip(candidates, rows):
+        assert candidate.status == "Duplicate" and candidate.duplicate_review_status == "Pending"
+        assert candidate.duplicate_of == row.name
+        assert_duplicate_excluded(candidate)
+
+    add_rule(value=original.counterparty)
+    before_journals = frappe.db.count("Journal Entry")
+    result = auto_classify_pending()
+    assert result["summary"]["created"] == 1 and result["summary"]["manual"] == 2
+    draft = frappe.get_doc("Voucher Draft", {"imported_transaction": original.name})
+    assert draft.status == "Draft"
+    assert sum(Decimal(str(row.debit)) for row in draft.lines) == Decimal("12.50")
+    assert sum(Decimal(str(row.credit)) for row in draft.lines) == Decimal("12.50")
+    assert auto_classify_pending()["summary"]["created"] == 0
+    assert frappe.db.count("Voucher Draft", {"company": frappe.flags.classification_company}) == 1
+    assert frappe.db.count("Journal Entry") == before_journals
+    assert not frappe.db.exists("Posting Link", {"voucher_draft": draft.name})
+    for candidate in candidates:
+        assert_duplicate_excluded(candidate)
+        assert frappe.db.get_value("Imported Transaction", candidate.name, "duplicate_review_status") == "Pending"
+    for row in unmatched:
+        assert not frappe.db.exists("Voucher Draft", {"imported_transaction": row.name})
+
+    saved = save_evidence(original.name, "<p>合同已核对</p><table><tr><td>编号</td></tr></table>")
+    assert "合同已核对" in saved["note_html"] and "<table" in saved["note_html"]
+    png = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=")
+    uploaded = upload_evidence(original.name, "回单.png", base64.b64encode(png).decode("ascii"), "image/png")
+    info, = uploaded["attachments"]
+    attached = frappe.get_doc("File", info["name"])
+    assert attached.is_private == 1 and attached.attached_to_name == saved["name"]
+    assert info["is_image"] is True and info["file_url"].startswith("/private/files/")
+    assert Path(attached.get_full_path()).read_bytes() == png
+    assert get_evidence(original.name) == uploaded
+    assert frappe.db.count("Journal Entry") == before_journals
+
+    posted = approve_and_post([draft.name])[0]
+    assert posted["status"] == "created"
+    journal = posted["journal_entry"]
+    snapshot = frappe.get_doc("Journal Entry", journal).as_dict()
+    gl = frappe.get_all("GL Entry", filters={"voucher_no": journal}, fields=["*"], order_by="name")
+    assert snapshot["docstatus"] == 1 and len(gl) == 2
+    assert Decimal(str(snapshot["total_debit"])) == Decimal("12.50")
+    assert snapshot["total_debit"] == snapshot["total_credit"]
+    save_evidence(original.name, "<p>过账后补充说明</p>")
+    late = upload_evidence(original.name, "补充说明.txt", base64.b64encode("补充凭据".encode()).decode(), "text/plain")
+    late_info = next(row for row in late["attachments"] if row["name"] != info["name"])
+    final = delete_evidence_file(original.name, late_info["name"])
+    assert final["note_html"] == "<p>过账后补充说明</p>" and final["attachments"] == [info]
+    assert frappe.get_doc("Journal Entry", journal).as_dict() == snapshot
+    assert frappe.get_all("GL Entry", filters={"voucher_no": journal}, fields=["*"], order_by="name") == gl
+    assert frappe.db.count("Journal Entry") == before_journals + 1
+    for action, count in (("update_evidence_note", 2), ("upload_evidence", 2), ("delete_evidence", 1)):
+        assert frappe.db.count("Internal Ledger Audit Event", {"actor": admin, "action": action,
+            "reference_name": original.name, "result": "success"}) == count
+
+    source = frappe.get_doc("Internal Ledger Source File", {"import_batch": imported["batch_name"]})
+    before = [frappe.db.count(doctype) for doctype in
+              ("Ledger Evidence", "File", "Voucher Draft", "Journal Entry", "Internal Ledger Audit Event")]
+    frappe.set_user(viewer)
+    try:
+        assert get_review_item(draft.name)["draft"]["status"] == "Posted"
+        assert get_evidence(original.name) == final
+        assert frappe.has_permission("File", "read", info["name"])
+        with patch.object(frappe.local, "request", Request.from_values(), create=True):
+            response = download_private_file(info["file_url"])
+            try:
+                response.direct_passthrough = False
+                assert response.get_data() == png
+            finally:
+                response.close()
+        for operation in (lambda: save_evidence(original.name, "越权"),
+                          lambda: upload_evidence(original.name, "禁止.txt", encoded, "text/plain"),
+                          lambda: delete_evidence_file(original.name, info["name"]),
+                          auto_classify_pending, lambda: approve_and_post([draft.name]),
+                          lambda: frappe.get_list("Internal Ledger Source File"),
+                          lambda: source.check_permission("read"),
+                          lambda: download_file(source.raw_file)):
+            with unittest.TestCase().assertRaises(frappe.PermissionError):
+                operation()
+        with unittest.TestCase().assertRaises(Forbidden):
+            download_private_file(source.raw_file)
+        assert get_evidence(original.name) == final
+    finally:
+        frappe.set_user("Administrator")
+    assert [frappe.db.count(doctype) for doctype in
+            ("Ledger Evidence", "File", "Voucher Draft", "Journal Entry", "Internal Ledger Audit Event")] == before
+    assert frappe.get_doc("Journal Entry", journal).as_dict() == snapshot
+    print("E2E CLASSIFICATION EVIDENCE: bank fixture; 3 pending duplicates; 1 balanced draft; "
+          "explicit admin posting; post-posting evidence immutable JE/GL; viewer read/download only")
+
+
 def load_tests(loader, tests, pattern):
     def test_site_set_up():
         assert frappe.local.site == "test.localhost", "Synthetic accounting acceptance requires the isolated test site"
