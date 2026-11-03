@@ -1,28 +1,35 @@
 <script setup>
-import {ref, watch, onBeforeUnmount} from 'vue';
+import {ref, computed, watch, onBeforeUnmount} from 'vue';
 import {evidenceCall, errorMessage} from '../api';
 const props = defineProps({transaction: {type: String, required: true}, canWrite: Boolean});
 const editor = ref(null), note = ref(''), renderedNote = ref(''), attachments = ref([]);
 const busy = ref(false), loading = ref(false), error = ref(''), notice = ref('');
+const ready = ref(false);
+const canEdit = computed(() => props.canWrite && ready.value && !busy.value && !loading.value);
+const mimeTypes = {png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp', pdf: 'application/pdf',
+  doc: 'application/msword', docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  xls: 'application/vnd.ms-excel', xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  txt: 'text/plain', csv: 'text/csv'};
 let generation = 0;
 function apply(data) {
   note.value = data.note_html; renderedNote.value = data.note_html; attachments.value = data.attachments;
   if (editor.value) editor.value.innerHTML = data.note_html;
 }
-watch(() => props.transaction, async transaction => {
+async function load() {
   const request = ++generation;
   note.value = ''; renderedNote.value = ''; attachments.value = []; error.value = ''; notice.value = ''; busy.value = false;
-  loading.value = true;
+  loading.value = true; ready.value = false;
   try {
-    const data = await evidenceCall('get_evidence', {tx_name: transaction});
-    if (request === generation) apply(data);
+    const data = await evidenceCall('get_evidence', {tx_name: props.transaction});
+    if (request === generation) {apply(data); ready.value = true;}
   } catch (e) { if (request === generation) error.value = errorMessage(e); }
   finally { if (request === generation) loading.value = false; }
-}, {immediate: true});
+}
+watch(() => props.transaction, load, {immediate: true});
 onBeforeUnmount(() => {generation++;});
 function input(event) { note.value = event.target.innerHTML; notice.value = ''; }
 function format(kind) {
-  if (!props.canWrite || busy.value || loading.value) return;
+  if (!canEdit.value) return;
   const selection = window.getSelection();
   if (!selection.rangeCount || !editor.value.contains(selection.anchorNode) || !editor.value.contains(selection.focusNode)) return;
   const range = selection.getRangeAt(0), content = range.extractContents();
@@ -33,7 +40,7 @@ function format(kind) {
   note.value = editor.value.innerHTML;
 }
 function table() {
-  if (!props.canWrite || busy.value || loading.value) return;
+  if (!canEdit.value) return;
   editor.value.focus();
   const selection = window.getSelection();
   const range = selection.rangeCount && editor.value.contains(selection.anchorNode) && editor.value.contains(selection.focusNode)
@@ -50,7 +57,7 @@ function table() {
   selection.removeAllRanges(); selection.addRange(range); note.value = editor.value.innerHTML;
 }
 async function write(method, args) {
-  if (!props.canWrite || busy.value || loading.value) return;
+  if (!canEdit.value) return;
   const request = ++generation;
   busy.value = true; error.value = ''; notice.value = '';
   try {
@@ -67,7 +74,7 @@ function save() { return write('save_evidence', {note_html: note.value}); }
 function remove(attachment) { return write('delete_evidence_file', {attachment_name: attachment.name}); }
 async function upload(event) {
   const file = event.target.files?.[0];
-  if (!file || !props.canWrite || busy.value || loading.value) return;
+  if (!file || !canEdit.value) return;
   const request = generation;
   const warnings = [];
   if (!/\.(png|jpe?g|webp|pdf|docx?|xlsx?|txt|csv)$/i.test(file.name)) warnings.push('不支持的附件扩展名');
@@ -85,7 +92,7 @@ async function upload(event) {
     });
     if (request !== generation) return;
     const data = await evidenceCall('upload_evidence', {tx_name: props.transaction, filename: file.name,
-      content_base64: content, mime_type: file.type});
+      content_base64: content, mime_type: mimeTypes[file.name.split('.').pop().toLowerCase()] || file.type});
     if (request === generation) {attachments.value = data.attachments; notice.value = '附件已上传';}
   } catch (e) { if (request === generation) error.value = errorMessage(e); }
   finally { if (request === generation) busy.value = false; event.target.value = ''; }
@@ -97,23 +104,24 @@ async function upload(event) {
     <h3>备注与附件</h3>
     <p v-if="loading" role="status">正在载入备注与附件…</p>
     <p v-if="error" role="alert">{{ error }}</p><p v-if="notice" role="status">{{ notice }}</p>
-    <div v-if="canWrite" role="toolbar" aria-label="备注格式">
-      <button type="button" :disabled="busy || loading" @mousedown.prevent @click="format('bold')">加粗</button>
-      <button type="button" :disabled="busy || loading" @mousedown.prevent @click="format('list')">项目列表</button>
-      <button type="button" :disabled="busy || loading" @mousedown.prevent @click="table">插入 2×2 表格</button>
+    <button v-if="!ready && !loading && error" type="button" @click="load">重试</button>
+    <div v-if="canWrite && ready" role="toolbar" aria-label="备注格式">
+      <button type="button" :disabled="!canEdit" @mousedown.prevent @click="format('bold')">加粗</button>
+      <button type="button" :disabled="!canEdit" @mousedown.prevent @click="format('list')">项目列表</button>
+      <button type="button" :disabled="!canEdit" @mousedown.prevent @click="table">插入 2×2 表格</button>
     </div>
-    <div ref="editor" class="ledger-evidence-editor" role="textbox" aria-label="流水备注" aria-multiline="true"
-      :aria-readonly="!canWrite || busy || loading" :contenteditable="canWrite && !busy && !loading" v-html="renderedNote" @input="input" />
+    <div v-if="ready" ref="editor" class="ledger-evidence-editor" role="textbox" aria-label="流水备注" aria-multiline="true"
+      :aria-readonly="!canEdit" :contenteditable="canEdit" v-html="renderedNote" @input="input" />
     <template v-if="canWrite">
-      <button type="button" :disabled="busy || loading" @click="save">保存备注</button>
-      <label>上传附件<input type="file" accept=".png,.jpg,.jpeg,.webp,.pdf,.doc,.docx,.xls,.xlsx,.txt,.csv" :disabled="busy || loading" @change="upload"></label>
+      <button type="button" :disabled="!canEdit" @click="save">保存备注</button>
+      <label>上传附件<input type="file" accept=".png,.jpg,.jpeg,.webp,.pdf,.doc,.docx,.xls,.xlsx,.txt,.csv" :disabled="!canEdit" @change="upload"></label>
       <p>每笔最多 10 个附件，每个不超过 10 MiB；支持图片、PDF、Word、Excel、TXT、CSV。服务端最终校验文件。</p>
     </template>
     <ul class="ledger-evidence-attachments">
       <li v-for="attachment in attachments" :key="attachment.name">
         <template v-if="attachment.is_image"><p>图片预览</p><img :src="attachment.file_url" :alt="attachment.file_name" class="ledger-evidence-preview"></template>
         <a :href="attachment.file_url" download>{{ attachment.file_name }} · 下载</a>
-        <button v-if="canWrite" type="button" :disabled="busy || loading" @click="remove(attachment)">删除附件</button>
+        <button v-if="canWrite" type="button" :disabled="!canEdit" @click="remove(attachment)">删除附件</button>
       </li>
     </ul>
   </section>

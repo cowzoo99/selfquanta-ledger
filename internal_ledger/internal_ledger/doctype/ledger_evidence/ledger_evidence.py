@@ -10,4 +10,4 @@ class LedgerEvidence(Document):
         tx = frappe.get_doc("Imported Transaction", self.imported_transaction)
         tx.check_permission("read")
         self.company = document_company(tx)
-        self.note_html = sanitize_html(self.note_html or "")
+        self.note_html = sanitize_html(self.note_html or "", always_sanitize=True)

@@ -1,4 +1,5 @@
 import base64
+import json
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -53,6 +54,30 @@ def test_controlled_evidence_derives_company_and_sanitizes_note():
     assert "核对说明" in saved.note_html
     assert "<script>" not in saved.note_html
     assert evidence(note_html=None).note_html == ""
+
+
+def test_json_note_payload_is_sanitized_on_save():
+    from internal_ledger.api import evidence_api as api
+
+    tx = transaction()
+    payload = json.dumps({"note": "<img src=x onerror=alert(1)>"})
+    result = api.save_evidence(tx, payload)
+    assert "onerror" not in result["note_html"]
+    assert "onerror" not in frappe.db.get_value("Ledger Evidence", result["name"], "note_html")
+    table = "<table><tbody><tr><td>核对</td><td>金额</td></tr></tbody></table>"
+    assert "<table>" in api.save_evidence(tx, table)["note_html"]
+
+
+def test_existing_dirty_json_note_is_sanitized_before_api_read():
+    from internal_ledger.api import evidence_api as api
+
+    doc = evidence(note_html="原备注")
+    payload = json.dumps({"note": "<img src=x onerror=alert(1)>"})
+    frappe.db.set_value("Ledger Evidence", doc.name, "note_html", payload)
+    frappe.set_user(user("账务查看者"))
+    result = api.get_evidence(doc.imported_transaction)
+    assert "onerror" not in result["note_html"]
+    assert frappe.db.get_value("Ledger Evidence", doc.name, "note_html") == payload, "reads must not mutate stored notes"
 
 
 def test_ledger_admin_can_create_evidence_without_a_stored_company():

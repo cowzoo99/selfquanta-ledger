@@ -93,7 +93,28 @@ function item(id, batch = 'new', values = {}) {
     error: null, can_approve: true};
 }
 async function run(name) {
-  if (['transaction_evidence_admin', 'transaction_evidence_viewer'].includes(name)) {
+  if (name === 'transaction_evidence_retry') {
+    let fail = true;
+    frappe.call = async args => {
+      calls.push(args);
+      if (fail) throw new Error('暂时无法读取证据');
+      return {message: {note_html: '<p>重要原备注</p>', attachments: []}};
+    };
+    const page = mount('components/TransactionEvidence.vue', {transaction: 'tx-retry', canWrite: true}); await settle();
+    assert.match(text(page.root), /暂时无法读取证据/);
+    const save = () => descendants(page.root).find(el => el.type === 'button' && text(el) === '保存备注');
+    assert.equal(save().props.disabled, true, 'a failed read must never unlock an empty-note save');
+    assert.equal(descendants(page.root).find(el => el.props.role === 'textbox')?.props.contenteditable, undefined, 'failed reads do not show an editable blank note');
+    await page.state.save(); await page.state.remove({name: 'file-one'});
+    await page.state.upload({target: {files: [{name: 'data.csv', type: '', size: 5}]}});
+    assert.equal(calls.length, 1, 'all writes remain blocked until a successful read');
+    fail = false;
+    const retry = descendants(page.root).find(el => el.type === 'button' && text(el) === '重试');
+    assert.ok(retry); await retry.props.onClick(); await settle();
+    assert.equal(page.state.note, '<p>重要原备注</p>'); assert.equal(save().props.disabled, false);
+    await page.state.save(); assert.equal(calls.at(-1).args.note_html, '<p>重要原备注</p>');
+    page.app.unmount();
+  } else if (['transaction_evidence_admin', 'transaction_evidence_viewer'].includes(name)) {
     const canWrite = name.endsWith('admin');
     const evidence = (note = '<p>现有备注</p>') => ({note_html: note, attachments: [{name: 'file-one',
       file_name: '原始收据.png', file_url: '/private/files/unique.png', is_image: true}]});
@@ -114,6 +135,10 @@ async function run(name) {
       editor.innerHTML = '<p>尚未保存的备注</p>'; editor.props.onInput({target: editor});
       await page.state.upload({target: {files: [{name: '收据.png', type: 'image/png', size: 5}], value: 'x'}}); await settle();
       assert.equal(calls.find(row => row.method.endsWith('upload_evidence')).args.content_base64, 'aGVsbG8=');
+      for (const type of ['', 'application/vnd.ms-excel']) {
+        await page.state.upload({target: {files: [{name: 'data.CSV', type, size: 5}], value: 'x'}});
+        assert.equal(calls.at(-1).args.mime_type, 'text/csv', 'CSV MIME follows the service contract, independent of browser hints');
+      }
       assert.equal(page.state.note, '<p>尚未保存的备注</p>', 'upload must preserve unsaved note edits');
       await page.state.remove(evidence().attachments[0]);
       assert.equal(page.state.note, '<p>尚未保存的备注</p>', 'deletion must preserve unsaved note edits');
@@ -122,6 +147,9 @@ async function run(name) {
       frappe.call = async args => {calls.push(args); throw new Error('服务端拒绝附件');};
       await page.state.upload({target: {files: [{name: '收据.png', type: 'image/png', size: 5}], value: 'x'}}); await settle();
       assert.match(text(page.root), /服务端拒绝附件/);
+      frappe.call = async args => {calls.push(args); return {message: evidence()};};
+      await page.state.save();
+      assert.ok(calls.at(-1).method.endsWith('save_evidence'), 'operation errors must not discard successful read readiness');
     } else {
       assert.doesNotMatch(text(page.root), /保存备注|上传附件|删除附件|插入 2×2 表格/);
       await page.state.save(); await page.state.remove(evidence().attachments[0]);

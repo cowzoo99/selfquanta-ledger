@@ -6,6 +6,7 @@ from uuid import uuid4
 
 import frappe
 from frappe.core.doctype.file.utils import get_safe_file_name
+from frappe.utils import sanitize_html
 
 from internal_ledger.permissions import (
     _EVIDENCE_FILE_WRITE, _EVIDENCE_WRITE, record_audit, require_ledger_admin,
@@ -90,7 +91,7 @@ def _serialize_evidence(evidence):
             row.extension = Path(row.file_name).suffix.lower()
             row.is_image = row.extension in IMAGE_EXTENSIONS
     return {"name": evidence.name, "transaction": evidence.imported_transaction,
-            "note_html": evidence.note_html or "", "attachments": files}
+            "note_html": sanitize_html(evidence.note_html or "", always_sanitize=True), "attachments": files}
 
 
 @contextmanager
