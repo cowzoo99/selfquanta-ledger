@@ -25,6 +25,30 @@ def prepare(names):
     return prepare_matched_transactions(names)
 
 
+def test_reconcile_unprepared_transactions_creates_only_matched_drafts_and_is_idempotent():
+    from internal_ledger.accounting.batch_workflow import reconcile_unprepared_transactions
+
+    add_rule()
+    matched = transaction()
+    unmatched = transaction(counterparty="未匹配商户")
+    conflict = transaction(counterparty="冲突商户")
+    add_rule(value="冲突商户")
+    add_rule(value="冲突商户", debit_account=account("560202"))
+
+    first = reconcile_unprepared_transactions()
+    assert first["summary"]["created"] == 1
+    assert first["summary"]["manual"] == 1
+    assert first["summary"]["conflict"] == 1
+    assert frappe.db.count("Voucher Draft", {"imported_transaction": matched}) == 1
+    assert not frappe.db.exists("Voucher Draft", {"imported_transaction": unmatched})
+    assert not frappe.db.exists("Voucher Draft", {"imported_transaction": conflict})
+
+    second = reconcile_unprepared_transactions()
+    assert second["summary"]["created"] == 0
+    assert frappe.db.count("Voucher Draft", {"imported_transaction": matched}) == 1
+    assert frappe.db.count("Journal Entry") == frappe.flags.classification_journals
+
+
 def test_process_transactions_reports_actionable_states_and_is_idempotent():
     from internal_ledger.accounting.batch_workflow import process_transactions
     add_rule()

@@ -119,6 +119,12 @@ def get_dashboard_counts(month: str | None = None):
 
 
 @frappe.whitelist(methods=["POST"])
+def auto_classify_pending():
+    from internal_ledger.accounting.batch_workflow import reconcile_unprepared_transactions
+    return reconcile_unprepared_transactions()
+
+
+@frappe.whitelist(methods=["POST"])
 def prepare_draft(tx_name: str):
     _write_permission()
     frappe.get_doc("Imported Transaction", tx_name).check_permission("read")

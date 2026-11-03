@@ -7,6 +7,27 @@ from internal_ledger.accounting.drafts import create_draft
 from internal_ledger.permissions import require_ledger_admin, record_audit
 
 
+PROCESSING_STATUSES = ("created", "manual", "conflict", "duplicate", "skipped", "failed")
+
+
+def reconcile_unprepared_transactions() -> dict:
+    require_ledger_admin()
+    rows = frappe.get_all("Imported Transaction", filters={"status": "Imported"},
+                          fields=["name", "duplicate_review_status"], order_by="creation")
+    drafted = set(frappe.get_all("Voucher Draft", pluck="imported_transaction"))
+    names = [row.name for row in rows if row.name not in drafted
+             and row.duplicate_review_status not in {"Pending", "Confirmed"}]
+    outcomes = process_transactions(names)
+    summary = {status: 0 for status in PROCESSING_STATUSES}
+    for row in outcomes:
+        summary[row["status"]] += 1
+    if outcomes:
+        result = ";".join(f"{key}:{summary[key]}" for key in PROCESSING_STATUSES)
+        record_audit("auto_classification_sweep", "Internal Ledger Settings",
+                     "Internal Ledger Settings", result)
+    return {"outcomes": outcomes, "summary": summary}
+
+
 def process_transactions(tx_names: list[str]) -> list[dict]:
     require_ledger_admin()
     frappe.has_permission("Voucher Draft", ptype="create", throw=True)

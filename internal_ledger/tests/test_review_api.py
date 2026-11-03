@@ -18,6 +18,18 @@ def set_up():
                         "year_end_date": "2026-12-31"}).insert()
 
 
+def test_viewer_cannot_trigger_auto_classification():
+    from internal_ledger.api.review_api import auto_classify_pending
+    from internal_ledger.tests.test_permissions import user
+
+    try:
+        frappe.set_user(user("账务查看者"))
+        with unittest.TestCase().assertRaises(frappe.PermissionError):
+            auto_classify_pending()
+    finally:
+        frappe.set_user("Administrator")
+
+
 def test_only_draft_can_be_approved():
     from internal_ledger.api.review_api import approve_draft
 
