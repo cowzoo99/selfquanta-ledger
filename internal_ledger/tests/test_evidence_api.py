@@ -15,6 +15,14 @@ def save_note(api, tx, note):
     return api.save_evidence(tx, note, api.get_evidence(tx)["note_version"])
 
 
+def legacy_file_share(name, actor):
+    ordinary = frappe.get_doc({"doctype": "File", "file_name": f"share-{uuid4().hex}.txt",
+        "content": uuid4().hex, "is_private": 1}).insert(ignore_permissions=True)
+    share = frappe.share.add("File", ordinary.name, actor, read=1, flags={"ignore_share_permission": True})
+    frappe.db.set_value("DocShare", share.name, "share_name", name)
+    return share.name
+
+
 def test_direct_evidence_insert_is_blocked():
     name = transaction()
     for actor in (user("账套管理员"), "Administrator"):
@@ -314,8 +322,8 @@ def test_source_owner_and_alias_do_not_bypass_current_read_permissions():
     actor = user("账务查看者")
     frappe.db.set_value("File", protected.name, "owner", actor)
     frappe.db.set_value("File", alias.name, {"owner": actor, "file_url": protected.file_url})
-    frappe.share.add("File", protected.name, actor, read=1, ignore_share_permission=True)
-    frappe.share.add("File", alias.name, actor, read=1, ignore_share_permission=True)
+    legacy_file_share(protected.name, actor)
+    legacy_file_share(alias.name, actor)
     frappe.set_user(actor)
     for file in (protected, alias):
         with unittest.TestCase().assertRaises(frappe.PermissionError):
@@ -326,15 +334,163 @@ def test_source_owner_and_alias_do_not_bypass_current_read_permissions():
         download_file(protected.file_url)
     with unittest.TestCase().assertRaises(Forbidden):
         download_private_file(protected.file_url)
-    for operation in (lambda: frappe.get_list("File", filters={"name": ["in", [protected.name, alias.name]]}, pluck="name"),
-                      lambda: client.get_value("File", "file_url", protected.name)):
-        with unittest.TestCase().assertRaises(frappe.PermissionError):
-            operation()
     frappe.set_user("Administrator")
-    for file in (protected, alias):
-        frappe.share.remove("File", file.name, actor)
+    from internal_ledger.permissions import cleanup_ledger_file_shares
+    cleanup_ledger_file_shares()
     frappe.set_user(actor)
     assert not frappe.get_list("File", filters={"name": ["in", [protected.name, alias.name]]}, pluck="name")
+    assert not client.get_value("File", "file_url", protected.name)
+
+
+def test_batch_zip_obeys_current_file_permissions_for_owner_share_and_alias():
+    from io import BytesIO
+    from zipfile import ZipFile
+    from frappe.handler import execute_cmd
+    from internal_ledger.api.evidence_api import upload_evidence
+    from internal_ledger.permissions import _SOURCE_INSERT
+
+    tx = transaction()
+    source = frappe.get_doc({"doctype": "Internal Ledger Source File",
+        "import_batch": frappe.db.get_value("Imported Transaction", tx, "import_batch")})
+    source.flags.source_insert = _SOURCE_INSERT
+    source.insert()
+    protected = frappe.get_doc({"doctype": "File", "file_name": f"source-{uuid4().hex}.txt",
+        "content": uuid4().hex, "is_private": 1, "attached_to_doctype": source.doctype,
+        "attached_to_name": source.name})
+    protected.flags.source_insert = _SOURCE_INSERT
+    protected.insert(ignore_permissions=True)
+    content = uuid4().hex.encode()
+    info = upload_evidence(tx, "佐证.txt", encoded(content), "text/plain")["attachments"][0]
+    alias = frappe.get_doc({"doctype": "File", "file_name": f"alias-{uuid4().hex}.txt",
+        "content": uuid4().hex, "is_private": 1}).insert(ignore_permissions=True)
+    viewer = user("账务查看者")
+    frappe.db.set_value("File", protected.name, "owner", viewer)
+    frappe.db.set_value("File", alias.name, {"owner": viewer, "file_url": protected.file_url})
+    for doc in (protected, alias):
+        legacy_file_share(doc.name, viewer)
+    frappe.set_user(viewer)
+    original_form, original_request = frappe.local.form_dict, getattr(frappe.local, "request", None)
+    try:
+        frappe.local.request = frappe._dict(method="POST")
+        for name in (protected.name, alias.name):
+            frappe.local.form_dict = frappe._dict(files=json.dumps([name]))
+            for endpoint in ("frappe.core.api.file.zip_files", "frappe.core.doctype.file.file.zip_files"):
+                with unittest.TestCase().assertRaises(frappe.PermissionError):
+                    execute_cmd(endpoint)
+            with unittest.TestCase().assertRaises(frappe.PermissionError):
+                frappe.get_doc("File", name).get_content()
+        frappe.local.form_dict = frappe._dict(files=json.dumps([info["name"]]))
+        execute_cmd("frappe.core.api.file.zip_files")
+        with ZipFile(BytesIO(frappe.response["filecontent"])) as archive:
+            assert archive.read("佐证.txt") == content
+        other = frappe.db.get_single_value("Internal Ledger Settings", "company")
+        frappe.db.set_single_value("Internal Ledger Settings", "company", "其他公司")
+        try:
+            with unittest.TestCase().assertRaises(frappe.PermissionError):
+                execute_cmd("frappe.core.api.file.zip_files")
+        finally:
+            frappe.db.set_single_value("Internal Ledger Settings", "company", other)
+    finally:
+        frappe.local.form_dict, frappe.local.request = original_form, original_request
+        frappe.set_user("Administrator")
+
+
+def test_controlled_file_and_alias_cannot_be_shared():
+    from frappe import client
+
+    protected = attachment(evidence().name, marked=True)
+    alias = frappe.get_doc({"doctype": "File", "file_name": f"alias-{uuid4().hex}.txt",
+        "content": Path(protected.get_full_path()).read_bytes(), "is_private": 1}).insert(ignore_permissions=True)
+    assert alias.file_url == protected.file_url
+    viewer = user("账务查看者")
+    for file in (protected, alias):
+        with unittest.TestCase().assertRaises(frappe.PermissionError):
+            frappe.share.add("File", file.name, viewer, read=1, flags={"ignore_share_permission": True})
+    ordinary = frappe.get_doc({"doctype": "File", "file_name": f"shareable-{uuid4().hex}.txt",
+        "content": uuid4().hex, "is_private": 1}).insert(ignore_permissions=True)
+    share = frappe.share.add("File", ordinary.name, viewer, read=1, flags={"ignore_share_permission": True})
+    with unittest.TestCase().assertRaisesRegex(frappe.PermissionError, "不能单独分享"):
+        client.set_value("DocShare", share.name, "share_name", protected.name)
+
+
+def test_native_deduplicated_alias_can_be_deleted_without_losing_evidence():
+    from frappe import client
+    from frappe.handler import download_file
+    from internal_ledger.api.evidence_api import upload_evidence
+
+    content = uuid4().hex.encode()
+    info = upload_evidence(transaction(), "佐证.txt", encoded(content), "text/plain")["attachments"][0]
+    protected = frappe.get_doc("File", info["name"])
+    viewer = user("账务查看者")
+    frappe.set_user(viewer)
+    alias = frappe.get_doc({"doctype": "File", "file_name": f"own-{uuid4().hex}.txt",
+        "content": content, "is_private": 1}).insert()
+    assert alias.file_url == protected.file_url and alias.content_hash == protected.content_hash
+    client.delete("File", alias.name)
+    assert not frappe.db.exists("File", alias.name)
+    assert frappe.db.exists("File", protected.name)
+    assert Path(protected.get_full_path()).read_bytes() == content
+    download_file(info["file_url"])
+    assert frappe.local.response.filecontent.encode() == content
+
+
+def test_unauthorized_deduplicated_source_alias_cannot_be_deleted():
+    from frappe import client
+    from internal_ledger.permissions import _SOURCE_INSERT
+
+    tx = transaction()
+    source = frappe.get_doc({"doctype": "Internal Ledger Source File",
+        "import_batch": frappe.db.get_value("Imported Transaction", tx, "import_batch")})
+    source.flags.source_insert = _SOURCE_INSERT
+    source.insert()
+    protected = frappe.get_doc({"doctype": "File", "file_name": f"source-{uuid4().hex}.txt",
+        "content": uuid4().hex, "is_private": 1, "attached_to_doctype": source.doctype,
+        "attached_to_name": source.name})
+    protected.flags.source_insert = _SOURCE_INSERT
+    protected.insert(ignore_permissions=True)
+    content = Path(protected.get_full_path()).read_bytes()
+    alias = frappe.get_doc({"doctype": "File", "file_name": f"alias-{uuid4().hex}.txt",
+        "content": content, "is_private": 1}).insert(ignore_permissions=True)
+    viewer = user("账务查看者")
+    frappe.db.set_value("File", alias.name, "owner", viewer)
+    frappe.set_user(viewer)
+    with unittest.TestCase().assertRaises(frappe.PermissionError):
+        client.delete("File", alias.name)
+    assert frappe.db.exists("File", alias.name)
+    assert Path(protected.get_full_path()).read_bytes() == content
+
+
+def test_migrate_removes_only_legacy_protected_file_shares():
+    from internal_ledger.permissions import _SOURCE_INSERT
+
+    tx = transaction()
+    source = frappe.get_doc({"doctype": "Internal Ledger Source File",
+        "import_batch": frappe.db.get_value("Imported Transaction", tx, "import_batch")})
+    source.flags.source_insert = _SOURCE_INSERT
+    source.insert()
+    protected = frappe.get_doc({"doctype": "File", "file_name": f"source-{uuid4().hex}.txt",
+        "content": uuid4().hex, "is_private": 1, "attached_to_doctype": source.doctype,
+        "attached_to_name": source.name})
+    protected.flags.source_insert = _SOURCE_INSERT
+    protected.insert(ignore_permissions=True)
+    alias = frappe.get_doc({"doctype": "File", "file_name": f"alias-{uuid4().hex}.txt",
+        "content": Path(protected.get_full_path()).read_bytes(), "is_private": 1}).insert(ignore_permissions=True)
+    viewer = user("账务查看者")
+    stale = [legacy_file_share(doc.name, viewer) for doc in (protected, alias)]
+    ordinary = frappe.get_doc({"doctype": "File", "file_name": f"own-{uuid4().hex}.txt",
+        "content": uuid4().hex, "is_private": 1}).insert(ignore_permissions=True)
+    frappe.db.set_value("File", ordinary.name, "owner", viewer)
+    valid = frappe.share.add("File", ordinary.name, viewer, read=1, flags={"ignore_share_permission": True})
+    hook = "internal_ledger.permissions.cleanup_ledger_file_shares"
+    assert hook in frappe.get_hooks("after_migrate")
+    frappe.get_attr(hook)()
+    frappe.get_attr(hook)()
+    assert all(not frappe.db.exists("DocShare", name) for name in stale)
+    assert frappe.db.exists("DocShare", valid.name)
+    frappe.set_user(viewer)
+    names = frappe.get_list("File", filters={"name": ["in", [ordinary.name, protected.name, alias.name]]}, pluck="name")
+    assert ordinary.name in names
+    assert not set(names) & {protected.name, alias.name}
 
 
 def test_ordinary_privacy_conversion_cannot_rebind_protected_same_hash():

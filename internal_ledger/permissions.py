@@ -76,10 +76,6 @@ def company_query(user=None, doctype=None):
 
 def file_query(user=None, doctype=None):
     user = user or frappe.session.user
-    # Frappe ORs explicit shares after query hooks; fail closed for stale unsafe shares.
-    for name in frappe.share.get_shared("File", user=user):
-        if frappe.db.exists("File", name) and not frappe.get_doc("File", name)._ledger_read_allowed(user):
-            frappe.throw("文件分享权限已失效，请联系管理员", frappe.PermissionError)
     roles = set(frappe.get_roles(user))
     company = frappe.db.escape(frappe.db.get_single_value("Internal Ledger Settings", "company") or "")
     can_read = user == "Administrator" or bool(roles & {"账套管理员", "账务查看者"})
@@ -95,6 +91,16 @@ def file_query(user=None, doctype=None):
             "AND (protected.name = `tabFile`.name OR protected.file_url = `tabFile`.file_url) "
             f"AND ({int(not can_read)} OR batch.company IS NULL OR batch.company != {company} "
             f"OR ({int(not can_source)} AND protected.attached_to_doctype = 'Internal Ledger Source File')))")
+
+
+def cleanup_ledger_file_shares():
+    frappe.db.sql("SELECT value FROM `tabSingles` WHERE doctype = %s AND field = %s FOR UPDATE",
+                  ("Internal Ledger Settings", "company"))
+    frappe.db.sql("""DELETE FROM `tabDocShare` WHERE share_doctype = 'File' AND share_name IN (
+        SELECT ordinary.name FROM `tabFile` ordinary JOIN `tabFile` protected
+          ON protected.name = ordinary.name OR protected.file_url = ordinary.file_url
+        WHERE protected.attached_to_doctype IN ('Ledger Evidence', 'Internal Ledger Source File')
+    )""")
 
 
 def file_permission(doc, ptype, user=None, **kwargs):
@@ -175,9 +181,13 @@ def protect_source_file(doc, method=None):
                  and not (field == "file_url" and method != "on_trash" and doc.is_new()
                           and doc.flags.ledger_native_dedup is _NATIVE_FILE_DEDUP)]
         if paths:
-            protected_files = frappe.get_all("File", filters={"name": ["!=", doc.name],
+            protected_files = frappe.db.get_values("File", filters={"name": ["!=", doc.name],
                 "attached_to_doctype": ["in", ["Ledger Evidence", "Internal Ledger Source File"]]},
-                fields=["file_url", "thumbnail_url"])
+                fieldname=["file_url", "thumbnail_url", "content_hash"], as_dict=True, for_update=True)
+            if (method == "on_trash" and doc.file_url and doc.content_hash and doc._ledger_read_allowed(current=True)
+                    and any(row.file_url == doc.file_url and row.content_hash == doc.content_hash
+                            for row in protected_files)):
+                paths = [path for path in paths if path != doc.file_url or path == doc.thumbnail_url]
             def disk_path(url):
                 if not url:
                     return None
@@ -189,11 +199,22 @@ def protect_source_file(doc, method=None):
 
 
 class ProtectedLedgerFile:
-    def _ledger_read_allowed(self, user=None):
+    def validate_share(self, share):
+        frappe.db.sql("SELECT value FROM `tabSingles` WHERE doctype = %s AND field = %s FOR UPDATE",
+                      ("Internal Ledger Settings", "company"))
+        protected = (self.attached_to_doctype in ("Ledger Evidence", "Internal Ledger Source File") or
+            (self.file_url and frappe.db.get_values("File", {"file_url": self.file_url,
+                "attached_to_doctype": ["in", ["Ledger Evidence", "Internal Ledger Source File"]]},
+                "name", for_update=True)))
+        if protected:
+            frappe.throw("流水原始文件与佐证不能单独分享", frappe.PermissionError)
+
+    def _ledger_read_allowed(self, user=None, current=False):
         user = user or frappe.session.user
-        references = frappe.get_all("File", filters={
+        references = frappe.db.get_values("File", filters={
             "attached_to_doctype": ["in", ["Ledger Evidence", "Internal Ledger Source File"]],
-            "file_url": self.file_url}, fields=["attached_to_doctype", "attached_to_name"]) if self.file_url else []
+            "file_url": self.file_url}, fieldname=["attached_to_doctype", "attached_to_name"],
+            as_dict=True, for_update=current) if self.file_url else []
         if self.attached_to_doctype in ("Ledger Evidence", "Internal Ledger Source File"):
             references.append(self)
         roles = set(frappe.get_roles(user))
@@ -218,6 +239,11 @@ class ProtectedLedgerFile:
 
     def is_downloadable(self):
         return self._ledger_read_allowed() and super().is_downloadable()
+
+    def get_content(self, *args, **kwargs):
+        if self.file_url and not self._ledger_read_allowed():
+            frappe.throw("无权读取此文件", frappe.PermissionError)
+        return super().get_content(*args, **kwargs)
 
     def _is_controlled_attachment(self):
         return ((self.attached_to_doctype == "Ledger Evidence"
@@ -262,9 +288,10 @@ class ProtectedLedgerFile:
             raise
 
     def _delete_file_on_disk(self):
-        controlled_hash = self.content_hash and frappe.get_all("File", filters={
+        controlled_hash = self.content_hash and frappe.db.get_values("File", filters={
             "name": ["!=", self.name], "content_hash": self.content_hash,
-            "attached_to_doctype": ["in", ["Ledger Evidence", "Internal Ledger Source File"]]}, limit=1)
+            "attached_to_doctype": ["in", ["Ledger Evidence", "Internal Ledger Source File"]]},
+            fieldname="name", for_update=True)
         if not self.file_url or not (self._is_controlled_attachment() or controlled_hash):
             return super()._delete_file_on_disk()
         references = frappe.db.get_values("File", {"name": ["!=", self.name], "file_url": self.file_url},
@@ -279,12 +306,10 @@ class ProtectedLedgerFile:
         return super().handle_is_private_changed()
 
     def _protect_shared_blob(self):
-        references = {"file_url": self.file_url}
-        if self.content_hash:
-            references["content_hash"] = self.content_hash
-        if frappe.get_all("File", filters={"name": ["!=", self.name],
-                "attached_to_doctype": ["in", ["Ledger Evidence", "Internal Ledger Source File"]]},
-                or_filters=references, limit=1):
+        if frappe.db.sql("""SELECT name FROM `tabFile` WHERE name != %s
+                AND attached_to_doctype IN ('Ledger Evidence', 'Internal Ledger Source File')
+                AND (file_url = %s OR (content_hash = %s AND %s IS NOT NULL))
+                LIMIT 1 FOR UPDATE""", (self.name, self.file_url, self.content_hash, self.content_hash)):
             frappe.throw("共享流水佐证或原始文件的附件不能改写或公开", frappe.PermissionError)
 
     def on_trash(self):

@@ -7,7 +7,7 @@ app_license = "AGPL-3.0-only"
 app_include_js = "/assets/internal_ledger/js/internal_ledger_desk.js"
 
 after_install = "internal_ledger.install.ensure_roles"
-after_migrate = "internal_ledger.install.ensure_roles"
+after_migrate = ["internal_ledger.install.ensure_roles", "internal_ledger.permissions.cleanup_ledger_file_shares"]
 
 extend_doctype_class = {"File": ["internal_ledger.permissions.ProtectedLedgerFile"]}
 
@@ -43,6 +43,8 @@ doc_events["Classification Rule"]["after_delete"] = "internal_ledger.permissions
 ignore_links_on_delete = ["Internal Ledger Audit Event"]
 override_whitelisted_methods = {
     "erpnext.accounts.utils.get_balance_on": "internal_ledger.api.report_api.scoped_native_balance",
+    "frappe.core.api.file.zip_files": "internal_ledger.api.file_api.zip_files",
+    "frappe.core.doctype.file.file.zip_files": "internal_ledger.api.file_api.zip_files",
 }
 
 
