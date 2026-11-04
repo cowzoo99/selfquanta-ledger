@@ -245,6 +245,9 @@ Assert-True ($build -match 'images/layered/Containerfile') 'Build must use the o
 Assert-True ($build -notmatch 'APPS_JSON_BASE64') 'apps.json must not be passed as a build argument'
 Assert-True ($build -match "origin -notmatch '\^https://'") 'Build must reject unsupported SSH origins before Docker'
 
+$appLayer = Get-Content -Raw -LiteralPath (Join-Path $InfraRoot 'Dockerfile.app-layer')
+Assert-True ($appLayer -notmatch 'frappe:frappe' -and $appLayer -match 'frappe:root') 'App layer must use the runtime frappe group'
+
 $backup = Get-Content -Raw -LiteralPath (Join-Path $InfraRoot 'backup.ps1')
 Assert-True ($backup -match 'Get-Item -LiteralPath \$encryptedTemp -Force') 'Linux hidden backup temp files must be inspected with -Force'
 $restoreCheck = Get-Content -Raw -LiteralPath (Join-Path $InfraRoot 'restore-check.ps1')
