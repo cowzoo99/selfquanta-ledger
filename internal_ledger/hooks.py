@@ -45,6 +45,7 @@ override_whitelisted_methods = {
     "erpnext.accounts.utils.get_balance_on": "internal_ledger.api.report_api.scoped_native_balance",
     "frappe.core.api.file.zip_files": "internal_ledger.api.file_api.zip_files",
     "frappe.core.doctype.file.file.zip_files": "internal_ledger.api.file_api.zip_files",
+    "erpnext.accounts.doctype.bank_statement_import.bank_statement_import.convert_mt940_to_csv": "internal_ledger.api.file_api.convert_mt940_to_csv",
 }
 
 

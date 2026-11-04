@@ -357,6 +357,10 @@ def test_filter_navigation_and_viewer_classification_results():
     _run_review_component_case("navigation_filter_consistency")
 
 
+def test_classification_discards_stale_responses_and_refreshes():
+    _run_review_component_case("classification_stale_requests")
+
+
 def test_evidence_entry_points_preserve_transaction_identity():
     _run_review_component_case("evidence_entry_points")
 

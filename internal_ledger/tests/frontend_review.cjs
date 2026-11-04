@@ -226,6 +226,36 @@ async function run(name) {
     assert.equal(buttons.length, 2); buttons[1].props.onClick(); await settle();
     assert.equal(calls.find(row => row.method.endsWith('get_evidence')).args.tx_name, rows[1].transaction.name);
     assert.doesNotMatch(text(accounting.root), /保存备注|上传附件/); accounting.app.unmount();
+  } else if (name === 'classification_stale_requests') {
+    const requests = [], summary = number => ({created: number, manual: 0, conflict: 0, failed: 0});
+    frappe.call = async args => {
+      calls.push(args);
+      if (args.method.endsWith('auto_classify_pending')) {const pending = deferred(); requests.push(pending); return pending.promise;}
+      return {message: args.method.endsWith('list_review_items') ? [] : {month: '2026-10'}};
+    };
+    const page = mount('App.vue', {view: 'review'}, true); await settle();
+    const filter = label => descendants(page.root).find(el => el.type === 'button' && text(el).startsWith(label + '（'));
+    filter('待分类').props.onClick(); await Vue.nextTick();
+    filter('待审核').props.onClick(); await Vue.nextTick();
+    filter('待分类').props.onClick(); await Vue.nextTick();
+    assert.equal(requests.length, 2);
+    requests[1].resolve({message: {summary: summary(2)}}); await settle();
+    const afterNewest = calls.length;
+    requests[0].resolve({message: {summary: summary(1)}}); await settle();
+    assert.equal(page.state.classificationRun.summary.created, 2);
+    assert.equal(calls.length, afterNewest, 'stale success must not refresh the page');
+    filter('待审核').props.onClick(); await Vue.nextTick();
+    filter('待分类').props.onClick(); await Vue.nextTick();
+    filter('待审核').props.onClick(); await Vue.nextTick();
+    const afterExit = calls.length;
+    requests[2].reject(new Error('过期失败')); await settle();
+    assert.doesNotMatch(page.state.classificationRun.error, /过期失败/);
+    assert.equal(calls.length, afterExit, 'stale failure must not refresh the page');
+    filter('待分类').props.onClick(); await Vue.nextTick();
+    const afterUnmount = calls.length;
+    page.app.unmount();
+    requests[3].resolve({message: {summary: summary(9)}}); await settle();
+    assert.equal(calls.length, afterUnmount, 'unmounted page must not refresh');
   } else if (name === 'navigation_filter_consistency') {
     const summary = {created: 0, manual: 1, conflict: 0, duplicate: 0, skipped: 0, failed: 1};
     frappe.call = async args => {

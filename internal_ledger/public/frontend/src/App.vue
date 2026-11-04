@@ -1,5 +1,5 @@
 <script setup>
-import {ref, reactive, computed, onMounted, watch} from 'vue';
+import {ref, reactive, computed, onMounted, onBeforeUnmount, watch} from 'vue';
 import Dashboard from './pages/Dashboard.vue';
 import ImportPreview from './pages/ImportPreview.vue';
 import ReviewCenter from './pages/ReviewCenter.vue';
@@ -41,7 +41,14 @@ const workflowCounts = computed(() => ({
   drafts: workflowItems.value.filter(item => ['Draft', 'Rejected'].includes(item.draft?.status)).length,
   posting: workflowItems.value.filter(item => ['Approved', 'Posted'].includes(item.draft?.status)).length,
 }));
-let refreshGeneration = 0;
+let refreshGeneration = 0, classificationGeneration = 0;
+watch(workflowStage, (stage, previous) => {
+  if (previous === 3 && stage !== 3) {
+    classificationGeneration++;
+    Object.assign(classificationRun, {status: 'idle', summary: null, error: ''});
+  }
+}, {flush: 'sync'});
+onBeforeUnmount(() => {classificationGeneration++; refreshGeneration++;});
 async function load(resource, request, generation) {
   Object.assign(resource, {status: 'loading', data: null, error: '', generation});
   try {
@@ -60,20 +67,18 @@ function refresh() {
   ]);
 }
 async function refreshPage() {
-  if (workflowStage.value === 3 && canWrite) {
+  if (workflowStage.value === 3) {
+    const generation = ++classificationGeneration;
     Object.assign(classificationRun, {status: 'loading', summary: null, error: ''});
     try {
-      const response = await frappe.call({method: 'internal_ledger.api.review_api.auto_classify_pending', type: 'POST'});
+      const response = await frappe.call({method: `internal_ledger.api.review_api.${canWrite ? 'auto_classify_pending' : 'get_latest_classification_run'}`,
+        type: canWrite ? 'POST' : 'GET'});
+      if (generation !== classificationGeneration || workflowStage.value !== 3) return;
       Object.assign(classificationRun, {status: 'success', summary: response.message.summary, error: ''});
     } catch (e) {
-      Object.assign(classificationRun, {status: 'error', summary: null, error: '自动分类失败：' + errorMessage(e)});
-    }
-  } else if (workflowStage.value === 3) {
-    try {
-      const response = await frappe.call({method: 'internal_ledger.api.review_api.get_latest_classification_run', type: 'GET'});
-      Object.assign(classificationRun, {status: 'success', summary: response.message.summary, error: ''});
-    } catch (e) {
-      Object.assign(classificationRun, {status: 'error', summary: null, error: '读取分类结果失败：' + errorMessage(e)});
+      if (generation !== classificationGeneration || workflowStage.value !== 3) return;
+      Object.assign(classificationRun, {status: 'error', summary: null,
+        error: (canWrite ? '自动分类失败：' : '读取分类结果失败：') + errorMessage(e)});
     }
   }
   return refresh();

@@ -10,7 +10,7 @@ from frappe.core.doctype.file.utils import get_safe_file_name
 from internal_ledger.internal_ledger.doctype.ledger_evidence.ledger_evidence import clean_note
 
 from internal_ledger.permissions import (
-    _EVIDENCE_FILE_WRITE, _EVIDENCE_WRITE, record_audit, require_ledger_admin,
+    _EVIDENCE_FILE_WRITE, _EVIDENCE_WRITE, document_company, record_audit, require_ledger_admin,
 )
 
 
@@ -62,6 +62,9 @@ def _transaction(tx_name, write=False):
     if write:
         require_ledger_admin()
     tx = frappe.get_doc("Imported Transaction", tx_name, for_update=write)
+    company = frappe.db.get_single_value("Internal Ledger Settings", "company")
+    if not company or document_company(tx) != company:
+        frappe.throw("流水不属于当前账套", frappe.PermissionError)
     tx.check_permission("write" if write else "read")
     return tx
 

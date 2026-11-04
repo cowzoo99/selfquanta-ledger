@@ -91,10 +91,17 @@ def get_review_item(name: str):
 @frappe.whitelist(methods=["GET", "POST"])
 def list_review_items():
     _, failed = _latest_classification_run()
+    company = frappe.db.get_single_value("Internal Ledger Settings", "company")
+    batches = frappe.get_all("Import Batch", filters={"company": company}, pluck="name") if company else []
+    if not batches:
+        return []
+    scoped = frappe.get_all("Imported Transaction", filters={"import_batch": ["in", batches]}, pluck="name")
     items = [get_review_item(row.name) for row in frappe.get_list(
-        "Voucher Draft", fields=["name"], order_by="creation desc", limit_page_length=0)]
+        "Voucher Draft", filters={"company": company, "imported_transaction": ["in", scoped]},
+        fields=["name"], order_by="creation desc", limit_page_length=0)] if scoped else []
     drafted = {item["transaction"]["name"] for item in items}
-    for tx in frappe.get_list("Imported Transaction", filters={"status": ["in", ["Imported", "Duplicate"]]},
+    for tx in frappe.get_list("Imported Transaction", filters={"status": ["in", ["Imported", "Duplicate"]],
+                              "import_batch": ["in", batches]},
                               fields=["*"], order_by="occurred_at desc", limit_page_length=0):
         if tx.name in drafted:
             continue

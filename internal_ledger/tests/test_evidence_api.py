@@ -395,6 +395,58 @@ def test_batch_zip_obeys_current_file_permissions_for_owner_share_and_alias():
         frappe.set_user("Administrator")
 
 
+def test_historical_url_alias_uses_physical_file_identity():
+    from frappe import client
+    from internal_ledger.permissions import _SOURCE_INSERT, cleanup_ledger_file_shares
+
+    tx = transaction()
+    source = frappe.get_doc({"doctype": "Internal Ledger Source File",
+        "import_batch": frappe.db.get_value("Imported Transaction", tx, "import_batch")})
+    source.flags.source_insert = _SOURCE_INSERT
+    source.insert()
+    protected = frappe.get_doc({"doctype": "File", "file_name": f"source-{uuid4().hex}.txt",
+        "content": uuid4().hex, "is_private": 1, "attached_to_doctype": source.doctype,
+        "attached_to_name": source.name})
+    protected.flags.source_insert = _SOURCE_INSERT
+    protected.insert(ignore_permissions=True)
+    content = Path(protected.get_full_path()).read_bytes()
+    viewer = user("账务查看者")
+    alias = frappe.get_doc({"doctype": "File", "file_name": f"alias-{uuid4().hex}.txt",
+        "content": uuid4().hex, "is_private": 1}).insert(ignore_permissions=True)
+    altered = protected.file_url.replace("/private/files/", "/private/files//")
+    frappe.db.set_value("File", alias.name, {"file_url": altered, "owner": viewer})
+    share = legacy_file_share(alias.name, viewer)
+    from frappe.utils import get_url
+    for altered in (altered, get_url() + protected.file_url):
+        frappe.db.set_value("File", alias.name, "file_url", altered)
+        frappe.set_user(viewer)
+        with unittest.TestCase().assertRaises(frappe.PermissionError):
+            client.get("File", alias.name)
+        with unittest.TestCase().assertRaises(frappe.PermissionError):
+            frappe.get_doc("File", alias.name).get_content()
+        with unittest.TestCase().assertRaises(frappe.PermissionError):
+            client.delete("File", alias.name)
+        frappe.set_user("Administrator")
+    with unittest.TestCase().assertRaises(frappe.PermissionError):
+        client.set_value("File", alias.name, "file_url", "/private/files/../files/" + Path(protected.file_url).name)
+    frappe.set_user("Administrator")
+    # A distinct case-variant filename on Linux must retain its ordinary share.
+    other_name = Path(protected.file_url).name.swapcase()
+    other = frappe.get_doc({"doctype": "File", "file_name": other_name,
+        "content": uuid4().hex, "is_private": 1}).insert(ignore_permissions=True)
+    valid = frappe.share.add("File", other.name, viewer, read=1, flags={"ignore_share_permission": True})
+    with unittest.TestCase().assertRaises(frappe.PermissionError):
+        frappe.share.add("File", alias.name, user("账务查看者"), read=1, flags={"ignore_share_permission": True})
+    cleanup_ledger_file_shares()
+    cleanup_ledger_file_shares()
+    assert not frappe.db.exists("DocShare", share)
+    assert frappe.db.exists("DocShare", valid.name)
+    assert Path(protected.get_full_path()).read_bytes() == content
+    frappe.set_user(viewer)
+    names = frappe.get_list("File", filters={"name": ["in", [alias.name, other.name]]}, pluck="name")
+    assert alias.name not in names and other.name in names
+
+
 def test_batch_zip_preserves_png_bytes_and_text_for_admin_and_viewer():
     from io import BytesIO
     from zipfile import ZipFile
@@ -594,6 +646,79 @@ def test_evidence_owner_cannot_download_after_company_changes():
         assert Path(frappe.get_doc("File", info["name"]).get_full_path()).read_bytes() == content
     finally:
         frappe.db.set_single_value("Internal Ledger Settings", "company", company)
+        frappe.set_user("Administrator")
+
+
+def test_foreign_company_evidence_api_is_denied_even_for_administrator():
+    from internal_ledger.api import evidence_api as api
+    from internal_ledger.api.review_api import list_review_items
+
+    tx = transaction()
+    saved = save_note(api, tx, "原备注")
+    info = api.upload_evidence(tx, "佐证.txt", encoded(b"protected bytes"), "text/plain")["attachments"][0]
+    file = frappe.get_doc("File", info["name"])
+    path = Path(file.get_full_path())
+    audit_count = frappe.db.count("Internal Ledger Audit Event", {"reference_name": tx})
+    batch = frappe.db.get_value("Imported Transaction", tx, "import_batch")
+    frappe.db.set_value("Import Batch", batch, "company", "其他公司")
+    for actor in ("Administrator", user("账套管理员"), user("账务查看者")):
+        frappe.set_user(actor)
+        for operation in (lambda: api.get_evidence(tx),
+                          lambda: api.save_evidence(tx, "非法修改", saved["note_version"]),
+                          lambda: api.upload_evidence(tx, "x.txt", encoded(b"x"), "text/plain"),
+                          lambda: api.delete_evidence_file(tx, info["name"])):
+            with unittest.TestCase().assertRaises(frappe.PermissionError):
+                operation()
+        assert tx not in [row["transaction"]["name"] for row in list_review_items()]
+    assert frappe.db.get_value("Ledger Evidence", saved["name"], "note_html") == "原备注"
+    assert path.read_bytes() == b"protected bytes"
+    assert frappe.db.exists("File", info["name"])
+    assert frappe.db.count("Internal Ledger Audit Event", {"reference_name": tx}) == audit_count
+
+
+def test_native_mt940_conversion_checks_source_file_access():
+    from frappe.handler import execute_cmd
+    from internal_ledger.permissions import _SOURCE_INSERT
+
+    mt940 = (":20:STARTUMSE\n:25:12345678901234567890\n:28C:1/1\n:60F:C031002EUR0,00\n"
+             ":61:0310021002DR123,45NMSCNONREF//8327000090031789\n:86:Test\n:62F:C031002EUR0,00\n-")
+    tx = transaction()
+    source = frappe.get_doc({"doctype": "Internal Ledger Source File",
+        "import_batch": frappe.db.get_value("Imported Transaction", tx, "import_batch")})
+    source.flags.source_insert = _SOURCE_INSERT
+    source.insert()
+    protected = frappe.get_doc({"doctype": "File", "file_name": f"source-{uuid4().hex}.txt",
+        "content": mt940, "is_private": 1, "attached_to_doctype": source.doctype,
+        "attached_to_name": source.name})
+    protected.flags.source_insert = _SOURCE_INSERT
+    protected.insert(ignore_permissions=True)
+    ordinary = frappe.get_doc({"doctype": "File", "file_name": f"ordinary-{uuid4().hex}.txt",
+        "content": mt940 + "\n", "is_private": 1}).insert(ignore_permissions=True)
+    docname = f"test-bank-import-{uuid4().hex}"
+    frappe.db.sql("INSERT INTO `tabBank Statement Import` (name, owner, import_mt940_fromat, bank_account) VALUES (%s, %s, 1, %s)",
+                  (docname, "Administrator", "test-bank"))
+    manager = user("System Manager")
+    admin = user("账套管理员")
+    admin_doc = frappe.get_doc("User", admin)
+    admin_doc.append("roles", {"role": "System Manager"})
+    admin_doc.save()
+    original_form, original_request = frappe.local.form_dict, getattr(frappe.local, "request", None)
+    try:
+        frappe.local.request = frappe._dict(method="POST")
+        endpoint = "erpnext.accounts.doctype.bank_statement_import.bank_statement_import.convert_mt940_to_csv"
+        frappe.set_user(manager)
+        frappe.local.form_dict = frappe._dict(data_import=docname, mt940_file_path=protected.file_url)
+        with unittest.TestCase().assertRaises(frappe.PermissionError):
+            execute_cmd(endpoint)
+        for actor, file in ((manager, ordinary), (admin, protected)):
+            frappe.set_user(actor)
+            frappe.local.form_dict = frappe._dict(data_import=docname, mt940_file_path=file.file_url)
+            result = execute_cmd(endpoint)
+            assert result.startswith("/private/files/")
+            converted = frappe.get_doc("File", {"file_url": result})
+            assert b"Deposit" in Path(converted.get_full_path()).read_bytes()
+    finally:
+        frappe.local.form_dict, frappe.local.request = original_form, original_request
         frappe.set_user("Administrator")
 
 
