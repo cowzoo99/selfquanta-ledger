@@ -113,7 +113,8 @@ def current_draft(tx_name: str):
         "doctype": "Voucher Draft", "imported_transaction": tx_name,
         "classification_rule": result.rule_name, "classification_reason": result.reason,
         "company": batch.company, "base_currency": batch.base_currency,
-        "posting_date": getdate(tx.occurred_at), "transaction_type": kind, "status": "Draft",
+        "posting_date": getdate(tx.occurred_at), "summary": tx.summary or "",
+        "transaction_type": kind, "status": "Draft",
         "lines": [asdict(line) for line in lines],
     }
 

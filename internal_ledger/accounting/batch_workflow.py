@@ -1,13 +1,65 @@
 from uuid import uuid4
+from decimal import Decimal
 
 import frappe
 
 from internal_ledger.accounting.classifier import classify
-from internal_ledger.accounting.drafts import create_draft
+from internal_ledger.accounting.drafts import create_draft, current_draft
 from internal_ledger.permissions import require_ledger_admin, record_audit
 
 
 PROCESSING_STATUSES = ("created", "manual", "conflict", "duplicate", "skipped", "failed")
+
+
+def _draft_lines(rows) -> list[tuple[str, Decimal, Decimal]]:
+    return [(row.get("account"), Decimal(str(row.get("debit") or 0)), Decimal(str(row.get("credit") or 0)))
+            for row in rows]
+
+
+def refresh_untouched_automatic_drafts(company: str) -> list[dict]:
+    """Refresh only unreviewed automatic drafts after classification rules change."""
+    rows = frappe.get_all("Voucher Draft", filters={
+        "company": company, "status": "Draft", "is_manual_override": 0,
+    }, fields=["name"], order_by="creation")
+    outcomes = []
+    for row in rows:
+        point = "ledger_refresh_draft_" + uuid4().hex
+        frappe.db.savepoint(point)
+        message_count = len(frappe.local.message_log or [])
+        try:
+            doc = frappe.get_doc("Voucher Draft", row.name, for_update=True)
+            doc.check_permission("read")
+            doc.check_permission("write")
+            if doc.status != "Draft" or doc.is_manual_override:
+                outcomes.append({"name": doc.name, "status": "skipped"})
+            else:
+                _, expected = current_draft(doc.imported_transaction)
+                fields = ("classification_rule", "classification_reason", "company", "base_currency",
+                          "posting_date", "transaction_type")
+                classification_changed = (any(doc.get(field) != expected[field] for field in fields)
+                                          or _draft_lines(doc.lines) != _draft_lines(expected["lines"]))
+                summary_missing = not (doc.summary or "").strip() and bool((expected["summary"] or "").strip())
+                if classification_changed or summary_missing:
+                    if classification_changed:
+                        for field in fields:
+                            doc.set(field, expected[field])
+                        doc.set("lines", expected["lines"])
+                    if summary_missing:
+                        doc.summary = expected["summary"]
+                    doc.save()
+                    record_audit("refresh_auto_draft", "Voucher Draft", doc.name, "success")
+                    outcomes.append({"name": doc.name, "status": "refreshed"})
+                else:
+                    outcomes.append({"name": doc.name, "status": "skipped"})
+        except frappe.QueryDeadlockError:
+            raise
+        except Exception:
+            frappe.db.rollback(save_point=point)
+            frappe.local.message_log = (frappe.local.message_log or [])[:message_count]
+            record_audit("refresh_auto_draft", "Voucher Draft", row.name, "failed")
+            outcomes.append({"name": row.name, "status": "failed"})
+        frappe.db.release_savepoint(point)
+    return outcomes
 
 
 def reconcile_unprepared_transactions() -> dict:
@@ -15,6 +67,7 @@ def reconcile_unprepared_transactions() -> dict:
     company = frappe.db.get_single_value("Internal Ledger Settings", "company")
     if not company:
         frappe.throw("请先设置当前账套公司")
+    draft_refresh = refresh_untouched_automatic_drafts(company)
     batches = frappe.get_all("Import Batch", filters={"company": company}, pluck="name")
     rows = frappe.get_all("Imported Transaction", filters={"status": "Imported", "import_batch": ["in", batches]},
                           fields=["name", "duplicate_review_status"], order_by="creation") if batches else []
@@ -33,7 +86,7 @@ def reconcile_unprepared_transactions() -> dict:
     result = ";".join([run_id] + [f"{key}:{summary[key]}" for key in PROCESSING_STATUSES])
     record_audit("auto_classification_sweep", "Internal Ledger Settings",
                  "Internal Ledger Settings", result)
-    return {"outcomes": outcomes, "summary": summary}
+    return {"outcomes": outcomes, "summary": summary, "draft_refresh": draft_refresh}
 
 
 def process_transactions(tx_names: list[str]) -> list[dict]:

@@ -28,6 +28,7 @@ def make_draft(kind, direction, debit, credit):
     assert draft.company == frappe.flags.classification_company
     assert draft.transaction_type == kind
     assert draft.posting_date.isoformat() == "2026-10-01"
+    assert draft.summary == "办公用品"
     actual = [(row.account, Decimal(str(row.debit)), Decimal(str(row.credit))) for row in draft.lines]
     assert actual == [(debit or account("1001"), Decimal("12.50"), Decimal("0")),
                       (credit or account("1001"), Decimal("0"), Decimal("12.50"))]

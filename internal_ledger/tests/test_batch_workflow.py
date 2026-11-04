@@ -49,6 +49,29 @@ def test_reconcile_unprepared_transactions_creates_only_matched_drafts_and_is_id
     assert frappe.db.count("Journal Entry") == frappe.flags.classification_journals
 
 
+def test_reconcile_refreshes_only_untouched_stale_automatic_drafts():
+    from internal_ledger.accounting.batch_workflow import reconcile_unprepared_transactions
+
+    keyword = add_rule(kind="keyword", value="办公用品", debit_account=account("560202"))
+    name = transaction(counterparty="新供应商", summary="办公用品采购")
+    draft_name = create_draft(name, classify(name))
+    frappe.db.set_value("Voucher Draft", draft_name, "summary", "")
+    exact = add_rule(value="新供应商", debit_account=account("560201"))
+
+    result = reconcile_unprepared_transactions()
+    refreshed = frappe.get_doc("Voucher Draft", draft_name)
+
+    assert refreshed.status == "Draft" and not refreshed.is_manual_override
+    assert refreshed.classification_rule == exact.name
+    assert refreshed.classification_rule != keyword.name
+    assert refreshed.classification_reason == "交易对象精确匹配"
+    assert refreshed.summary == "办公用品采购"
+    assert [(row.account, row.debit, row.credit) for row in refreshed.lines] == [
+        (account("560201"), 12.5, 0), (account("1001"), 0, 12.5)]
+    assert result["draft_refresh"][0]["name"] == draft_name
+    assert result["draft_refresh"][0]["status"] == "refreshed"
+
+
 def test_reconcile_never_scans_another_company_for_any_administrator():
     from internal_ledger.accounting.batch_workflow import reconcile_unprepared_transactions
     from internal_ledger.tests.test_permissions import user

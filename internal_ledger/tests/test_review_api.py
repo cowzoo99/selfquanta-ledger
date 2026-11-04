@@ -239,12 +239,13 @@ def test_latest_batch_counts_follow_drafts_duplicate_resolution_and_manual_work(
                           fields=["name"], order_by="raw_row")
     outcomes = process_transactions([row.name for row in rows])
     assert [row["status"] for row in outcomes] == ["created", "duplicate", "manual"]
-    expected = {"batch_name": batch, "total": 3, "created": 1, "duplicate": 1, "manual": 1}
+    assert frappe.db.count("Imported Transaction", {"import_batch": batch}) == 3
+    expected = {"batch_name": batch, "total": 2, "created": 1, "duplicate": 1, "manual": 1}
     assert get_dashboard_counts("2026-10")["latest_batch"] == expected
     assert get_dashboard_counts("1900-01")["latest_batch"] == expected
     released = resolve_duplicate(rows[1].name, "release", "独立交易")
     assert released["processing"]["status"] == "created"
-    expected.update(created=2, duplicate=0)
+    expected.update(total=3, created=2, duplicate=0)
     assert get_dashboard_counts("2026-10")["latest_batch"] == expected
     classify_manually(rows[2].name, "expense", account("560201"), account("1001"), "人工核对", 0)
     expected["manual"] = 0

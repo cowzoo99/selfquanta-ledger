@@ -141,7 +141,7 @@ def get_dashboard_counts(month: str | None = None):
         batch_rows = [row for row in rows if row["transaction"]["import_batch"] == batches[0].name]
         eligible = [row for row in batch_rows if row["transaction"]["status"] == "Imported"
                     and row["transaction"].get("duplicate_review_status") not in {"Pending", "Confirmed"}]
-        latest_batch = {"batch_name": batches[0].name, "total": len(batch_rows),
+        latest_batch = {"batch_name": batches[0].name, "total": len(eligible),
                         "created": sum(bool(row["draft"] and not row["draft"].get("is_manual_override"))
                                        for row in eligible),
                         "duplicate": len(batch_rows) - len(eligible),
