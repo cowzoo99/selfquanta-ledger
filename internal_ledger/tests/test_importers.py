@@ -103,6 +103,22 @@ def test_auto_detects_each_supported_csv_source():
         assert not result.errors
 
 
+def test_auto_detects_chouzhou_bank_export():
+    from internal_ledger.importing.registry import parse_statement
+
+    result = parse_statement("auto", fixture("chouzhou_bank"), "测试资金账户")
+    assert result.source == "bank"
+    assert not result.errors
+    assert len(result.rows) == 3
+    expense, income, _ = result.rows
+    assert (expense.raw_row, expense.occurred_at, expense.amount, expense.direction) == (
+        6, datetime(2026, 10, 22), Decimal("700.00"), "expense")
+    assert (income.raw_row, income.amount, income.direction) == (7, Decimal("500.00"), "income")
+    assert expense.counterparty == "测试商户甲"
+    assert expense.summary == "办公用品"
+    assert expense.source_id is None
+
+
 def test_unknown_source_headers_encoding_and_size_are_rejected():
     rejects(lambda: parse("unknown", b"a,b\n1,2"), "不支持")
     rejects(lambda: parse("bank", "时间,金额\n2026-01-01,1".encode()), "表头")
