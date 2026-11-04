@@ -58,14 +58,23 @@ def classify_manually(tx_name, transaction_type, debit_account, credit_account, 
                 "kind": "counterparty", "value": tx.counterparty, "enabled": 1},
                 fieldname=["*"], as_dict=True, for_update=True, order_by="name")
             rules = [rule for rule in rules if rule.value == tx.counterparty]
-            for rule in rules:
+            target = (tx.direction, transaction_type, debit_account, credit_account)
+            same_direction = [rule for rule in rules if rule.direction == tx.direction]
+            matching = []
+            for rule in same_direction:
                 debit = rule.debit_account or (tx.payment_account if rule.direction == "income" else None)
                 credit = rule.credit_account or (tx.payment_account if rule.direction == "expense" else None)
-                if (rule.direction, rule.transaction_type, debit, credit) != (
-                        tx.direction, transaction_type, debit_account, credit_account):
-                    frappe.throw("交易对象精确规则冲突，请先核对已有规则")
-            if not rules:
-                frappe.get_doc({"doctype": "Classification Rule", "company": batch.company,
+                if (rule.direction, rule.transaction_type, debit, credit) == target:
+                    matching.append(rule)
+            selected_rule = matching[0] if matching else None
+            for rule in same_direction:
+                if selected_rule and rule.name == selected_rule.name:
+                    continue
+                rule_doc = frappe.get_doc("Classification Rule", rule.name, for_update=True)
+                rule_doc.enabled = 0
+                rule_doc.save()
+            if not selected_rule:
+                selected_rule = frappe.get_doc({"doctype": "Classification Rule", "company": batch.company,
                     "kind": "counterparty", "value": tx.counterparty, "direction": tx.direction,
                     "transaction_type": transaction_type,
                     "debit_account": debit_account if tx.direction == "expense" else None,

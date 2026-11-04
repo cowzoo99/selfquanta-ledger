@@ -49,17 +49,35 @@ def test_identical_rule_and_repeated_call_do_not_duplicate():
         classify_manual(name, debit_account=account("560202"))
 
 
-def test_conflicting_exact_rules_are_rejected_without_mutation():
+def test_manual_choice_replaces_conflicting_rule_for_same_direction():
+    from internal_ledger.accounting.classifier import classify
+
+    old = add_rule(debit_account=account("560202"))
     name = transaction()
-    for fields in ({"debit_account": account("560202")},
-                   {"transaction_type": "fee"},
-                   {"direction": "income", "transaction_type": "income", "debit_account": account("1001"),
-                    "credit_account": account("5001")}):
-        rule = add_rule(**fields)
-        with unittest.TestCase().assertRaisesRegex(frappe.ValidationError, "冲突"):
-            classify_manual(name)
-        assert not frappe.db.exists("Voucher Draft", {"imported_transaction": name})
-        frappe.delete_doc("Classification Rule", rule.name)
+    doc = classify_manual(name)
+    old.reload()
+    selected = frappe.get_doc("Classification Rule", doc.classification_rule)
+    assert not old.enabled
+    assert (selected.direction, selected.transaction_type, selected.debit_account, selected.enabled) == (
+        "expense", "expense", account("560201"), 1)
+    assert classify(transaction()).rule_name == selected.name
+    assert frappe.db.exists("Internal Ledger Audit Event", {
+        "action": "update_classification_rule", "reference_name": old.name})
+
+
+def test_counterparty_can_learn_separate_income_and_expense_rules():
+    from internal_ledger.accounting.classifier import classify
+
+    expense = add_rule()
+    income_name = transaction(direction="income")
+    income = classify_manual(income_name, transaction_type="income", debit_account=account("1001"),
+                             credit_account=account("5001"))
+    income_rule = frappe.get_doc("Classification Rule", income.classification_rule)
+    expense.reload()
+    assert expense.enabled and income_rule.enabled
+    assert {expense.direction, income_rule.direction} == {"expense", "income"}
+    assert classify(transaction(direction="income")).rule_name == income_rule.name
+    assert classify(transaction(direction="expense")).rule_name == expense.name
 
 
 def test_blank_counterparty_cannot_be_learned():
@@ -304,7 +322,7 @@ def test_existing_keyword_draft_reuses_identical_exact_rule():
     doc.validate()
 
 
-def test_existing_keyword_draft_rejects_reverse_direction_exact_conflict():
+def test_existing_keyword_draft_ignores_reverse_direction_exact_rule():
     from internal_ledger.api.review_api import prepare_draft
 
     add_rule(kind="keyword", value="办公")
@@ -312,25 +330,25 @@ def test_existing_keyword_draft_rejects_reverse_direction_exact_conflict():
     original = prepare_draft(name)
     add_rule(direction="income", transaction_type="income", debit_account=account("1001"),
              credit_account=account("5001"))
-    before = original.as_dict()
-    with unittest.TestCase().assertRaisesRegex(frappe.ValidationError, "冲突"):
-        classify_manual(name, summary="")
-    assert frappe.get_doc("Voucher Draft", original.name).as_dict() == before
-    assert frappe.db.count("Classification Rule", {"company": frappe.flags.classification_company}) == 2
+    doc = classify_manual(name, summary="")
+    assert doc.name == original.name
+    assert frappe.get_doc("Classification Rule", doc.classification_rule).direction == "expense"
+    assert frappe.db.count("Classification Rule", {
+        "company": frappe.flags.classification_company, "enabled": 1}) == 3
 
 
-def test_existing_exact_draft_checks_new_conflicting_rules_before_return():
+def test_existing_exact_draft_disables_new_same_direction_conflict_and_ignores_reverse_direction():
     name = transaction()
     doc = classify_manual(name)
-    for values in ({"debit_account": account("560202")},
-                   {"direction": "income", "transaction_type": "income", "debit_account": account("1001"),
-                    "credit_account": account("5001")}):
-        conflict = add_rule(**values)
-        before = frappe.get_doc("Voucher Draft", doc.name).as_dict()
-        with unittest.TestCase().assertRaisesRegex(frappe.ValidationError, "冲突"):
-            classify_manual(name)
-        assert frappe.get_doc("Voucher Draft", doc.name).as_dict() == before
-        frappe.delete_doc("Classification Rule", conflict.name)
+    conflict = add_rule(debit_account=account("560202"))
+    reverse = add_rule(direction="income", transaction_type="income", debit_account=account("1001"),
+                       credit_account=account("5001"))
+    again = classify_manual(name)
+    conflict.reload()
+    reverse.reload()
+    assert again.name == doc.name
+    assert not conflict.enabled and reverse.enabled
+    assert again.classification_rule == doc.classification_rule
 
 def test_learned_rules_follow_current_funding_account_for_expense_and_income():
     from internal_ledger.accounting.batch_workflow import process_transactions

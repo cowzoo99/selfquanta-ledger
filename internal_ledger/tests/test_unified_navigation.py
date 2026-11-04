@@ -313,6 +313,10 @@ def test_classification_detail_frontend():
     _run_review_component_case("classification_detail")
 
 
+def test_classification_select_all_and_one_click_retry_frontend():
+    _run_review_component_case("classification_batch_selection")
+
+
 def test_transaction_evidence_admin_frontend():
     _run_review_component_case("transaction_evidence_admin")
 

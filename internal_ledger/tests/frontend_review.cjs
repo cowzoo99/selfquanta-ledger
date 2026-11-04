@@ -501,6 +501,28 @@ async function run(name) {
     assert.deepEqual(JSON.parse(write.args.draft_names), rows.map(row => row.draft.name));
     assert.equal(write.args.decision, 'approve'); assert.equal(write.type, 'POST');
     page.app.unmount();
+  } else if (name === 'classification_batch_selection') {
+    const rows = Array.from({length: 23}, (_, index) => ({
+      ...item(`classify-${index + 1}`), draft: null, can_classify: true,
+      classification: {status: 'unmatched', reason: '未匹配分类规则'},
+    }));
+    frappe.call = async args => {
+      calls.push(args);
+      return {message: JSON.parse(args.args.tx_names).map(name => ({
+        name, status: 'manual', draft: null, message: '未匹配分类规则，请人工分类',
+      }))};
+    };
+    const page = mount('pages/ReviewCenter.vue', {list: {status: 'success', data: rows}, canWrite: true, initialFilter: '待分类'});
+    assert.deepEqual([...page.state.selected], [], 'classification requires an explicit selection');
+    page.state.toggleSelectAll(); await Vue.nextTick();
+    assert.equal(page.state.selected.length, 23, 'classification select all covers every filtered row across pages');
+    assert.match(text(page.root), /一键自动分类/);
+    await page.state.classifyBatch();
+    const write = calls.find(row => row.method.endsWith('prepare_matched_transactions'));
+    assert.deepEqual(JSON.parse(write.args.tx_names), rows.map(row => row.transaction.name));
+    assert.equal(write.type, 'POST');
+    assert.match(text(page.root), /逐项处理结果/);
+    page.app.unmount();
   } else if (name === 'duplicate_pagination') {
     const pair = index => ({candidate: {...item(`dup-${index}`, 'new').transaction, status: 'Duplicate', duplicate_review_status: 'Pending'},
       original: item(`source-${index}`, 'old').transaction});

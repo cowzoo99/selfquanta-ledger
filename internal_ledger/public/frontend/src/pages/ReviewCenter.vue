@@ -85,12 +85,15 @@ const postingSummary = computed(() => {
   return summary;
 });
 const selectableItems = computed(() => visibleItems.value.filter(item =>
+  (filter.value === '待分类' && !item.draft && item.transaction.status === 'Imported' && !duplicate(item) &&
+    (item.can_classify || ['unmatched', 'conflict'].includes(item.classification?.status))) ||
   (filter.value === '待审核' && item.draft?.status === 'Draft') ||
   (filter.value === '待过账' && item.draft?.status === 'Approved' && postEligible(item))));
+const selectionKey = item => filter.value === '待分类' ? item.transaction.name : item.draft?.name;
 const allSelected = computed(() => selectableItems.value.length > 0 &&
-  selectableItems.value.every(item => selected.value.includes(item.draft.name)));
+  selectableItems.value.every(item => selected.value.includes(selectionKey(item))));
 function toggleSelectAll() {
-  selected.value = allSelected.value ? [] : selectableItems.value.map(item => item.draft.name);
+  selected.value = allSelected.value ? [] : selectableItems.value.map(selectionKey);
   confirmation.value = '';
 }
 let selectionScope = '';
@@ -102,7 +105,7 @@ watch(() => [filter.value, props.initialBatch, props.initialTransaction, props.l
   if (!props.canWrite || selectionScope !== scope) selected.value = [];
   selectionScope = scope;
   if (!listReady.value) return;
-  const names = selectableItems.value.map(item => item.draft.name);
+  const names = selectableItems.value.map(selectionKey);
   selected.value = selected.value.filter(name => names.includes(name));
 }, {deep: true, immediate: true});
 watch(() => [pagedItems.value, props.classificationRun?.status], () => {
@@ -147,8 +150,19 @@ async function reviewBatch(decision) {
   } catch (e) { error.value = errorMessage(e); }
   finally { busy.value = false; }
 }
-const outcomeStatus = status => ({Approved: '已审核通过', Rejected: '已驳回', failed: '失败'}[status]
-  || (status === 'created' ? '已过账' : processingStatuses[status] || '处理结果待核对'));
+async function classifyBatch() {
+  if (!props.canWrite || busy.value || !listReady.value || !selected.value.length || filter.value !== '待分类') return;
+  busy.value = true; outcomes.value = []; error.value = '';
+  try {
+    const response = await frappe.call({method: 'internal_ledger.api.review_api.prepare_matched_transactions', type: 'POST',
+      args: {tx_names: JSON.stringify(selected.value)}});
+    outcomes.value = response.message; selected.value = []; active.value = null; emit('refresh');
+  } catch (e) { error.value = errorMessage(e); }
+  finally { busy.value = false; }
+}
+const outcomeStatus = outcome => ({Approved: '已审核通过', Rejected: '已驳回', failed: '失败'}[outcome.status]
+  || (outcome.status === 'created' ? (outcome.journal_entry ? '已过账' : '已自动分类并生成草稿')
+    : processingStatuses[outcome.status] || '处理结果待核对'));
 </script>
 
 <template>
@@ -168,12 +182,13 @@ const outcomeStatus = status => ({Approved: '已审核通过', Rejected: '已驳
     <div v-if="canWrite && selectableItems.length" class="ledger-batch-toolbar" role="group" aria-label="批量操作">
       <button :disabled="busy" @click="toggleSelectAll">{{ allSelected ? '取消全选' : '全选全部' }}（{{ selectableItems.length }}）</button>
       <strong>已选择 {{ selected.length }} 笔</strong>
+      <button v-if="filter === '待分类'" :disabled="busy || !selected.length" @click="classifyBatch">一键自动分类</button>
       <template v-if="filter === '待审核'">
         <button :disabled="busy || !selected.length" @click="reviewBatch('approve')">一键通过</button>
         <label for="batch-reason">统一驳回原因</label><input id="batch-reason" v-model="batchReason" :disabled="busy" placeholder="驳回时必填">
         <button :disabled="busy || !selected.length || !batchReason.trim()" @click="reviewBatch('reject')">一键驳回</button>
       </template>
-      <button :disabled="!canPreview" @click="confirmPosting">审核并过账选中项（{{ listReady ? selected.length : 0 }}）</button>
+      <button v-if="filter !== '待分类'" :disabled="!canPreview" @click="confirmPosting">审核并过账选中项（{{ listReady ? selected.length : 0 }}）</button>
     </div>
     <p v-if="list.status === 'loading'" role="status">正在载入…</p><p v-else-if="listReady && !visibleItems.length">当前筛选没有流水。</p>
     <p v-if="error && !active" role="alert">{{ error }}</p>
@@ -193,7 +208,7 @@ const outcomeStatus = status => ({Approved: '已审核通过', Rejected: '已驳
     <table v-if="outcomes.length" aria-live="polite">
       <caption>逐项处理结果</caption><thead><tr><th scope="col">处理项</th><th scope="col">状态</th><th scope="col">处理说明</th><th scope="col">凭证</th></tr></thead>
       <tbody><tr v-for="(outcome, index) in outcomes" :key="index">
-        <td>第 {{ index + 1 }} 项<details><summary>技术信息</summary><p>草稿 / 流水编号：{{ outcome.name }}</p><p v-if="outcome.draft">草稿编号：{{ outcome.draft }}</p></details></td><td>{{ outcomeStatus(outcome.status) }}</td><td>{{ outcome.message }}</td>
+        <td>第 {{ index + 1 }} 项<details><summary>技术信息</summary><p>草稿 / 流水编号：{{ outcome.name }}</p><p v-if="outcome.draft">草稿编号：{{ outcome.draft }}</p></details></td><td>{{ outcomeStatus(outcome) }}</td><td>{{ outcome.message }}</td>
         <td><a v-if="outcome.journal_entry" :href="`/app/journal-entry/${encodeURIComponent(outcome.journal_entry)}`">正式凭证 {{ outcome.journal_entry }}</a>
           <a v-else-if="outcome.draft" :href="`/app/voucher-draft/${encodeURIComponent(outcome.draft)}`">查看草稿</a></td>
       </tr></tbody>
@@ -202,7 +217,7 @@ const outcomeStatus = status => ({Approved: '已审核通过', Rejected: '已驳
       <div>
       <ul class="ledger-items">
         <li v-for="item in pagedItems" :key="item.transaction.name">
-          <label v-if="canWrite && selectableItems.includes(item)"><input v-model="selected" type="checkbox" :value="item.draft.name" :disabled="busy">选择批量处理</label>
+          <label v-if="canWrite && selectableItems.includes(item)"><input v-model="selected" type="checkbox" :value="selectionKey(item)" :disabled="busy">选择批量处理</label>
           <strong>{{ item.transaction.counterparty || '未提供交易对象' }} · {{ money(item.transaction.amount) }} · {{ item.transaction.occurred_at }}</strong>
           <span>{{ item.error || item.draft?.rejection_reason || draftStatuses[item.draft?.status] || stage(item) }}</span>
           <button :disabled="busy" @click="open(item)">查看明细</button>
