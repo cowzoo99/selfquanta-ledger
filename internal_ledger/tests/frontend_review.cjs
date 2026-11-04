@@ -475,7 +475,9 @@ async function run(name) {
     page.app.unmount();
     const completed = mount('components/WorkflowNavigation.vue', {currentStage: 5, counts: {posting: 8}});
     const ledger = descendants(completed.root).find(el => el.type === 'a' && text(el).includes('查看标准总账总览'));
-    assert.equal(ledger?.props.href, '/app/query-report/General%20Ledger');
+    const year = new Date().getFullYear();
+    assert.equal(ledger?.props.href,
+      `/app/query-report/General%20Ledger?from_date=${year}-01-01&to_date=${year}-12-31`);
     completed.app.unmount();
   } else if (name === 'review_pagination') {
     const rows = Array.from({length: 23}, (_, index) => item(`page-${index + 1}`));
@@ -503,11 +505,13 @@ async function run(name) {
     const links = descendants(page.root).filter(el => el.type === 'a');
     const hrefs = links.map(el => el.props.href);
     const primary = links.find(el => el.props.class === 'ledger-primary-action');
-    assert.equal(primary?.props.href, '/app/query-report/General%20Ledger');
+    const year = new Date().getFullYear();
+    const ledgerHref = `/app/query-report/General%20Ledger?from_date=${year}-01-01&to_date=${year}-12-31`;
+    assert.equal(primary?.props.href, ledgerHref);
     assert.match(text(primary), /日期.*凭证.*借方.*贷方/s);
     assert.ok(hrefs.includes('/app/voucher-draft'));
     assert.ok(hrefs.includes('/app/journal-entry'));
-    assert.ok(hrefs.includes('/app/query-report/General%20Ledger'));
+    assert.ok(hrefs.includes(ledgerHref));
     page.app.unmount();
   } else if (name === 'route_scope') {
     const mounts = [], wrapper = {ledger_ready: true, ledger_root: {}};
