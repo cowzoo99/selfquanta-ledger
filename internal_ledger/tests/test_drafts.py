@@ -17,8 +17,10 @@ def make_draft(kind, direction, debit, credit):
     from internal_ledger.accounting.classifier import classify
     from internal_ledger.accounting.drafts import create_draft
 
-    rule = add_rule(transaction_type=kind, direction=direction, debit_account=debit, credit_account=credit)
-    name = transaction(direction=direction, amount=Decimal("12.50"))
+    counterparty = f"测试商户-{uuid4().hex}"
+    rule = add_rule(value=counterparty, transaction_type=kind, direction=direction,
+                    debit_account=debit, credit_account=credit)
+    name = transaction(direction=direction, amount=Decimal("12.50"), counterparty=counterparty)
     result = classify(name)
     draft = frappe.get_doc("Voucher Draft", create_draft(name, result))
     assert draft.status == "Draft"
