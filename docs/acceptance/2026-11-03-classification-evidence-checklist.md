@@ -1,6 +1,6 @@
 # 自动分类与逐笔佐证验收记录
 
-执行日期：2026-11-04。范围：Task 6 本地验收；生产发布留待 Task 7。
+执行日期：2026-11-04。范围：Task 6 本地验收及 Task 7 WireGuard 私网生产发布。
 
 ## 验收对象与环境
 
@@ -35,8 +35,8 @@ git diff --check
 |---|---|
 | 最终定向端到端 | PASS：6 tests，32.338s，0 failures/errors；含有效 PNG 的最终版本 |
 | 测试站点迁移 | PASS：exit 0 |
-| 全应用回归 | PASS：346 tests，1333.409s，0 failures/errors |
-| 前端生产构建 | PASS：exit 0；`ledger_workbench.bundle.FU4ORKEZ.js`，144.30 Kb |
+| 全应用回归 | PASS：369 tests，1139.763s，0 failures/errors |
+| 前端生产构建 | PASS：exit 0；本地候选 `ledger_workbench.bundle.OIRXH7FX.js`，生产 Linux 镜像 `ledger_workbench.bundle.KPH7GRNA.js` |
 | 基础设施静态检查 | PASS：exit 0，`Infrastructure static checks passed.` |
 | Git 空白检查 | PASS：`git diff --check` 和提交前暂存差异检查无输出 |
 
@@ -64,18 +64,19 @@ Bench 的 `--module` 是单值选项，重复指定只使用最后一个；本�
 
 新增测试的有效性另通过临时测试 harness 验证：只把自动清理替换为空结果，真实链路在 `created == 1` 断言失败（1 test，1 failure，0 errors）；恢复真实服务后端到端 6 项通过；PNG 测试字节经标准库校验 IHDR/IDAT/IEND CRC，并在完整门禁后再次运行最终端到端 6 项（32.338s）通过。该 RED 是受控变异检查，不是未修复的产品缺陷。首次测试错误地比较通用下载 API 的文本解码结果与二进制图片，已改为验证页面真实私有下载响应，未修改生产下载逻辑。
 
-## 环境限制与 Task 7 发布门禁
+## 环境限制与 Task 7 发布记录
 
 本轮完成服务/API、真实文件权限和自动化前端回归；未进行本轮真实浏览器选区编辑及视觉验收，不将 Node 组件测试视作该项人工验收。Frappe 现有弃用提示保留，不影响测试结果。
 
 | 生产证据 | 状态 |
 |---|---|
-| 生产部署代码 SHA | 待 Task 7，未部署 |
-| 发布/部署镜像与 digest | 待 Task 7，未构建或发布生产镜像 |
-| 部署前数据库与公有/私有附件备份文件 | 待 Task 7，未执行生产备份 |
-| 备份加密、上传及隔离恢复验证 | 待 Task 7 |
-| 回滚镜像、代码 SHA 和回滚验证 | 待 Task 7 |
-| 内网登录、导入、分类、附件权限和健康检查 | 待 Task 7 |
-| 浏览器选区编辑和视觉验收 | 待 Task 7 验收 |
+| 生产部署代码 SHA | PASS：`36d3f71db0d365c85a46c7c6731aea40402ec6cb`；发布标签 `release-2026-11-04-classification-evidence` |
+| 发布/部署镜像与 digest | PASS：应用 `sha256:60134457bae3e44a3c00752085f603f5a3dd0b9fc9a2e448dc9a603e283b5b55`；OCR 内容未变，仅复用标签，ID `sha256:f6e107ab688b7e1409f60747cc479d9d7dc3ef3020db736991216c68f5d5769d` |
+| 部署前数据库与公有/私有附件备份文件 | PASS：`internal-ledger-ledger.selfquanta.com-20261104-134427.zip.enc`，6,253,840 bytes，SHA-256 `448b4d6a091140d7fa56dcfe0ea5b826e9b6e10290dc032b897a9a5c63907fcf`；清单计数 company=1、journal_entry=0、file=5，部署后计数一致 |
+| 备份加密、上传及隔离恢复验证 | 本机加密与哈希验证 PASS；COS 配置文件未安装，云端上传未执行；本次备份未另做隔离恢复，保留为后续运维项 |
+| 回滚镜像、代码 SHA 和回滚验证 | 回滚应用 SHA `373872c654583cb545915496f6d8d3ef506d4fb1`，镜像 ID `sha256:2e6516e644a3111b4ea42bf989fea1d714eb01a4dcfffeb3ebdd26820e33f991`；运行配置备份保存在服务器 `/etc/selfquanta/ledger/runtime.env.pre-36d3f71db0d365c85a46c7c6731aea40402ec6cb`，未因主链路成功而执行破坏性回滚演练 |
+| 内网登录、导入、分类、附件权限和健康检查 | PASS：管理员真实登录、统一工作台、资源包、待办、仪表盘、分类汇总、导入账户读取和 CSRF 退出；全部容器健康；备份定时器 active；无近期服务错误 |
+| 私网边界 | PASS：HTTP/HTTPS 仅监听 `10.77.0.1:80/443`，未开放公网 |
+| 浏览器选区编辑和视觉验收 | 自动化组件、构建及生产 HTTP 主链路 PASS；真实浏览器富文本选区、2×2 表格和图片视觉效果留给使用者首次操作确认，不阻断本次私网主链路上线 |
 
-本地 `bench build` 只证明前端资源可构建，不代表生产镜像或生产验证完成。本任务未推送、部署、创建发布标签或修改生产；未填造生产 SHA、镜像、备份或回滚证据。
+生产于 2026-11-04 13:49（Asia/Shanghai）完成迁移和切换。运行时镜像、数据库迁移、`Ledger Evidence` DocType、HTTPS ping、管理员只读主链路烟测、容器健康、备份计时器及 WireGuard 绑定均已现场核对。未在生产创建或过账合成账务数据。
