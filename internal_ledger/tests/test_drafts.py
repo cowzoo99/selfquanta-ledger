@@ -1,6 +1,8 @@
 from dataclasses import replace
 from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
+import json
+from pathlib import Path
 from threading import Barrier
 import unittest
 from uuid import uuid4
@@ -39,6 +41,17 @@ def test_expense_draft():
 
 def test_income_draft():
     make_draft("income", "income", None, account("5001"))
+
+
+def test_capital_draft():
+    make_draft("capital", "income", None, account("3001"))
+
+
+def test_voucher_draft_metadata_supports_capital_transactions():
+    path = Path(__file__).parents[1] / "internal_ledger" / "doctype" / "voucher_draft" / "voucher_draft.json"
+    fields = json.loads(path.read_text(encoding="utf-8"))["fields"]
+    transaction_type = next(field for field in fields if field["fieldname"] == "transaction_type")
+    assert "capital" in transaction_type["options"].splitlines()
 
 
 def test_transfer_drafts_support_both_directions():

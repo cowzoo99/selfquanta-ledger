@@ -10,7 +10,7 @@
   {"fieldname": "company", "label": "Company", "fieldtype": "Link", "options": "Company", "reqd": 1},
   {"fieldname": "base_currency", "label": "Base Currency", "fieldtype": "Link", "options": "Currency", "reqd": 1},
   {"fieldname": "posting_date", "label": "Posting Date", "fieldtype": "Date", "reqd": 1},
-  {"fieldname": "transaction_type", "label": "Transaction Type", "fieldtype": "Select", "options": "expense\nincome\ntransfer\nrefund\nfee", "reqd": 1},
+  {"fieldname": "transaction_type", "label": "Transaction Type", "fieldtype": "Select", "options": "expense\nincome\ncapital\ntransfer\nrefund\nfee", "reqd": 1},
   {"fieldname": "summary", "label": "Summary", "fieldtype": "Small Text"},
   {"fieldname": "status", "label": "Status", "fieldtype": "Select", "options": "Draft\nApproved\nRejected\nPosted", "default": "Draft", "reqd": 1, "read_only": 1},
   {"fieldname": "rejection_reason", "label": "Rejection Reason", "fieldtype": "Small Text", "read_only": 1},
