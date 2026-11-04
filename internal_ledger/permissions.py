@@ -16,6 +16,7 @@ _JOURNAL_WRITE = object()
 _EVIDENCE_WRITE = object()
 _EVIDENCE_FILE_WRITE = object()
 _NATIVE_FILE_DEDUP = object()
+_ZIP_READ_BYTES = object()
 
 
 def require_ledger_admin() -> None:
@@ -240,10 +241,12 @@ class ProtectedLedgerFile:
     def is_downloadable(self):
         return self._ledger_read_allowed() and super().is_downloadable()
 
-    def get_content(self, *args, **kwargs):
+    def get_content(self, encodings=None):
         if self.file_url and not self._ledger_read_allowed():
             frappe.throw("无权读取此文件", frappe.PermissionError)
-        return super().get_content(*args, **kwargs)
+        if self.flags.ledger_zip_read is _ZIP_READ_BYTES:
+            encodings = []
+        return super().get_content(encodings=encodings)
 
     def _is_controlled_attachment(self):
         return ((self.attached_to_doctype == "Ledger Evidence"

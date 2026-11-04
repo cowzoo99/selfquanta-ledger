@@ -395,6 +395,39 @@ def test_batch_zip_obeys_current_file_permissions_for_owner_share_and_alias():
         frappe.set_user("Administrator")
 
 
+def test_batch_zip_preserves_png_bytes_and_text_for_admin_and_viewer():
+    from io import BytesIO
+    from zipfile import ZipFile
+    from frappe.handler import execute_cmd
+    from internal_ledger.api.evidence_api import upload_evidence
+
+    png = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=")
+    files = {"回单.png": (png, "image/png"), "说明.txt": ("中文备注".encode(), "text/plain"),
+             "清单.csv": ("项目,金额\n测试,12\n".encode(), "text/csv")}
+    tx = transaction()
+    for name, (content, mime) in files.items():
+        result = upload_evidence(tx, name, encoded(content), mime)
+    names = [row["name"] for row in result["attachments"]]
+    viewer = user("账务查看者")
+    original_form, original_request = frappe.local.form_dict, getattr(frappe.local, "request", None)
+    try:
+        frappe.local.request = frappe._dict(method="POST")
+        for actor in ("Administrator", viewer):
+            frappe.set_user(actor)
+            for endpoint in ("frappe.core.api.file.zip_files", "frappe.core.doctype.file.file.zip_files"):
+                frappe.local.form_dict = frappe._dict(files=json.dumps(names))
+                execute_cmd(endpoint)
+                with ZipFile(BytesIO(frappe.response["filecontent"])) as archive:
+                    for name, (content, _) in files.items():
+                        assert archive.read(name) == content, (actor, endpoint, name)
+        text_file = next(row for row in result["attachments"] if row["file_name"] == "说明.txt")
+        assert frappe.get_doc("File", text_file["name"]).get_content() == "中文备注"
+        assert frappe.get_doc("File", text_file["name"]).get_content(encodings=[]) == files["说明.txt"][0]
+    finally:
+        frappe.local.form_dict, frappe.local.request = original_form, original_request
+        frappe.set_user("Administrator")
+
+
 def test_controlled_file_and_alias_cannot_be_shared():
     from frappe import client
 
