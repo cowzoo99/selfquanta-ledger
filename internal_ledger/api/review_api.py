@@ -1,6 +1,7 @@
 from dataclasses import asdict
 from decimal import Decimal
 import re
+from uuid import uuid4
 
 import frappe
 from frappe.utils import add_months, getdate, nowdate
@@ -213,6 +214,35 @@ def reject_draft(name: str, reason: str):
     if not isinstance(reason, str) or not reason.strip():
         frappe.throw("驳回必须填写原因")
     return _transition(name, "Rejected", reason.strip())
+
+
+@frappe.whitelist(methods=["POST"])
+def batch_review_drafts(draft_names, decision: str, reason: str = ""):
+    _write_permission()
+    names = frappe.parse_json(draft_names) if isinstance(draft_names, str) else draft_names
+    if not isinstance(names, list) or not names or any(not isinstance(name, str) or not name for name in names):
+        frappe.throw("请选择需要批量处理的凭证草稿")
+    if decision not in {"approve", "reject"}:
+        frappe.throw("批量审核决定无效")
+    if decision == "reject" and (not isinstance(reason, str) or not reason.strip()):
+        frappe.throw("批量驳回必须填写原因")
+    outcomes = []
+    for name in names:
+        savepoint = "ledger_batch_review_" + uuid4().hex
+        frappe.db.savepoint(savepoint)
+        try:
+            doc = approve_draft(name) if decision == "approve" else reject_draft(name, reason)
+            outcomes.append({"name": name, "status": doc.status,
+                             "message": "已审核通过" if doc.status == "Approved" else "已驳回"})
+        except frappe.QueryDeadlockError:
+            raise
+        except Exception as exc:
+            frappe.db.rollback(save_point=savepoint)
+            frappe.db.release_savepoint(savepoint)
+            outcomes.append({"name": name, "status": "failed", "message": str(exc)})
+        else:
+            frappe.db.release_savepoint(savepoint)
+    return outcomes
 
 
 @frappe.whitelist(methods=["POST"])

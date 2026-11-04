@@ -52,6 +52,21 @@ def test_confirm_preserves_totals_and_blocks_accounting():
         resolve_duplicate(duplicate.name, "release", "不能重放")
 
 
+def test_batch_duplicate_review_resolves_every_selected_candidate():
+    from internal_ledger.api.duplicate_api import resolve_duplicates
+
+    batch = save_batch("wechat", uuid4().hex, [
+        tx(source_id="BATCH-DUP", payment_account=account("1001"), raw_row=index)
+        for index in range(1, 4)])
+    duplicates = frappe.get_all("Imported Transaction", filters={"import_batch": batch, "status": "Duplicate"},
+                                pluck="name", order_by="raw_row")
+    outcomes = resolve_duplicates(duplicates, "confirm", "批量确认重复", batch=batch)
+    assert [row["status"] for row in outcomes] == ["duplicate", "duplicate"]
+    assert all(frappe.db.get_value("Imported Transaction", name, "duplicate_review_status") == "Confirmed"
+               for name in duplicates)
+    assert frappe.allowed_http_methods_for_whitelisted_func[resolve_duplicates] == ["POST"]
+
+
 def test_release_preserves_link_and_enters_normal_flow_once():
     from internal_ledger.importing.duplicate_review import release_duplicate
     from internal_ledger.accounting.drafts import create_draft

@@ -54,6 +54,31 @@ def test_rejection_requires_reason_and_reopen_before_approval():
     assert approve_draft(doc.name).status == "Approved"
 
 
+def test_batch_review_approves_or_rejects_all_selected_drafts():
+    from internal_ledger.api.review_api import batch_review_drafts
+
+    approved = [draft(), draft()]
+    outcomes = batch_review_drafts([row.name for row in approved], "approve")
+    assert [row["status"] for row in outcomes] == ["Approved", "Approved"]
+    assert all(frappe.get_doc("Voucher Draft", row.name).status == "Approved" for row in approved)
+
+    rejected = [draft(), draft()]
+    outcomes = batch_review_drafts([row.name for row in rejected], "reject", "批量核对不通过")
+    assert [row["status"] for row in outcomes] == ["Rejected", "Rejected"]
+    assert all(frappe.get_doc("Voucher Draft", row.name).rejection_reason == "批量核对不通过"
+               for row in rejected)
+    assert frappe.allowed_http_methods_for_whitelisted_func[batch_review_drafts] == ["POST"]
+
+
+def test_batch_review_keeps_processing_after_one_selected_draft_fails():
+    from internal_ledger.api.review_api import batch_review_drafts
+
+    first, second = draft(), draft()
+    outcomes = batch_review_drafts([first.name, "missing-draft", second.name], "approve")
+    assert [row["status"] for row in outcomes] == ["Approved", "failed", "Approved"]
+    assert outcomes[1]["name"] == "missing-draft" and outcomes[1]["message"]
+
+
 def test_manual_edit_is_controlled_and_approval_preserves_it():
     from internal_ledger.api.review_api import approve_draft, update_draft
 

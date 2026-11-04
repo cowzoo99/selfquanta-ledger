@@ -8,6 +8,7 @@ import {directions, sources, transactionTypes, draftStatuses, processingStatuses
 const props = defineProps({list: {type: Object, required: true}, classificationRun: Object, canWrite: Boolean, initialFilter: String, initialBatch: String, initialTransaction: String});
 const emit = defineEmits(['refresh', 'filter-change']);
 const selected = ref([]), active = ref(null), busy = ref(false), error = ref(''), outcomes = ref([]), reason = ref('');
+const batchReason = ref('');
 const savedVersion = ref(''), filter = ref('待分类'), confirmation = ref('');
 const currentPage = ref(1), pageSize = 10;
 let activeTransaction = '';
@@ -83,20 +84,26 @@ const postingSummary = computed(() => {
   }
   return summary;
 });
-let initializedScope = '';
+const selectableItems = computed(() => visibleItems.value.filter(item =>
+  (filter.value === '待审核' && item.draft?.status === 'Draft') ||
+  (filter.value === '待过账' && item.draft?.status === 'Approved' && postEligible(item))));
+const allSelected = computed(() => selectableItems.value.length > 0 &&
+  selectableItems.value.every(item => selected.value.includes(item.draft.name)));
+function toggleSelectAll() {
+  selected.value = allSelected.value ? [] : selectableItems.value.map(item => item.draft.name);
+  confirmation.value = '';
+}
+let selectionScope = '';
 watch(() => [filter.value, props.initialBatch, props.initialTransaction, props.list, props.canWrite], () => {
   confirmation.value = '';
   if (filter.value !== '待分类') active.value = null;
   savedVersion.value = '';
   const scope = JSON.stringify([filter.value, props.initialBatch || '', props.initialTransaction || '']);
-  const autoSelect = props.canWrite && filter.value === '待审核';
-  if (!autoSelect || initializedScope !== scope) {
-    selected.value = []; initializedScope = '';
-  }
-  if (!autoSelect || !listReady.value) return;
-  const names = visibleItems.value.filter(item => postEligible(item) && !postingTotals(item).anomaly).map(item => item.draft.name);
-  selected.value = initializedScope === scope ? selected.value.filter(name => names.includes(name)) : names;
-  initializedScope = scope;
+  if (!props.canWrite || selectionScope !== scope) selected.value = [];
+  selectionScope = scope;
+  if (!listReady.value) return;
+  const names = selectableItems.value.map(item => item.draft.name);
+  selected.value = selected.value.filter(name => names.includes(name));
 }, {deep: true, immediate: true});
 watch(() => [pagedItems.value, props.classificationRun?.status], () => {
   if (filter.value !== '待分类') return;
@@ -128,6 +135,20 @@ async function postBatch() {
   } catch (e) { error.value = errorMessage(e); }
   finally { busy.value = false; }
 }
+async function reviewBatch(decision) {
+  if (!props.canWrite || busy.value || !listReady.value || !selected.value.length) return;
+  if (decision === 'reject' && !batchReason.value.trim()) { error.value = '一键驳回必须填写统一驳回原因。'; return; }
+  busy.value = true; outcomes.value = []; error.value = '';
+  try {
+    const response = await frappe.call({method: 'internal_ledger.api.review_api.batch_review_drafts', type: 'POST',
+      args: {draft_names: JSON.stringify(selected.value), decision, reason: batchReason.value.trim()}});
+    outcomes.value = response.message; selected.value = []; confirmation.value = ''; active.value = null;
+    batchReason.value = ''; emit('refresh');
+  } catch (e) { error.value = errorMessage(e); }
+  finally { busy.value = false; }
+}
+const outcomeStatus = status => ({Approved: '已审核通过', Rejected: '已驳回', failed: '失败'}[status]
+  || (status === 'created' ? '已过账' : processingStatuses[status] || '处理结果待核对'));
 </script>
 
 <template>
@@ -144,7 +165,16 @@ async function postBatch() {
     </dl>
     <p v-if="classificationRun?.error" role="alert">{{ classificationRun.error }}</p>
     <div role="group" aria-label="审核状态筛选"><button v-for="label in filters" :key="label" :aria-pressed="filter === label" :disabled="busy" @click="filter = label; emit('filter-change', label)">{{ label }}（{{ scopedItems.filter(item => stage(item) === label).length }}）</button></div>
-    <button v-if="canWrite" :disabled="!canPreview" @click="confirmPosting">审核并过账选中项（{{ listReady ? selected.length : 0 }}）</button>
+    <div v-if="canWrite && selectableItems.length" class="ledger-batch-toolbar" role="group" aria-label="批量操作">
+      <button :disabled="busy" @click="toggleSelectAll">{{ allSelected ? '取消全选' : '全选全部' }}（{{ selectableItems.length }}）</button>
+      <strong>已选择 {{ selected.length }} 笔</strong>
+      <template v-if="filter === '待审核'">
+        <button :disabled="busy || !selected.length" @click="reviewBatch('approve')">一键通过</button>
+        <label for="batch-reason">统一驳回原因</label><input id="batch-reason" v-model="batchReason" :disabled="busy" placeholder="驳回时必填">
+        <button :disabled="busy || !selected.length || !batchReason.trim()" @click="reviewBatch('reject')">一键驳回</button>
+      </template>
+      <button :disabled="!canPreview" @click="confirmPosting">审核并过账选中项（{{ listReady ? selected.length : 0 }}）</button>
+    </div>
     <p v-if="list.status === 'loading'" role="status">正在载入…</p><p v-else-if="listReady && !visibleItems.length">当前筛选没有流水。</p>
     <p v-if="error && !active" role="alert">{{ error }}</p>
     <div v-if="canWrite && confirmation" role="region" aria-label="审核过账确认">
@@ -163,7 +193,7 @@ async function postBatch() {
     <table v-if="outcomes.length" aria-live="polite">
       <caption>逐项处理结果</caption><thead><tr><th scope="col">处理项</th><th scope="col">状态</th><th scope="col">处理说明</th><th scope="col">凭证</th></tr></thead>
       <tbody><tr v-for="(outcome, index) in outcomes" :key="index">
-        <td>第 {{ index + 1 }} 项<details><summary>技术信息</summary><p>草稿 / 流水编号：{{ outcome.name }}</p><p v-if="outcome.draft">草稿编号：{{ outcome.draft }}</p></details></td><td>{{ outcome.status === 'created' && outcome.journal_entry ? '已过账' : processingStatuses[outcome.status] || '处理结果待核对' }}</td><td>{{ outcome.message }}</td>
+        <td>第 {{ index + 1 }} 项<details><summary>技术信息</summary><p>草稿 / 流水编号：{{ outcome.name }}</p><p v-if="outcome.draft">草稿编号：{{ outcome.draft }}</p></details></td><td>{{ outcomeStatus(outcome.status) }}</td><td>{{ outcome.message }}</td>
         <td><a v-if="outcome.journal_entry" :href="`/app/journal-entry/${encodeURIComponent(outcome.journal_entry)}`">正式凭证 {{ outcome.journal_entry }}</a>
           <a v-else-if="outcome.draft" :href="`/app/voucher-draft/${encodeURIComponent(outcome.draft)}`">查看草稿</a></td>
       </tr></tbody>
@@ -172,7 +202,7 @@ async function postBatch() {
       <div>
       <ul class="ledger-items">
         <li v-for="item in pagedItems" :key="item.transaction.name">
-          <label v-if="canWrite && postEligible(item)"><input v-model="selected" type="checkbox" :value="item.draft.name" :disabled="busy">选择审核过账</label>
+          <label v-if="canWrite && selectableItems.includes(item)"><input v-model="selected" type="checkbox" :value="item.draft.name" :disabled="busy">选择批量处理</label>
           <strong>{{ item.transaction.counterparty || '未提供交易对象' }} · {{ money(item.transaction.amount) }} · {{ item.transaction.occurred_at }}</strong>
           <span>{{ item.error || item.draft?.rejection_reason || draftStatuses[item.draft?.status] || stage(item) }}</span>
           <button :disabled="busy" @click="open(item)">查看明细</button>

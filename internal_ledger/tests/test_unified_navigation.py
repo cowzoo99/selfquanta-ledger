@@ -222,9 +222,16 @@ def test_manual_classification_chinese_catalog_contract():
         assert text in labels
     form = (ROOT / "public/frontend/src/components/ManualClassificationForm.vue").read_text(encoding="utf-8")
     for text in ("ACCOUNT_PRESETS", "transactionTypes", "preset.direction !== transaction.direction", "更多中文科目",
-                 'v-if="showAccounts"', ':value="account.name"', " · ",
+                 'v-if="showAccounts"', ':value="accountChoice(account)"', " · ",
                  "account.account_number === preset.accountNumber", "account.root_type === 'Asset'",
                  "account.name !== props.transaction.payment_account"):
+        assert text in form
+
+
+def test_manual_classification_supports_searchable_choices_and_visible_tags():
+    form = (ROOT / "public/frontend/src/components/ManualClassificationForm.vue").read_text(encoding="utf-8")
+    for text in ('list="manual-business-types"', 'list="manual-accounts"', "chooseKind", "chooseAccount",
+                 "ledger-choice-tag", "仅处理本笔（不保存规则）", "前往核对已有分类规则"):
         assert text in form
 
 

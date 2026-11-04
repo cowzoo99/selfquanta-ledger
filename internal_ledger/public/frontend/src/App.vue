@@ -155,6 +155,12 @@ onMounted(refreshPage);
 .ledger-app label { margin-top: 8px; }
 .ledger-counts { display: flex; flex-wrap: wrap; gap: 24px; margin: 16px 0 0; }
 .ledger-counts dd { font-size: 20px; margin: 0; }
+.ledger-batch-toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 12px 0; padding: 10px; border: 1px solid #b8c8d2; border-radius: 8px; background: #f7fbfd; }
+.ledger-batch-toolbar label { margin: 0; }
+.ledger-choice-tags { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; }
+.ledger-choice-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: end; margin: 8px 0; }
+.ledger-choice-row > div { display: grid; gap: 6px; }
+.ledger-choice-tag { display: inline-flex; align-items: center; min-height: 30px; padding: 5px 10px; border-radius: 999px; background: #243746; color: #fff; font-weight: 700; }
 .ledger-cards, .duplicate-evidence { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); gap: 16px; }
 .ledger-card { display: block; padding: 16px; border: 1px solid var(--border-color, #ddd); border-radius: 8px; }
 .ledger-module-card { border-top: 4px solid #7a6c9d; }
@@ -185,5 +191,5 @@ onMounted(refreshPage);
 .ledger-evidence-attachments { display: grid; gap: 12px; padding-left: 20px; overflow-wrap: anywhere; }
 @media (max-width: 800px) { .ledger-evidence-attachments { grid-template-columns: minmax(0, 1fr); } }
 @media (max-width: 900px) { .ledger-hero { grid-template-columns: minmax(0, 1fr); padding: 20px; } }
-@media (max-width: 800px) { .ledger-review { grid-template-columns: minmax(0, 1fr); } .ledger-app { padding: 6px 6px 110px; } .ledger-workflow ol { grid-template-columns: 1fr; } .ledger-step-footer { left: 8px; right: 8px; bottom: 8px; font-size: 12px; } }
+@media (max-width: 800px) { .ledger-review, .ledger-choice-row { grid-template-columns: minmax(0, 1fr); } .ledger-app { padding: 6px 6px 110px; } .ledger-workflow ol { grid-template-columns: 1fr; } .ledger-step-footer { left: 8px; right: 8px; bottom: 8px; font-size: 12px; } }
 </style>

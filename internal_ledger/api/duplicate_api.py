@@ -78,3 +78,30 @@ def resolve_duplicate(name: str, decision: Literal["confirm", "release"], note: 
         raise
     frappe.db.release_savepoint(savepoint)
     return {"transaction": tx.as_dict(), "processing": processing}
+
+
+@frappe.whitelist(methods=["POST"])
+def resolve_duplicates(names, decision: Literal["confirm", "release"], note: str,
+                       batch: str | None = None, transaction: str | None = None) -> list[dict]:
+    require_ledger_admin()
+    selected = frappe.parse_json(names) if isinstance(names, str) else names
+    if not isinstance(selected, list) or not selected or any(not isinstance(name, str) or not name for name in selected):
+        frappe.throw("请选择需要批量复核的重复流水")
+    if decision not in {"confirm", "release"}:
+        frappe.throw("重复复核决定无效")
+    if decision == "release" and (not isinstance(note, str) or not note.strip()):
+        frappe.throw("批量保留入账必须填写原因")
+    _duplicate_scope(batch, transaction)
+    outcomes = []
+    for name in selected:
+        try:
+            result = resolve_duplicate(name, decision, note, batch=batch, transaction=transaction)
+            processing = result["processing"]
+            outcomes.append({"name": name, "status": processing["status"],
+                             "message": processing.get("message", "处理完成"),
+                             "draft": processing.get("draft")})
+        except frappe.QueryDeadlockError:
+            raise
+        except Exception as exc:
+            outcomes.append({"name": name, "status": "failed", "message": str(exc), "draft": None})
+    return outcomes

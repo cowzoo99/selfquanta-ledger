@@ -6,6 +6,7 @@ import {directions, sources, processingStatuses} from '../labels';
 const props = defineProps({canWrite: Boolean, batch: String, transaction: String});
 const emit = defineEmits(['refresh']);
 const items = ref([]), notes = ref({}), loading = ref(true), busy = ref(false), error = ref(''), result = ref(null);
+const selected = ref([]), batchNote = ref(''), batchOutcomes = ref([]);
 const currentPage = ref(1), pageSize = 1;
 const inScope = item => (!props.batch || item.candidate.import_batch === props.batch) &&
   (!props.transaction || item.candidate.name === props.transaction);
@@ -16,6 +17,9 @@ const taskRoute = status => `/app/ledger-workbench/review/${status}` + (scopeBat
 const statuses = {Pending: '待复核', Confirmed: '已确认重复，已忽略', Released: '已保留，进入正常入账流程'};
 const pageCount = computed(() => Math.max(1, Math.ceil(items.value.length / pageSize)));
 const pagedItems = computed(() => items.value.slice((currentPage.value - 1) * pageSize, currentPage.value * pageSize));
+const pendingItems = computed(() => items.value.filter(item => inScope(item) && item.candidate.duplicate_review_status === 'Pending'));
+const allSelected = computed(() => pendingItems.value.length > 0 && pendingItems.value.every(item => selected.value.includes(item.candidate.name)));
+function toggleSelectAll() { selected.value = allSelected.value ? [] : pendingItems.value.map(item => item.candidate.name); }
 function previousPage() { currentPage.value = Math.max(1, currentPage.value - 1); result.value = null; }
 function nextPage() { currentPage.value = Math.min(pageCount.value, currentPage.value + 1); result.value = null; }
 async function refresh() {
@@ -24,6 +28,8 @@ async function refresh() {
     const response = await frappe.call({method: 'internal_ledger.api.duplicate_api.list_duplicates', type: 'GET',
       args: {batch: props.batch || '', transaction: props.transaction || ''}});
     items.value = response.message.filter(inScope);
+    const pending = pendingItems.value.map(item => item.candidate.name);
+    selected.value = selected.value.filter(name => pending.includes(name));
     currentPage.value = Math.min(currentPage.value, Math.max(1, Math.ceil(items.value.length / pageSize)));
   } finally { loading.value = false; }
 }
@@ -41,6 +47,19 @@ async function resolve(item, decision) {
   } catch (e) { error.value = errorMessage(e); }
   finally { busy.value = false; }
 }
+async function resolveSelected(decision) {
+  if (!props.canWrite || loading.value || busy.value || !selected.value.length) return;
+  if (decision === 'release' && !batchNote.value.trim()) { error.value = '一键保留入账必须填写统一复核备注。'; return; }
+  busy.value = true; error.value = ''; result.value = null; batchOutcomes.value = [];
+  try {
+    const response = await frappe.call({method: 'internal_ledger.api.duplicate_api.resolve_duplicates', type: 'POST',
+      args: {names: JSON.stringify(selected.value), decision, note: batchNote.value.trim(),
+        batch: props.batch || '', transaction: props.transaction || ''}});
+    batchOutcomes.value = response.message; selected.value = []; batchNote.value = '';
+    await refresh(); emit('refresh');
+  } catch (e) { error.value = errorMessage(e); }
+  finally { busy.value = false; }
+}
 onMounted(async () => { try { await refresh(); } catch (e) { error.value = errorMessage(e); } });
 </script>
 
@@ -52,6 +71,18 @@ onMounted(async () => { try { await refresh(); } catch (e) { error.value = error
     <p v-if="loading" role="status">正在载入重复证据…</p>
     <p v-else-if="!items.length">当前没有重复复核记录。</p>
     <p v-if="error" role="alert">{{ error }}</p>
+    <div v-if="canWrite && pendingItems.length" class="ledger-batch-toolbar" role="group" aria-label="重复流水批量复核">
+      <button :disabled="loading || busy" @click="toggleSelectAll">{{ allSelected ? '取消全选' : '全选全部' }}（{{ pendingItems.length }}）</button>
+      <strong>已选择 {{ selected.length }} 笔</strong>
+      <button :disabled="loading || busy || !selected.length" @click="resolveSelected('confirm')">一键确认重复并忽略</button>
+      <label for="duplicate-batch-note">统一复核备注</label><input id="duplicate-batch-note" v-model="batchNote" :disabled="loading || busy" placeholder="保留入账时必填">
+      <button :disabled="loading || busy || !selected.length || !batchNote.trim()" @click="resolveSelected('release')">一键保留并入账</button>
+    </div>
+    <table v-if="batchOutcomes.length" aria-live="polite"><caption>批量复核结果</caption>
+      <thead><tr><th scope="col">流水</th><th scope="col">结果</th><th scope="col">说明</th></tr></thead>
+      <tbody><tr v-for="outcome in batchOutcomes" :key="outcome.name"><td>{{ outcome.name }}</td>
+        <td>{{ outcome.status === 'duplicate' ? '已确认重复' : processingStatuses[outcome.status] || '处理完成' }}</td><td>{{ outcome.message }}</td></tr></tbody>
+    </table>
     <div v-if="result" role="status" aria-label="重复复核处理结果">
       <p v-if="result.status === 'created'">已自动分类并生成凭证草稿。</p>
       <p v-else-if="result.status === 'duplicate'">已确认重复并忽略，该流水不参与统计与过账。</p>
@@ -64,6 +95,7 @@ onMounted(async () => { try { await refresh(); } catch (e) { error.value = error
       </template>
     </div>
     <article v-for="item in pagedItems" :key="item.candidate.name" class="ledger-card">
+      <label v-if="canWrite && item.candidate.duplicate_review_status === 'Pending'"><input v-model="selected" type="checkbox" :value="item.candidate.name" :disabled="loading || busy">选择批量复核</label>
       <h3>{{ item.candidate.counterparty || '未提供交易对象' }} · {{ item.candidate.amount }} · {{ item.candidate.occurred_at }} · {{ statuses[item.candidate.duplicate_review_status] }}</h3>
       <p>匹配依据：{{ item.candidate.duplicate_match_reason || '来源、时间、金额、方向、交易对象、摘要与资金账户的稳定指纹相同' }}</p>
       <div class="duplicate-evidence">
