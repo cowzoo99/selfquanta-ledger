@@ -142,7 +142,8 @@ def test_dashboard_orders_import_totals_four_tasks_latest_batch_and_erp():
     app = (ROOT / "public/frontend/src/App.vue").read_text(encoding="utf-8")
     assert "['accounting', '会计中心']" in app
     accounting = (ROOT / "public/frontend/src/pages/AccountingCenter.vue").read_text(encoding="utf-8")
-    assert 'href="/app/query-report/General%20Ledger"' in accounting
+    assert 'href="#ledger-overview"' in accounting
+    assert ':href="generalLedgerHref"' in accounting
     navigation = app.split("const navigation =", 1)[1].split(";", 1)[0]
     assert "duplicates" not in navigation and "classification" not in navigation
 

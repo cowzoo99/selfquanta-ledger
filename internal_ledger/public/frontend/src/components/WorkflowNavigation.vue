@@ -12,8 +12,6 @@ const steps = computed(() => [
 const current = computed(() => steps.value.find(step => step.number === props.currentStage));
 const previous = computed(() => steps.value[props.currentStage - 2]);
 const next = computed(() => steps.value[props.currentStage]);
-const currentYear = new Date().getFullYear();
-const generalLedgerHref = `/app/query-report/General%20Ledger?from_date=${currentYear}-01-01&to_date=${currentYear}-12-31`;
 </script>
 
 <template>
@@ -31,6 +29,6 @@ const generalLedgerHref = `/app/query-report/General%20Ledger?from_date=${curren
     <a v-if="previous" :href="previous.href">← 上一步：{{ previous.label }}</a><span v-else>已在第一步</span>
     <strong>第 {{ currentStage }} / 5 步</strong>
     <a v-if="next" :href="next.href">下一步：{{ next.label }} →</a>
-    <a v-else :href="generalLedgerHref">查看标准总账总览 →</a>
+    <a v-else href="/app/ledger-workbench/accounting#ledger-overview">查看标准总账总览 →</a>
   </nav>
 </template>

@@ -475,9 +475,7 @@ async function run(name) {
     page.app.unmount();
     const completed = mount('components/WorkflowNavigation.vue', {currentStage: 5, counts: {posting: 8}});
     const ledger = descendants(completed.root).find(el => el.type === 'a' && text(el).includes('查看标准总账总览'));
-    const year = new Date().getFullYear();
-    assert.equal(ledger?.props.href,
-      `/app/query-report/General%20Ledger?from_date=${year}-01-01&to_date=${year}-12-31`);
+    assert.equal(ledger?.props.href, '/app/ledger-workbench/accounting#ledger-overview');
     completed.app.unmount();
   } else if (name === 'review_pagination') {
     const rows = Array.from({length: 23}, (_, index) => item(`page-${index + 1}`));
@@ -499,19 +497,44 @@ async function run(name) {
     page.state.previousPage(); await Vue.nextTick(); assert.equal(page.state.currentPage, 1);
     page.app.unmount();
   } else if (name === 'accounting_center') {
-    const page = mount('pages/AccountingCenter.vue', {});
+    const income = item('capital', 'new', {direction: 'income', amount: 50000,
+      occurred_at: '2026-08-13 15:38:00', counterparty: '股东投入'});
+    Object.assign(income.draft, {status: 'Posted', posting_date: '2026-08-13', summary: '收到股东投资款', lines: [
+      {account: '100201 - 基本存款账户 - 逆熵云', account_number: '100201', account_name: '基本存款账户', debit: 50000, credit: 0},
+      {account: '3001 - 实收资本 - 逆熵云', account_number: '3001', account_name: '实收资本', debit: 0, credit: 50000},
+    ]});
+    const expense = item('office', 'new', {direction: 'expense', amount: 13000,
+      occurred_at: '2026-08-14 12:00:00', counterparty: '办公采购'});
+    Object.assign(expense.draft, {status: 'Posted', posting_date: '2026-08-14', summary: '报销办公费', lines: [
+      {account: '560201 - 办公费 - 逆熵云', account_number: '560201', account_name: '办公费', debit: 13000, credit: 0},
+      {account: '100201 - 基本存款账户 - 逆熵云', account_number: '100201', account_name: '基本存款账户', debit: 0, credit: 13000},
+    ]});
+    const page = mount('pages/AccountingCenter.vue', {items: [income, expense]});
     const body = text(page.root);
-    for (const label of ['会计中心', '标准总账总览', '凭证草稿', '正式记账凭证', '总账报表']) assert.match(body, new RegExp(label));
+    for (const label of ['会计中心', '标准总账总览', '借贷分录', '收支变动明细', '凭证草稿', '正式记账凭证', '总账报表']) assert.match(body, new RegExp(label));
     const links = descendants(page.root).filter(el => el.type === 'a');
     const hrefs = links.map(el => el.props.href);
     const primary = links.find(el => el.props.class === 'ledger-primary-action');
     const year = new Date().getFullYear();
     const ledgerHref = `/app/query-report/General%20Ledger?from_date=${year}-01-01&to_date=${year}-12-31`;
-    assert.equal(primary?.props.href, ledgerHref);
+    assert.equal(primary?.props.href, '#ledger-overview');
     assert.match(text(primary), /日期.*凭证.*借方.*贷方/s);
     assert.ok(hrefs.includes('/app/voucher-draft'));
     assert.ok(hrefs.includes('/app/journal-entry'));
     assert.ok(hrefs.includes(ledgerHref));
+    const vouchers = descendants(page.root).filter(el => el.props.class === 'ledger-overview-voucher');
+    assert.equal(vouchers.length, 2);
+    const debit = descendants(vouchers[0]).find(el => el.props.class === 'ledger-debit-column');
+    const credit = descendants(vouchers[0]).find(el => el.props.class === 'ledger-credit-column');
+    assert.match(text(debit), /借方.*基本存款账户.*CNY 50,000\.00/s);
+    assert.doesNotMatch(text(debit), /实收资本/);
+    assert.match(text(credit), /贷方.*实收资本.*CNY 50,000\.00/s);
+    assert.doesNotMatch(text(credit), /基本存款账户/);
+    const movementTab = descendants(page.root).find(el => el.type === 'button' && text(el) === '收支变动明细');
+    movementTab.props.onClick(); await Vue.nextTick();
+    const movements = descendants(page.root).find(el => el.props.class === 'ledger-movement-list');
+    assert.match(text(movements), /转入.*增加.*\+CNY 50,000\.00/s);
+    assert.match(text(movements), /转出.*减少.*-CNY 13,000\.00/s);
     page.app.unmount();
   } else if (name === 'route_scope') {
     const mounts = [], wrapper = {ledger_ready: true, ledger_root: {}};
