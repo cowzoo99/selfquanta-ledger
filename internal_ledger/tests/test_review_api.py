@@ -11,6 +11,14 @@ def draft():
     return make_draft("expense", "expense", account("560201"), None)
 
 
+def additional_draft():
+    from internal_ledger.accounting.classifier import classify
+    from internal_ledger.accounting.drafts import create_draft
+
+    name = transaction(direction="expense", amount=Decimal("12.50"))
+    return frappe.get_doc("Voucher Draft", create_draft(name, classify(name)))
+
+
 def set_up():
     classification_set_up()
     if not frappe.db.exists("Fiscal Year", "2026"):
@@ -57,12 +65,12 @@ def test_rejection_requires_reason_and_reopen_before_approval():
 def test_batch_review_approves_or_rejects_all_selected_drafts():
     from internal_ledger.api.review_api import batch_review_drafts
 
-    approved = [draft(), draft()]
+    approved = [draft(), additional_draft()]
     outcomes = batch_review_drafts([row.name for row in approved], "approve")
     assert [row["status"] for row in outcomes] == ["Approved", "Approved"]
     assert all(frappe.get_doc("Voucher Draft", row.name).status == "Approved" for row in approved)
 
-    rejected = [draft(), draft()]
+    rejected = [additional_draft(), additional_draft()]
     outcomes = batch_review_drafts([row.name for row in rejected], "reject", "批量核对不通过")
     assert [row["status"] for row in outcomes] == ["Rejected", "Rejected"]
     assert all(frappe.get_doc("Voucher Draft", row.name).rejection_reason == "批量核对不通过"
@@ -73,7 +81,7 @@ def test_batch_review_approves_or_rejects_all_selected_drafts():
 def test_batch_review_keeps_processing_after_one_selected_draft_fails():
     from internal_ledger.api.review_api import batch_review_drafts
 
-    first, second = draft(), draft()
+    first, second = draft(), additional_draft()
     outcomes = batch_review_drafts([first.name, "missing-draft", second.name], "approve")
     assert [row["status"] for row in outcomes] == ["Approved", "failed", "Approved"]
     assert outcomes[1]["name"] == "missing-draft" and outcomes[1]["message"]
