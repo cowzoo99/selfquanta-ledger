@@ -18,6 +18,15 @@ def test_install_creates_roles_and_balanced_root_groups():
     assert frappe.db.count("Role", {"role_name": ["in", ["账套管理员", "账务查看者"]]}) == 2
 
 
+def test_install_enables_account_and_mobile_login():
+    frappe.db.set_single_value("System Settings", "allow_login_using_user_name", 0)
+    frappe.db.set_single_value("System Settings", "allow_login_using_mobile_number", 0)
+    ensure_roles()
+    settings = frappe.get_single("System Settings")
+    assert settings.allow_login_using_user_name == 1
+    assert settings.allow_login_using_mobile_number == 1
+
+
 def test_chart_has_unique_codes_and_valid_account_types():
     codes = []
     roots = {"资产": {"Asset"}, "负债": {"Liability"}, "所有者权益": {"Equity"},
@@ -104,6 +113,7 @@ def load_tests(loader, tests, pattern):
         unittest.FunctionTestCase(test, setUp=set_up, tearDown=tear_down)
         for test in (
             test_install_creates_roles_and_balanced_root_groups,
+            test_install_enables_account_and_mobile_login,
             test_chart_has_unique_codes_and_valid_account_types,
             test_install_chart_creates_accounts_and_is_idempotent,
             test_install_chart_rejects_existing_conflict_without_overwriting,

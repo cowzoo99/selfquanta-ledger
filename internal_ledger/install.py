@@ -16,8 +16,10 @@ LEDGER_REPORTS = ("General Ledger", "Trial Balance", "Balance Sheet", "Profit an
 
 def ensure_roles() -> None:
     require_ledger_admin()
-    frappe.db.set_single_value("System Settings", "language", "zh")
     before = _permission_state()
+    frappe.db.set_single_value("System Settings", "language", "zh")
+    frappe.db.set_single_value("System Settings", "allow_login_using_user_name", 1)
+    frappe.db.set_single_value("System Settings", "allow_login_using_mobile_number", 1)
     create_custom_fields({"User": [{
         "fieldname": "internal_ledger_must_change_password",
         "label": "Internal Ledger Must Change Password",
@@ -103,8 +105,11 @@ def _permission_state():
     password_field = frappe.db.get_value("Custom Field", {
         "dt": "User", "fieldname": "internal_ledger_must_change_password",
     }, ["fieldtype", "label", "hidden", "no_copy", "read_only", "default"])
+    login_settings = frappe.db.get_value("System Settings", "System Settings", [
+        "allow_login_using_user_name", "allow_login_using_mobile_number",
+    ])
     return (tuple(bool(frappe.db.exists("Role", role)) for role in ROLE_PERMISSIONS),
-            permissions, report_roles, password_field)
+            permissions, report_roles, password_field, login_settings)
 
 
 def load_chart_fixture() -> dict:

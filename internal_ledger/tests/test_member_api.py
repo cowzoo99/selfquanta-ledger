@@ -332,6 +332,96 @@ def test_member_creation_is_normalized_read_only_and_secret_free():
     assert MEMBER_PASSWORD not in frappe.as_json({"response": created, "audit": events})
 
 
+def test_member_creation_accepts_login_account_without_real_email():
+    from frappe.utils.password import check_password
+
+    from internal_ledger.api.member_api import create_enterprise_member
+
+    created = create_enterprise_member("  查看成员  ", None, MEMBER_PASSWORD, MEMBER_PASSWORD,
+                                       login_account=" Viewer_001 ")
+    assert created == {
+        "email": "viewer_001@members.selfledger.invalid",
+        "full_name": "查看成员",
+        "enabled": 1,
+        "must_change_password": 1,
+    }
+    doc = frappe.get_doc("User", created["email"])
+    assert doc.username == "viewer_001"
+    assert doc.email == "viewer_001@members.selfledger.invalid"
+    assert not doc.mobile_no
+    assert check_password(doc.name, MEMBER_PASSWORD) == doc.name
+    assert frappe.db.exists("Has Role", {"parent": doc.name, "role": "账务查看者"})
+    assert frappe.db.exists("User Permission", {"user": doc.name, "allow": "Company",
+                                                "for_value": frappe.flags.classification_company})
+
+
+def test_member_creation_rejects_invalid_or_duplicate_login_account():
+    from internal_ledger.api.member_api import create_enterprise_member
+
+    for account in ("", "1viewer", "ab", "查看者", "viewer-name"):
+        with unittest.TestCase().assertRaises(frappe.ValidationError):
+            create_enterprise_member("查看成员", None, MEMBER_PASSWORD, MEMBER_PASSWORD,
+                                     login_account=account)
+    create_enterprise_member("查看成员", None, MEMBER_PASSWORD, MEMBER_PASSWORD,
+                             login_account="viewer_unique")
+    with unittest.TestCase().assertRaisesRegex(frappe.ValidationError, "登录账号已存在"):
+        create_enterprise_member("另一个成员", None, MEMBER_PASSWORD, MEMBER_PASSWORD,
+                                 login_account=" VIEWER_UNIQUE ")
+
+
+def test_member_can_bind_email_and_mobile_then_login_with_all_three_identifiers():
+    from frappe.core.doctype.user.user import User
+
+    from internal_ledger.api.member_api import (create_enterprise_member, get_my_account,
+                                                 update_my_account)
+
+    created = create_enterprise_member("查看成员", None, MEMBER_PASSWORD, MEMBER_PASSWORD,
+                                       login_account="viewer_bind")
+    old_name = created["email"]
+    frappe.db.set_value("User", old_name, "internal_ledger_must_change_password", 0)
+    frappe.set_user(old_name)
+    assert get_my_account() == {"login_account": "viewer_bind", "email": "", "mobile_no": ""}
+
+    result = update_my_account("viewer.bind@example.invalid", "13800138000", MEMBER_PASSWORD)
+    assert result == {
+        "login_account": "viewer_bind",
+        "email": "viewer.bind@example.invalid",
+        "mobile_no": "13800138000",
+        "login_required": 1,
+    }
+    assert not frappe.db.exists("User", old_name)
+    doc = frappe.get_doc("User", "viewer.bind@example.invalid")
+    assert doc.username == "viewer_bind" and doc.mobile_no == "13800138000"
+    assert frappe.db.exists("Has Role", {"parent": doc.name, "role": "账务查看者"})
+    assert frappe.db.exists("User Permission", {"user": doc.name, "allow": "Company",
+                                                "for_value": frappe.flags.classification_company})
+    for identifier in ("viewer_bind", "viewer.bind@example.invalid", "13800138000"):
+        authenticated = User.find_by_credentials(identifier, MEMBER_PASSWORD)
+        assert authenticated and authenticated.name == doc.name and authenticated.is_authenticated
+
+
+def test_member_contact_binding_requires_current_password_and_unique_values():
+    from internal_ledger.api.member_api import create_enterprise_member, update_my_account
+
+    first = create_enterprise_member("甲成员", None, MEMBER_PASSWORD, MEMBER_PASSWORD,
+                                     login_account="viewer_first")
+    second = create_enterprise_member("乙成员", None, MEMBER_PASSWORD, MEMBER_PASSWORD,
+                                      login_account="viewer_second")
+    frappe.db.set_value("User", first["email"], {"mobile_no": "13900139000"})
+    frappe.rename_doc("User", first["email"], "first@example.invalid", force=True,
+                      show_alert=False)
+    frappe.db.set_value("User", second["email"], "internal_ledger_must_change_password", 0)
+    frappe.set_user(second["email"])
+    with unittest.TestCase().assertRaises(frappe.AuthenticationError):
+        update_my_account("second@example.invalid", "13800138000", "wrong-password")
+    for email, mobile, message in (
+        ("first@example.invalid", "13800138000", "邮箱已被其他账号绑定"),
+        ("second@example.invalid", "13900139000", "手机号已被其他账号绑定"),
+    ):
+        with unittest.TestCase().assertRaisesRegex(frappe.ValidationError, message):
+            update_my_account(email, mobile, MEMBER_PASSWORD)
+
+
 def test_member_listing_intersects_exact_company_and_viewer_role():
     from internal_ledger.api.member_api import _managed_member, list_enterprise_members
     from internal_ledger.tests.test_permissions import user
@@ -354,7 +444,8 @@ def test_member_listing_intersects_exact_company_and_viewer_role():
     expected = sorted(enabled, key=lambda row: (row["full_name"], row["email"])) + [disabled]
     assert [row["email"] for row in result["members"]] == [row["email"] for row in expected]
     for row in result["members"]:
-        assert set(row) == {"email", "full_name", "enabled", "creation", "last_login"}
+        assert set(row) == {"user", "email", "login_account", "contact_email", "mobile_no",
+                            "full_name", "enabled", "creation", "last_login"}
         assert isinstance(row["enabled"], int) and row["creation"]
     assert _managed_member(disabled["email"], company, for_update=True).name == disabled["email"]
     for target in (role_only, company_only, foreign, "Administrator", "Guest", "missing@example.invalid"):

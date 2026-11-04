@@ -4,6 +4,7 @@ import Dashboard from './pages/Dashboard.vue';
 import ImportPreview from './pages/ImportPreview.vue';
 import ReviewCenter from './pages/ReviewCenter.vue';
 import EnterpriseMembers from './pages/EnterpriseMembers.vue';
+import MyAccount from './pages/MyAccount.vue';
 import DuplicateReview from './pages/DuplicateReview.vue';
 import AccountingCenter from './pages/AccountingCenter.vue';
 import WorkflowNavigation from './components/WorkflowNavigation.vue';
@@ -19,7 +20,7 @@ const language = ref((frappe.boot?.lang || '').startsWith('zh') ? 'zh' : 'en');
 const savingLanguage = ref(false), languageError = ref('');
 const error = computed(() => languageError.value || counts.error || list.error);
 const canWrite = frappe.session.user === 'Administrator' || frappe.user_roles.includes('账套管理员');
-const navigation = [['dashboard', '业务总览'], ['import', '文件智能导入'], ['review', '待办中心'], ['accounting', '会计中心'], ...(canWrite ? [['members', '企业成员']] : [])];
+const navigation = [['dashboard', '业务总览'], ['import', '文件智能导入'], ['review', '待办中心'], ['accounting', '会计中心'], ...(canWrite ? [['members', '企业成员']] : []), ['account', '我的账号']];
 const page = computed(() => navigation.some(entry => entry[0] === props.view) || ['duplicates', 'classification'].includes(props.view) ? props.view : 'dashboard');
 const taskPage = computed(() => ['duplicates', 'classification'].includes(page.value) ? 'review' : page.value);
 const reviewFilter = ref(page.value === 'classification' ? '待分类' : (props.filter || '待审核'));
@@ -123,6 +124,7 @@ onMounted(refreshPage);
       <ImportPreview v-else-if="page === 'import'" :can-write="canWrite" @imported="refresh" />
       <DuplicateReview v-else-if="page === 'duplicates'" :can-write="canWrite" :batch="batch" :transaction="transaction" @refresh="refresh" />
       <EnterpriseMembers v-else-if="page === 'members' && canWrite" :active="page === 'members'" />
+      <MyAccount v-else-if="page === 'account'" :active="page === 'account'" />
       <AccountingCenter v-else-if="page === 'accounting'" :items="workflowItems" :can-write="canWrite" />
       <ReviewCenter v-else :list="list" :classification-run="classificationRun" :can-write="canWrite" :initial-filter="reviewFilter" :initial-batch="batch" :initial-transaction="transaction" @refresh="refresh" @filter-change="changeFilter" />
     </main>

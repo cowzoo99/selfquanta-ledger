@@ -11,7 +11,7 @@ export async function evidenceCall(method, args = {}) {
 
 export async function memberCall(method, args = {}) {
   const response = await frappe.call({method: `internal_ledger.api.member_api.${method}`, args,
-    type: method === 'list_enterprise_members' ? 'GET' : 'POST'});
+    type: ['list_enterprise_members', 'get_my_account'].includes(method) ? 'GET' : 'POST'});
   return response.message;
 }
 
