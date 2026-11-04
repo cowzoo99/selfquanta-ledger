@@ -93,6 +93,16 @@ def test_utf8_bom_and_gb18030_are_supported():
         assert len(parse("bank", content).rows) == 3
 
 
+def test_auto_detects_each_supported_csv_source():
+    from internal_ledger.importing.registry import parse_statement
+
+    for source in ("bank", "wechat", "alipay"):
+        result = parse_statement("auto", fixture(source), "测试资金账户")
+        assert result.source == source
+        assert len(result.rows) == 3
+        assert not result.errors
+
+
 def test_unknown_source_headers_encoding_and_size_are_rejected():
     rejects(lambda: parse("unknown", b"a,b\n1,2"), "不支持")
     rejects(lambda: parse("bank", "时间,金额\n2026-01-01,1".encode()), "表头")

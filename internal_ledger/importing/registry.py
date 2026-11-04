@@ -138,5 +138,11 @@ def parse_statement(source: str, content: bytes, payment_account: str, company: 
             raise ValidationError(str(exc)) from exc
         return ParseResult(result.rows, result.errors, hashlib.sha256(content).hexdigest(), result.source)
     if source == "auto":
-        raise ValidationError("CSV 文件请手动选择银行、微信或支付宝")
+        for parser in parsers.values():
+            try:
+                return parser(content, payment_account)
+            except ValidationError as exc:
+                if "未识别的账单表头" not in str(exc):
+                    raise
+        raise ValidationError("未识别的账单表头，请手动选择账单来源或检查 CSV 文件")
     return parsers[source](content, payment_account)
