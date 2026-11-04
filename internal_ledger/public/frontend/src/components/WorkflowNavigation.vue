@@ -28,6 +28,7 @@ const next = computed(() => steps.value[props.currentStage]);
   <nav class="ledger-step-footer" aria-label="智能记账上一步下一步">
     <a v-if="previous" :href="previous.href">← 上一步：{{ previous.label }}</a><span v-else>已在第一步</span>
     <strong>第 {{ currentStage }} / 5 步</strong>
-    <a v-if="next" :href="next.href">下一步：{{ next.label }} →</a><span v-else>流程已完成</span>
+    <a v-if="next" :href="next.href">下一步：{{ next.label }} →</a>
+    <a v-else href="/app/query-report/General%20Ledger">查看标准总账总览 →</a>
   </nav>
 </template>

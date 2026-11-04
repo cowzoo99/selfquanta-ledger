@@ -473,6 +473,10 @@ async function run(name) {
     assert.equal(href('下一步'), '/app/ledger-workbench/review/待分类/batch%2F%E4%B8%80');
     assert.ok(links.some(el => text(el).includes('重复复核') && el.props['aria-current'] === 'step'));
     page.app.unmount();
+    const completed = mount('components/WorkflowNavigation.vue', {currentStage: 5, counts: {posting: 8}});
+    const ledger = descendants(completed.root).find(el => el.type === 'a' && text(el).includes('查看标准总账总览'));
+    assert.equal(ledger?.props.href, '/app/query-report/General%20Ledger');
+    completed.app.unmount();
   } else if (name === 'review_pagination') {
     const rows = Array.from({length: 23}, (_, index) => item(`page-${index + 1}`));
     const page = mount('pages/ReviewCenter.vue', {list: {status: 'success', data: rows}, canWrite: true, initialFilter: '待审核'});
@@ -495,8 +499,12 @@ async function run(name) {
   } else if (name === 'accounting_center') {
     const page = mount('pages/AccountingCenter.vue', {});
     const body = text(page.root);
-    for (const label of ['会计中心', '凭证草稿', '正式记账凭证', '总账报表']) assert.match(body, new RegExp(label));
-    const hrefs = descendants(page.root).filter(el => el.type === 'a').map(el => el.props.href);
+    for (const label of ['会计中心', '标准总账总览', '凭证草稿', '正式记账凭证', '总账报表']) assert.match(body, new RegExp(label));
+    const links = descendants(page.root).filter(el => el.type === 'a');
+    const hrefs = links.map(el => el.props.href);
+    const primary = links.find(el => el.props.class === 'ledger-primary-action');
+    assert.equal(primary?.props.href, '/app/query-report/General%20Ledger');
+    assert.match(text(primary), /日期.*凭证.*借方.*贷方/s);
     assert.ok(hrefs.includes('/app/voucher-draft'));
     assert.ok(hrefs.includes('/app/journal-entry'));
     assert.ok(hrefs.includes('/app/query-report/General%20Ledger'));
