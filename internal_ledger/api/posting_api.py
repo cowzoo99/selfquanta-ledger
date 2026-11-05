@@ -51,3 +51,11 @@ def rebuild_posted_entry(transaction: str, values, expected_version: str) -> dic
     require_ledger_admin()
     parsed = frappe.parse_json(values) if isinstance(values, str) else values
     return posted_entry_maintenance.rebuild_posted_entry(transaction, parsed, expected_version)
+
+
+@frappe.whitelist(methods=["POST"])
+def permanently_delete_transactions(transactions, reason: str, expected_versions) -> list[dict]:
+    require_ledger_admin()
+    names = frappe.parse_json(transactions) if isinstance(transactions, str) else transactions
+    versions = frappe.parse_json(expected_versions) if isinstance(expected_versions, str) else expected_versions
+    return posted_entry_maintenance.permanently_delete_transactions(names, reason, versions)

@@ -11,6 +11,7 @@ LEDGER_DOCTYPES = ("Import Batch", "Imported Transaction", "Classification Rule"
                   "Internal Ledger Source File", "Ledger Evidence")
 _AUDIT_INSERT = object()
 _SOURCE_INSERT = object()
+_SOURCE_DELETE = object()
 _IMPORT_WRITE = object()
 _POSTED_ENTRY_REBUILD = object()
 _JOURNAL_WRITE = object()
@@ -221,7 +222,10 @@ def protect_source_file(doc, method=None):
         old and old.attached_to_doctype == "Internal Ledger Source File")
     if protected:
         require_ledger_admin()
-        if not doc.is_new() or method == "on_trash" or doc.flags.source_insert is not _SOURCE_INSERT:
+        if method == "on_trash":
+            if doc.flags.source_delete is not _SOURCE_DELETE:
+                frappe.throw("原始文件只读保存", frappe.PermissionError)
+        elif not doc.is_new() or doc.flags.source_insert is not _SOURCE_INSERT:
             frappe.throw("原始文件只读保存", frappe.PermissionError)
         if not doc.is_private:
             frappe.throw("原始文件必须私有", frappe.PermissionError)
@@ -292,7 +296,7 @@ class ProtectedLedgerFile:
         return ((self.attached_to_doctype == "Ledger Evidence"
                  and self.flags.evidence_file_write is _EVIDENCE_FILE_WRITE)
                 or (self.attached_to_doctype == "Internal Ledger Source File"
-                    and self.flags.source_insert is _SOURCE_INSERT))
+                    and (self.flags.source_insert is _SOURCE_INSERT or self.flags.source_delete is _SOURCE_DELETE)))
 
     def save_file(self, *args, **kwargs):
         protect_source_file(self, "save_file")
@@ -412,3 +416,14 @@ def audit_install_change(action, reference_doctype, reference_name):
             return
         frappe.throw("审计表未就绪，不能保存安装变更")
     record_audit(action, reference_doctype, reference_name, "success")
+
+
+def record_deleted_audit(action, reference, company, result) -> None:
+    require_ledger_admin()
+    if not company or company != frappe.db.get_single_value("Internal Ledger Settings", "company"):
+        frappe.throw("不能记录其他账套的删除操作", frappe.PermissionError)
+    event = frappe.get_doc({"doctype": "Internal Ledger Audit Event", "action": action,
+        "reference_doctype": reference.doctype, "reference_name": reference.name,
+        "result": result, "actor": frappe.session.user, "timestamp": now_datetime(), "company": company})
+    event.flags.audit_insert = _AUDIT_INSERT
+    event.insert(ignore_permissions=True, ignore_links=True)

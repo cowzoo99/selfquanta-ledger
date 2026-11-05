@@ -72,7 +72,8 @@ def delete_posting(posting_link: str, reason: str) -> dict:
             "draft": draft.name, "status": "deleted"}
 
 
-def _remove_formal_posting(link, draft, *, resulting_status: str | None = None) -> str:
+def _remove_formal_posting(link, draft, *, resulting_status: str | None = None,
+                           delete_permanently: bool = False) -> str:
     require_ledger_admin()
     journal = frappe.get_doc("Journal Entry", link.journal_entry, for_update=True)
     if journal.company != draft.company:
@@ -97,11 +98,11 @@ def _remove_formal_posting(link, draft, *, resulting_status: str | None = None) 
     journal.flags.ignore_permissions = True
     journal.cancel()
     frappe.db.delete("GL Entry", {"voucher_type": "Journal Entry", "voucher_no": journal.name})
-    frappe.delete_doc("Posting Link", link.name, ignore_permissions=True)
+    frappe.delete_doc("Posting Link", link.name, ignore_permissions=True, delete_permanently=delete_permanently)
     previous_delete = frappe.flags.get("ledger_journal_delete")
     frappe.flags.ledger_journal_delete = _JOURNAL_DELETE
     try:
-        frappe.delete_doc("Journal Entry", journal.name, ignore_permissions=True)
+        frappe.delete_doc("Journal Entry", journal.name, ignore_permissions=True, delete_permanently=delete_permanently)
     finally:
         frappe.flags.ledger_journal_delete = previous_delete
     # Frappe decrements the last number on delete. Rebuild must not reuse its identity.

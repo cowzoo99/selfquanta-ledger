@@ -1,7 +1,7 @@
 import frappe
 from frappe.model.document import Document
 
-from internal_ledger.permissions import _SOURCE_INSERT
+from internal_ledger.permissions import _SOURCE_DELETE, _SOURCE_INSERT
 
 
 class InternalLedgerSourceFile(Document):
@@ -16,4 +16,5 @@ class InternalLedgerSourceFile(Document):
             frappe.throw("原始文件只读保存", frappe.PermissionError)
 
     def on_trash(self):
-        frappe.throw("原始文件只读保存", frappe.PermissionError)
+        if self.flags.source_delete is not _SOURCE_DELETE:
+            frappe.throw("原始文件只读保存", frappe.PermissionError)

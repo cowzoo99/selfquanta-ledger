@@ -263,9 +263,9 @@ def test_viewer_reads_filtered_company_and_sensitive_fields():
     from internal_ledger.accounting.classifier import classify
     from internal_ledger.accounting.drafts import create_draft
 
-    other_tx = transaction()
+    other_tx = transaction(occurred_at="2026-10-02 10:00:00")
     other = frappe.get_doc("Voucher Draft", create_draft(other_tx, classify(other_tx)))
-    pending = transaction()
+    pending = transaction(occurred_at="2026-10-03 10:00:00")
     frappe.db.set_value("Voucher Draft", other.name, "company", "_Test Company")
     frappe.db.set_value("Import Batch", frappe.db.get_value("Imported Transaction", other.imported_transaction,
                                                           "import_batch"), "company", "_Test Company")

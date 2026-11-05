@@ -430,3 +430,212 @@ def load_tests(loader, tests, pattern):
         unittest.FunctionTestCase(test, setUp=set_up, tearDown=tear_down)
         for name, test in sorted(globals().items()) if name.startswith("test_")
     )
+
+def delete_item(item, reason="录入错误", version=None):
+    current = posting_api.get_posted_entry(item.transaction)
+    return posting_api.permanently_delete_transactions(
+        [item.transaction], reason, {item.transaction: version or current["version"]})[0]
+
+
+def evidence_fixture(item):
+    from internal_ledger.tests.test_evidence_api import evidence, attachment
+    from pathlib import Path
+
+    doc = evidence(item.transaction, note_html="private evidence content")
+    file = attachment(doc.name, marked=True)
+    return frappe._dict(evidence=doc.name, file=file.name, path=Path(file.get_full_path()))
+
+
+def source_fixture(item):
+    from pathlib import Path
+    from internal_ledger.permissions import _SOURCE_INSERT, _IMPORT_WRITE
+
+    batch = frappe.get_doc("Import Batch", frappe.db.get_value("Imported Transaction", item.transaction, "import_batch"))
+    source = frappe.get_doc({"doctype": "Internal Ledger Source File", "import_batch": batch.name})
+    source.flags.source_insert = _SOURCE_INSERT
+    source.insert()
+    file = frappe.get_doc({"doctype": "File", "file_name": "source.csv", "content": uuid4().hex,
+        "attached_to_doctype": source.doctype, "attached_to_name": source.name, "is_private": 1})
+    file.flags.source_insert = _SOURCE_INSERT
+    file.insert()
+    source.raw_file = file.file_url
+    source.save()
+    batch.flags.ledger_import_write = _IMPORT_WRITE
+    batch.flags.source_insert = _SOURCE_INSERT
+    batch.raw_file = source.name
+    batch.save()
+    return frappe._dict(batch=batch.name, carrier=source.name, file=file.name, path=Path(file.get_full_path()))
+
+
+def test_permanent_delete_removes_all_layers_and_keeps_minimal_audit():
+    item = posted_fixture()
+    evidence = evidence_fixture(item)
+    source = source_fixture(item)
+    lines = [row.name for row in frappe.get_doc("Voucher Draft", item.draft).lines]
+    assert delete_item(item) == {"transaction": item.transaction, "status": "deleted"}
+    targets = (("Imported Transaction", item.transaction), ("Voucher Draft", item.draft),
+        ("Journal Entry", item.journal), ("Posting Link", item.link), ("Ledger Evidence", evidence.evidence),
+        ("File", evidence.file), ("File", source.file), ("Internal Ledger Source File", source.carrier),
+        ("Import Batch", source.batch))
+    for doctype, name in targets:
+        assert not frappe.db.exists(doctype, name), doctype
+        assert not frappe.db.exists("Deleted Document", {"deleted_doctype": doctype, "deleted_name": name}), doctype
+    assert not frappe.db.exists("Voucher Draft Line", {"name": ["in", lines]})
+    assert not frappe.db.exists("GL Entry", {"voucher_no": item.journal})
+    assert not evidence.path.exists() and not source.path.exists()
+    audit = frappe.get_doc("Internal Ledger Audit Event", {"action": "permanently_delete_transaction",
+        "reference_name": item.transaction})
+    assert (audit.company, audit.actor, audit.result) == (frappe.flags.classification_company, "Administrator", "success")
+    assert "private evidence content" not in frappe.as_json(audit.as_dict())
+    assert frappe.allowed_http_methods_for_whitelisted_func[posting_api.permanently_delete_transactions] == ["POST"]
+
+
+def test_permanent_delete_keeps_source_until_last_batch_row():
+    first, second = posted_fixture(), second_posted_fixture()
+    source = source_fixture(first)
+    frappe.db.set_value("Imported Transaction", second.transaction, "import_batch", source.batch)
+    assert delete_item(first)["status"] == "deleted"
+    assert frappe.db.exists("Internal Ledger Source File", source.carrier)
+    assert frappe.db.exists("File", source.file) and source.path.exists()
+    assert delete_item(second)["status"] == "deleted"
+    assert not frappe.db.exists("Internal Ledger Source File", source.carrier)
+    assert not frappe.db.exists("File", source.file) and not source.path.exists()
+    assert not frappe.db.exists("Import Batch", source.batch)
+
+
+def test_permanent_delete_releases_duplicate_candidates():
+    item = posted_fixture()
+    candidate = transaction()
+    frappe.db.set_value("Imported Transaction", candidate, {"status": "Duplicate", "duplicate_of": item.transaction,
+        "dedupe_key": None, "candidate_dedupe_key": "old", "duplicate_review_status": "Pending",
+        "duplicate_match_reason": "old", "duplicate_review_note": "old"})
+    assert delete_item(item)["status"] == "deleted"
+    tx = frappe.get_doc("Imported Transaction", candidate)
+    assert tx.status == "Imported" and tx.dedupe_key == "released:" + candidate
+    assert all(not tx.get(field) for field in ("duplicate_of", "candidate_dedupe_key", "duplicate_review_status",
+        "duplicate_match_reason", "duplicate_reviewed_by", "duplicate_reviewed_at", "duplicate_review_note"))
+
+
+def test_permanent_delete_rejects_reason_and_stale_version_without_changes():
+    item = posted_fixture()
+    before = posting_snapshot(item)
+    for reason, version, message in ((" ", None, "永久删除必须填写原因"),
+                                     ("错误", "stale", "账目已被其他人修改，请刷新后重试")):
+        result = delete_item(item, reason, version)
+        assert result == {"transaction": item.transaction, "status": "failed", "message": message}
+        assert posting_snapshot(item) == before
+
+
+def test_permanent_delete_denies_viewer_outsider_and_guest():
+    from internal_ledger.accounting import posted_entry_maintenance as service
+
+    item = posted_fixture()
+    version = posting_api.get_posted_entry(item.transaction)["version"]
+    for actor in (user("账务查看者"), user("System Manager"), "Guest"):
+        frappe.set_user(actor)
+        for endpoint in (posting_api.permanently_delete_transactions, service.permanently_delete_transactions):
+            with unittest.TestCase().assertRaises(frappe.PermissionError):
+                endpoint([item.transaction], "错误", {item.transaction: version})
+        with unittest.TestCase().assertRaises(frappe.PermissionError):
+            service.permanently_delete_transaction(item.transaction, "错误", version)
+    frappe.set_user("Administrator")
+    assert frappe.db.exists("Imported Transaction", item.transaction)
+
+
+def test_permanent_delete_admin_accepts_json_and_deduplicates_in_order():
+    first, second = posted_fixture(), second_posted_fixture()
+    versions = {item.transaction: posting_api.get_posted_entry(item.transaction)["version"] for item in (first, second)}
+    frappe.set_user(user("账套管理员"))
+    result = posting_api.permanently_delete_transactions(
+        json.dumps([second.transaction, first.transaction, second.transaction]), "错误", json.dumps(versions))
+    assert result == [{"transaction": item.transaction, "status": "deleted"} for item in (second, first)]
+
+
+def test_permanent_delete_file_failure_restores_rows_and_already_deleted_blobs():
+    from internal_ledger.permissions import ProtectedLedgerFile
+
+    item = posted_fixture()
+    evidence, source = evidence_fixture(item), source_fixture(item)
+    original_bytes = evidence.path.read_bytes()
+    before = posting_snapshot(item)
+    original = ProtectedLedgerFile.on_trash
+    def fail_source(doc):
+        if doc.name == source.file:
+            raise OSError("模拟文件删除失败")
+        return original(doc)
+    with patch.object(ProtectedLedgerFile, "on_trash", fail_source):
+        result = delete_item(item)
+    assert result["status"] == "failed"
+    assert posting_snapshot(item) == before
+    assert evidence.path.read_bytes() == original_bytes and source.path.exists()
+    for doctype, name in (("Ledger Evidence", evidence.evidence), ("File", evidence.file),
+                           ("Internal Ledger Source File", source.carrier), ("File", source.file)):
+        assert frappe.db.exists(doctype, name)
+
+
+def test_permanent_delete_audit_failure_rolls_back_direct_service_and_files():
+    from internal_ledger.accounting.posted_entry_maintenance import permanently_delete_transaction
+
+    item = posted_fixture()
+    evidence = evidence_fixture(item)
+    before = posting_snapshot(item)
+    original_bytes = evidence.path.read_bytes()
+    with patch("internal_ledger.accounting.posted_entry_maintenance.record_deleted_audit",
+               side_effect=frappe.ValidationError("模拟审计失败")):
+        with unittest.TestCase().assertRaisesRegex(frappe.ValidationError, "模拟审计失败"):
+            permanently_delete_transaction(item.transaction, "错误", before["aggregate"]["version"])
+    assert posting_snapshot(item) == before
+    assert evidence.path.read_bytes() == original_bytes
+
+
+def test_permanent_delete_batch_isolates_failure_and_rejects_invalid_inputs():
+    first, second = posted_fixture(), second_posted_fixture()
+    versions = {item.transaction: posting_api.get_posted_entry(item.transaction)["version"] for item in (first, second)}
+    versions[first.transaction] = "stale"
+    result = posting_api.permanently_delete_transactions([first.transaction, second.transaction], "错误", versions)
+    assert [row["status"] for row in result] == ["failed", "deleted"]
+    assert frappe.db.exists("Imported Transaction", first.transaction)
+    assert not frappe.db.exists("Imported Transaction", second.transaction)
+    for names, versions in ((None, {}), ([], {}), ([123], {}), ([first.transaction], [])):
+        with unittest.TestCase().assertRaises(frappe.ValidationError):
+            posting_api.permanently_delete_transactions(names, "错误", versions)
+
+
+def test_permanent_delete_rejects_foreign_company_and_reversed_posting():
+    item = posted_fixture()
+    version = posting_api.get_posted_entry(item.transaction)["version"]
+    frappe.db.set_value("Posting Link", item.link, "reversal_journal_entry", item.journal)
+    assert posting_api.permanently_delete_transactions([item.transaction], "错误", {item.transaction: version})[0]["status"] == "failed"
+    frappe.db.set_value("Posting Link", item.link, "reversal_journal_entry", None)
+    batch = frappe.db.get_value("Imported Transaction", item.transaction, "import_batch")
+    frappe.db.set_value("Import Batch", batch, "company", "_Test Company")
+    assert posting_api.permanently_delete_transactions([item.transaction], "错误", {item.transaction: version})[0]["status"] == "failed"
+    assert frappe.db.exists("Journal Entry", item.journal)
+
+
+def test_permanent_delete_propagates_deadlocks():
+    item = posted_fixture()
+    version = posting_api.get_posted_entry(item.transaction)["version"]
+    with patch("internal_ledger.accounting.posted_entry_maintenance._locked_documents", side_effect=frappe.QueryDeadlockError):
+        with unittest.TestCase().assertRaises(frappe.QueryDeadlockError):
+            posting_api.permanently_delete_transactions([item.transaction], "错误", {item.transaction: version})
+
+
+def test_permanent_delete_source_markers_cannot_be_forged():
+    item = posted_fixture()
+    source = source_fixture(item)
+    for doctype, name in (("File", source.file), ("Internal Ledger Source File", source.carrier)):
+        for marker in (True, "source_delete", {}):
+            with unittest.TestCase().assertRaises(frappe.PermissionError):
+                frappe.delete_doc(doctype, name, flags={"source_delete": marker}, ignore_permissions=True)
+    assert source.path.exists()
+
+
+def second_posted_fixture():
+    from internal_ledger.tests.test_review_api import additional_draft
+    from internal_ledger.api.review_api import approve_draft
+
+    doc = approve_draft(additional_draft().name)
+    journal = posting_api.post_draft(doc.name)
+    return frappe._dict(transaction=doc.imported_transaction, draft=doc.name,
+                        journal=journal, link=link_for(doc.name))

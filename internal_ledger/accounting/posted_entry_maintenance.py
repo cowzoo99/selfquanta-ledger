@@ -1,3 +1,4 @@
+from contextlib import ExitStack
 from dataclasses import asdict, dataclass
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
@@ -17,7 +18,8 @@ from internal_ledger.importing.models import NormalizedTransaction
 
 from internal_ledger.internal_ledger.doctype.ledger_evidence.ledger_evidence import clean_note, clean_title
 from internal_ledger.permissions import (
-    _IMPORT_WRITE, _POSTED_ENTRY_REBUILD, document_company, record_audit, require_ledger_admin,
+    _EVIDENCE_FILE_WRITE, _EVIDENCE_WRITE, _IMPORT_WRITE, _POSTED_ENTRY_REBUILD, _SOURCE_DELETE,
+    _physical_file_path, document_company, record_audit, record_deleted_audit, require_ledger_admin,
 )
 
 
@@ -262,3 +264,125 @@ def rebuild_posted_entry(transaction: str, values: dict, expected_version: str) 
         raise
     frappe.db.release_savepoint(point)
     return result
+
+
+def _delete_attached_files(doctype, name, marker, undo_files):
+    names = frappe.db.get_values("File", {"attached_to_doctype": doctype, "attached_to_name": name},
+        "name", order_by="name", for_update=True, pluck=True)
+    for file_name in names:
+        attachment = frappe.get_doc("File", file_name, for_update=True)
+        originals = {}
+        for field in ("file_url", "thumbnail_url"):
+            path = _physical_file_path(attachment.get(field), attachment.is_private, deletion=True)
+            if path and path.exists():
+                originals[path] = path.read_bytes()
+
+        def restore_blob(originals=originals, file_name=file_name):
+            if frappe.db.exists("File", file_name):
+                for path, content in originals.items():
+                    if not path.exists():
+                        path.write_bytes(content)
+
+        undo_files.callback(restore_blob)
+        frappe.db.after_rollback.add(restore_blob)
+        frappe.delete_doc("File", file_name, ignore_permissions=True, delete_permanently=True,
+                          flags={marker[0]: marker[1]})
+
+
+def _delete_evidence_and_files(transaction, company, undo_files):
+    names = frappe.db.get_values("Ledger Evidence", {"imported_transaction": transaction},
+        "name", order_by="name", for_update=True, pluck=True)
+    for name in names:
+        evidence = frappe.get_doc("Ledger Evidence", name, for_update=True)
+        if evidence.company != company:
+            frappe.throw("佐证不属于当前账套", frappe.PermissionError)
+        _delete_attached_files("Ledger Evidence", name, ("evidence_file_write", _EVIDENCE_FILE_WRITE), undo_files)
+        frappe.delete_doc("Ledger Evidence", name, ignore_permissions=True, delete_permanently=True,
+                          flags={"ledger_evidence_write": _EVIDENCE_WRITE})
+
+
+def _release_duplicate_candidates(transaction, company):
+    names = frappe.db.get_values("Imported Transaction", {"duplicate_of": transaction},
+        "name", order_by="name", for_update=True, pluck=True)
+    for name in names:
+        candidate = frappe.get_doc("Imported Transaction", name, for_update=True)
+        if document_company(candidate) != company:
+            frappe.throw("重复流水不属于当前账套", frappe.PermissionError)
+        candidate.flags.ledger_import_write = _IMPORT_WRITE
+        candidate.status = "Imported"
+        candidate.dedupe_key = "released:" + name
+        for field in ("duplicate_of", "candidate_dedupe_key", "duplicate_review_status", "duplicate_match_reason",
+                      "duplicate_reviewed_by", "duplicate_reviewed_at", "duplicate_review_note"):
+            candidate.set(field, None)
+        candidate.save()
+
+
+def _delete_empty_batch_source(batch, undo_files):
+    names = frappe.db.get_values("Internal Ledger Source File", {"import_batch": batch.name},
+        "name", order_by="name", for_update=True, pluck=True)
+    if batch.raw_file and batch.raw_file not in names:
+        frappe.throw("原始文件不属于当前导入批次", frappe.PermissionError)
+    for name in names:
+        _delete_attached_files("Internal Ledger Source File", name, ("source_delete", _SOURCE_DELETE), undo_files)
+        # The batch and carrier deliberately link to one another.
+        frappe.delete_doc("Internal Ledger Source File", name, force=True, ignore_permissions=True,
+                          delete_permanently=True, flags={"source_delete": _SOURCE_DELETE})
+    frappe.delete_doc("Import Batch", batch.name, force=True, ignore_permissions=True, delete_permanently=True,
+                      flags={"ledger_import_write": _IMPORT_WRITE, "source_delete": _SOURCE_DELETE})
+
+
+def permanently_delete_transaction(transaction: str, reason: str, expected_version: str) -> dict:
+    require_ledger_admin()
+    if not isinstance(reason, str) or not reason.strip():
+        frappe.throw("永久删除必须填写原因")
+    point = "posted_delete_" + uuid4().hex
+    frappe.db.savepoint(point)
+    with ExitStack() as undo_files:
+        try:
+            tx, draft, link = _locked_documents(transaction)
+            if posted_entry_version(tx, draft, link) != expected_version:
+                frappe.throw("账目已被其他人修改，请刷新后重试")
+            batch = frappe.get_doc("Import Batch", tx.import_batch, for_update=True)
+            if batch.company != draft.company:
+                frappe.throw("导入批次不属于当前账套", frappe.PermissionError)
+            _remove_formal_posting(link, draft, delete_permanently=True)
+            _delete_evidence_and_files(tx.name, batch.company, undo_files)
+            frappe.delete_doc("Voucher Draft", draft.name, ignore_permissions=True, delete_permanently=True)
+            _release_duplicate_candidates(tx.name, batch.company)
+            frappe.delete_doc("Imported Transaction", tx.name, ignore_permissions=True, delete_permanently=True,
+                              flags={"ledger_import_write": _IMPORT_WRITE})
+            # Use a locking current read after waiting for the batch lock.
+            if not frappe.db.get_value("Imported Transaction", {"import_batch": batch.name},
+                                       "name", for_update=True):
+                _delete_empty_batch_source(batch, undo_files)
+            record_deleted_audit("permanently_delete_transaction",
+                frappe._dict(doctype="Imported Transaction", name=tx.name), batch.company, "success")
+        except frappe.QueryDeadlockError:
+            raise
+        except Exception:
+            frappe.db.rollback(save_point=point)
+            frappe.db.release_savepoint(point)
+            raise
+        frappe.db.release_savepoint(point)
+        undo_files.pop_all()
+    return {"transaction": tx.name, "status": "deleted"}
+
+
+def permanently_delete_transactions(transactions: list[str], reason: str, expected_versions: dict[str, str]) -> list[dict]:
+    require_ledger_admin()
+    if not isinstance(transactions, list) or not transactions:
+        frappe.throw("请选择要永久删除的账目")
+    if any(not isinstance(name, str) or not name.strip() for name in transactions):
+        frappe.throw("流水参数无效")
+    if not isinstance(expected_versions, dict):
+        frappe.throw("账目版本参数无效")
+    results = []
+    for name in dict.fromkeys(transactions):
+        try:
+            results.append(permanently_delete_transaction(name, reason, expected_versions.get(name)))
+        except frappe.QueryDeadlockError:
+            raise
+        except Exception as exc:
+            message = str(exc) if isinstance(exc, frappe.ValidationError) else "永久删除失败，请刷新后重试"
+            results.append({"transaction": name, "status": "failed", "message": message})
+    return results
