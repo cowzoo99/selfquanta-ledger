@@ -80,6 +80,28 @@ def test_json_note_payload_is_sanitized_on_save():
     assert "<table>" in save_note(api, tx, table)["note_html"]
 
 
+def test_posted_entry_title_and_note_are_editable_without_changing_formal_voucher():
+    from internal_ledger.accounting.posting import post_draft
+    from internal_ledger.api.review_api import approve_draft
+    from internal_ledger.api import evidence_api as api
+    from internal_ledger.tests.test_review_api import draft
+
+    doc = draft()
+    original_summary = doc.summary
+    approve_draft(doc.name)
+    journal_name = post_draft(doc.name)
+    before = api.get_evidence(doc.imported_transaction)
+    saved = api.save_evidence(doc.imported_transaction, "<p>过账后补充备注</p>",
+                              before["note_version"], display_title="  新展示标题  ")
+
+    assert saved["display_title"] == "新展示标题"
+    assert "过账后补充备注" in saved["note_html"]
+    assert frappe.db.get_value("Voucher Draft", doc.name, "summary") == original_summary
+    assert frappe.db.get_value("Journal Entry", journal_name, "user_remark") == original_summary
+    assert frappe.db.count("Internal Ledger Audit Event", {
+        "reference_name": doc.imported_transaction, "action": "update_evidence_note"}) == 1
+
+
 def test_existing_dirty_json_note_is_sanitized_before_api_read():
     from internal_ledger.api import evidence_api as api
 
@@ -831,7 +853,8 @@ def test_admin_saves_sanitized_note_private_attachment_and_audit():
     actor = user("账套管理员")
     frappe.set_user(actor)
     empty = api.get_evidence(tx)
-    assert empty == {"name": None, "transaction": tx, "note_html": "", "note_version": empty["note_version"], "attachments": []}
+    assert empty == {"name": None, "transaction": tx, "display_title": "", "note_html": "",
+                     "note_version": empty["note_version"], "attachments": []}
     assert not frappe.db.exists("Ledger Evidence", {"imported_transaction": tx})
     saved = save_note(api, tx, '<p>业务说明</p><script>alert(1)</script><table><tr><td>合同</td></tr></table>')
     assert "业务说明" in saved["note_html"] and "<table" in saved["note_html"]

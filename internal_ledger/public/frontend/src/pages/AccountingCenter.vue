@@ -1,8 +1,11 @@
 <script setup>
 import {computed, ref} from 'vue';
 import TransactionEvidence from '../components/TransactionEvidence.vue';
+import {errorMessage} from '../api';
 const props = defineProps({items: {type: Array, default: () => []}, canWrite: Boolean});
+const emit = defineEmits(['refresh']);
 const selected = ref('');
+const reversalFor = ref(''), reversalReason = ref(''), busy = ref(false), error = ref(''), notice = ref('');
 const ledgerView = ref('entries');
 const title = '会计中心';
 const currentYear = new Date().getFullYear();
@@ -14,16 +17,30 @@ const entries = computed(() => props.items.filter(item => item.draft?.status ===
   const debit = lines.filter(line => Number(line.debit) > 0);
   const credit = lines.filter(line => Number(line.credit) > 0);
   const incoming = item.transaction.direction === 'income';
-  return {name: item.draft.name, date: item.draft.posting_date || item.transaction.occurred_at?.slice(0, 10),
-    summary: item.draft.summary || item.transaction.counterparty || '未提供摘要', debit, credit,
+  return {name: item.draft.name, transaction: item.transaction.name,
+    date: item.draft.posting_date || item.transaction.occurred_at?.slice(0, 10),
+    summary: item.display_title || item.draft.summary || item.transaction.counterparty || '未提供摘要', debit, credit,
+    posting: item.posting,
     movement: {incoming, line: (incoming ? debit : credit)[0], amount: item.transaction.amount}};
 }));
+async function reversePosting(entry) {
+  if (!reversalReason.value.trim()) {error.value = '请填写冲销原因'; return;}
+  busy.value = true; error.value = ''; notice.value = '';
+  try {
+    await frappe.call({method: 'internal_ledger.api.posting_api.reverse_posting', type: 'POST',
+      args: {posting_link: entry.posting.name, reason: reversalReason.value.trim()}});
+    reversalFor.value = ''; reversalReason.value = ''; notice.value = '已作废并生成冲销凭证';
+    emit('refresh');
+  } catch (e) {error.value = errorMessage(e);}
+  finally {busy.value = false;}
+}
 </script>
 
 <template>
   <section aria-labelledby="accounting-center-title">
     <h2 id="accounting-center-title">{{ title }}</h2>
     <p>从凭证草稿核对借贷分录，管理员确认后生成正式记账凭证，并可继续查看总账。</p>
+    <p v-if="error" role="alert">{{ error }}</p><p v-if="notice" role="status">{{ notice }}</p>
     <a class="ledger-primary-action" href="#ledger-overview">
       <strong>标准总账总览</strong>
       <span>按日期和凭证分开查看借方、贷方，并可切换收支变动明细</span>
@@ -42,7 +59,18 @@ const entries = computed(() => props.items.filter(item => item.draft?.status ===
       <div v-else-if="ledgerView === 'entries'" class="ledger-voucher-list">
         <article v-for="entry in entries" :key="entry.name" class="ledger-overview-voucher">
           <div class="ledger-voucher-heading">
-            <strong>{{ entry.summary }}</strong><span>{{ entry.date }} · {{ entry.name }}</span>
+            <div><strong>{{ entry.summary }}</strong><span>{{ entry.date }} · {{ entry.name }}</span></div>
+            <div v-if="entry.posting?.status === 'Reversed'">
+              <strong>已作废（已生成冲销凭证）</strong>
+              <span>{{ entry.posting.reversal_journal_entry }}</span>
+            </div>
+            <button v-else-if="canWrite && entry.posting?.status === 'Posted'" type="button"
+              @click="reversalFor = entry.name; reversalReason = ''">作废并冲销</button>
+          </div>
+          <div v-if="reversalFor === entry.name" class="ledger-reversal">
+            <label>冲销原因<input v-model="reversalReason" type="text" maxlength="500"></label>
+            <button type="button" :disabled="busy" @click="reversePosting(entry)">确认作废并生成冲销凭证</button>
+            <button type="button" :disabled="busy" @click="reversalFor = ''; reversalReason = ''">取消</button>
           </div>
           <div class="ledger-entry-columns">
             <div class="ledger-debit-column">
@@ -73,11 +101,11 @@ const entries = computed(() => props.items.filter(item => item.draft?.status ===
     <h3>逐笔备注与附件</h3>
     <ul class="ledger-items">
       <li v-for="item in items" :key="item.transaction.name">
-        <strong>{{ item.transaction.counterparty || '未提供交易对象' }} · {{ item.transaction.amount }} · {{ item.transaction.occurred_at }}</strong>
+        <strong>{{ item.display_title || item.transaction.counterparty || '未提供交易对象' }} · {{ item.transaction.amount }} · {{ item.transaction.occurred_at }}</strong>
         <button type="button" @click="selected = item.transaction.name">查看备注与附件</button>
       </li>
     </ul>
-    <TransactionEvidence v-if="selected" :transaction="selected" :can-write="canWrite" />
+    <TransactionEvidence v-if="selected" :transaction="selected" :can-write="canWrite" @saved="emit('refresh')" />
   </section>
 </template>
 
@@ -87,6 +115,9 @@ const entries = computed(() => props.items.filter(item => item.draft?.status ===
 .ledger-voucher-list, .ledger-movement-list { display: grid; gap: 14px; }
 .ledger-overview-voucher, .ledger-movement-row { border: 1px solid var(--border-color, #d9dee3); border-radius: 10px; overflow: hidden; background: var(--card-bg, #fff); }
 .ledger-voucher-heading { display: flex; justify-content: space-between; gap: 12px; padding: 12px 16px; background: #f5f7f9; }
+.ledger-voucher-heading > div { display: grid; gap: 4px; }
+.ledger-reversal { display: flex; flex-wrap: wrap; align-items: end; gap: 8px; padding: 10px 16px; background: #fff4ef; }
+.ledger-reversal label { display: grid; gap: 4px; flex: 1 1 280px; }
 .ledger-voucher-heading span, .ledger-movement-row span { color: #606b75; }
 .ledger-entry-columns { display: grid; grid-template-columns: 1fr 1fr; }
 .ledger-debit-column, .ledger-credit-column { padding: 14px 16px; min-width: 0; }

@@ -88,6 +88,21 @@ def test_duplicates_are_retained_with_one_canonical_across_batches():
     assert frappe.db.count("Journal Entry") == frappe.flags.ledger_journal_count
 
 
+def test_same_day_core_payment_is_flagged_when_source_and_summary_differ():
+    first = save_batch("wechat", "similar-first", [tx(
+        source_id="SIMILAR-1", occurred_at="2026-10-01 09:00:00", summary="采购标题甲")])
+    second = save_batch("wechat", "similar-second", [tx(
+        source_id="SIMILAR-2", occurred_at="2026-10-01 18:30:00", summary="完全不同的备注")])
+    original = frappe.get_doc("Imported Transaction", {"import_batch": first})
+    candidate = frappe.get_doc("Imported Transaction", {"import_batch": second})
+
+    assert candidate.status == "Duplicate" and candidate.duplicate_review_status == "Pending"
+    assert candidate.duplicate_of == original.name
+    assert not candidate.dedupe_key and candidate.candidate_dedupe_key == "wechat:SIMILAR-2"
+    assert "同日" in candidate.duplicate_match_reason and "同金额" in candidate.duplicate_match_reason
+    assert frappe.db.count("Imported Transaction", {"name": ["in", [original.name, candidate.name]]}) == 2
+
+
 def test_amount_resolves_currency_from_import_batch():
     from frappe.model.meta import get_field_currency
 

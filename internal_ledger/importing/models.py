@@ -2,6 +2,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime
 from decimal import Decimal
 from typing import Literal
+from unicodedata import normalize
 from uuid import uuid4
 
 
@@ -16,6 +17,33 @@ class NormalizedTransaction:
     summary: str
     payment_account: str
     raw_row: int
+
+
+def _match_text(value: str) -> str:
+    return " ".join(normalize("NFKC", value or "").split()).casefold()
+
+
+def _similar_payment(frappe, company: str, row: NormalizedTransaction) -> str | None:
+    candidates = frappe.db.sql(
+        """
+        SELECT tx.name, tx.counterparty
+        FROM `tabImported Transaction` tx
+        INNER JOIN `tabImport Batch` batch ON batch.name = tx.import_batch
+        WHERE batch.company = %s
+          AND tx.status = 'Imported'
+          AND DATE(tx.occurred_at) = %s
+          AND tx.direction = %s
+          AND tx.amount = %s
+          AND tx.payment_account = %s
+        ORDER BY tx.creation, tx.name
+        FOR UPDATE
+        """,
+        (company, row.occurred_at.date(), row.direction, row.amount, row.payment_account),
+        as_dict=True,
+    )
+    counterparty = _match_text(row.counterparty)
+    return next((candidate.name for candidate in candidates
+                 if _match_text(candidate.counterparty) == counterparty), None)
 
 
 def save_batch(source: str, file_hash: str, rows: list[NormalizedTransaction]) -> str:
@@ -50,6 +78,19 @@ def save_batch(source: str, file_hash: str, rows: list[NormalizedTransaction]) -
             }
             frappe.db.savepoint(row_point)
             try:
+                canonical = frappe.db.get_value(
+                    "Imported Transaction", {"dedupe_key": values["dedupe_key"]}, "name", for_update=True,
+                )
+                reason = "来源流水号相同" if canonical and row.source_id else (
+                    "交易字段指纹相同" if canonical else "")
+                if not canonical:
+                    canonical = _similar_payment(frappe, settings.company, row)
+                    if canonical:
+                        reason = "同日、同方向、同资金账户、同交易对象且同金额（标题或备注可不同）"
+                if canonical:
+                    values.update(status="Duplicate", dedupe_key=None, duplicate_of=canonical,
+                                  duplicate_review_status="Pending", candidate_dedupe_key=values["dedupe_key"],
+                                  duplicate_match_reason=reason)
                 doc = frappe.get_doc(values)
                 doc.flags.ledger_import_write = _IMPORT_WRITE
                 doc.insert()

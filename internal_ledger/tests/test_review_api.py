@@ -218,6 +218,24 @@ def test_detail_includes_original_lines_and_month_counts():
     assert any(row["draft"]["name"] == doc.name for row in list_review_items())
 
 
+def test_posted_detail_exposes_reversal_state_and_display_title():
+    from internal_ledger.accounting.posting import post_draft
+    from internal_ledger.api.evidence_api import get_evidence, save_evidence
+    from internal_ledger.api.review_api import approve_draft, get_review_item
+
+    doc = draft()
+    approve_draft(doc.name)
+    journal = post_draft(doc.name)
+    current = get_evidence(doc.imported_transaction)
+    save_evidence(doc.imported_transaction, "", current["note_version"], display_title="展示标题")
+    item = get_review_item(doc.name)
+
+    assert item["display_title"] == "展示标题"
+    assert item["posting"]["status"] == "Posted"
+    assert item["posting"]["journal_entry"] == journal
+    assert not item["posting"]["reversal_journal_entry"]
+
+
 def test_latest_batch_counts_follow_drafts_duplicate_resolution_and_manual_work():
     from uuid import uuid4
     from internal_ledger.api.classification_api import classify_manually

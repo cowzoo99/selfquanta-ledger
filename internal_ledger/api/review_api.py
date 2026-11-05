@@ -85,8 +85,16 @@ def get_review_item(name: str):
         account = frappe.get_doc("Account", line["account"])
         account.check_permission("read")
         line.update(account_number=account.account_number, account_name=account.account_name)
+    display_title = frappe.db.get_value(
+        "Ledger Evidence", {"imported_transaction": tx.name}, "display_title",
+    ) or ""
+    posting = frappe.db.get_value(
+        "Posting Link", {"voucher_draft": doc.name},
+        ["name", "journal_entry", "status", "reversal_journal_entry", "reversal_reason"], as_dict=True,
+    )
     return {"draft": values, "transaction": _transaction_values(tx), "error": error,
-            "can_approve": doc.status == "Draft" and error is None}
+            "can_approve": doc.status == "Draft" and error is None,
+            "display_title": display_title, "posting": posting}
 
 
 @frappe.whitelist(methods=["GET", "POST"])

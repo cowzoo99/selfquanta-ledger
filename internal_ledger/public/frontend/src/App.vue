@@ -125,7 +125,7 @@ onMounted(refreshPage);
       <DuplicateReview v-else-if="page === 'duplicates'" :can-write="canWrite" :batch="batch" :transaction="transaction" @refresh="refresh" />
       <EnterpriseMembers v-else-if="page === 'members' && canWrite" :active="page === 'members'" />
       <MyAccount v-else-if="page === 'account'" :active="page === 'account'" />
-      <AccountingCenter v-else-if="page === 'accounting'" :items="workflowItems" :can-write="canWrite" />
+      <AccountingCenter v-else-if="page === 'accounting'" :items="workflowItems" :can-write="canWrite" @refresh="refresh" />
       <ReviewCenter v-else :list="list" :classification-run="classificationRun" :can-write="canWrite" :initial-filter="reviewFilter" :initial-batch="batch" :initial-transaction="transaction" @refresh="refresh" @filter-change="changeFilter" />
     </main>
   </div>

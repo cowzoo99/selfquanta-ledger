@@ -148,6 +148,19 @@ def test_dashboard_orders_import_totals_four_tasks_latest_batch_and_erp():
     assert "duplicates" not in navigation and "classification" not in navigation
 
 
+def test_accounting_center_supports_posted_metadata_and_safe_reversal():
+    accounting = (ROOT / "public/frontend/src/pages/AccountingCenter.vue").read_text(encoding="utf-8")
+    evidence = (ROOT / "public/frontend/src/components/TransactionEvidence.vue").read_text(encoding="utf-8")
+    app = (ROOT / "public/frontend/src/App.vue").read_text(encoding="utf-8")
+
+    for text in ("作废并冲销", "冲销原因", "internal_ledger.api.posting_api.reverse_posting",
+                 "posting.status", "已作废（已生成冲销凭证）"):
+        assert text in accounting
+    for text in ("display_title", "展示标题", "保存标题和备注"):
+        assert text in evidence
+    assert '@refresh="refresh"' in app
+
+
 def test_default_workspace_patch_sets_only_blank_ledger_users():
     from internal_ledger.patches.set_selfledger_default_workspace import execute
     from internal_ledger.tests.test_permissions import user

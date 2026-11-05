@@ -1,10 +1,11 @@
 {
  "doctype": "DocType", "name": "Ledger Evidence", "module": "Internal Ledger",
  "autoname": "hash", "engine": "InnoDB",
- "field_order": ["imported_transaction", "company", "note_html"],
+ "field_order": ["imported_transaction", "company", "display_title", "note_html"],
  "fields": [
   {"fieldname": "imported_transaction", "label": "Imported Transaction", "fieldtype": "Link", "options": "Imported Transaction", "reqd": 1, "unique": 1, "read_only": 1},
   {"fieldname": "company", "label": "Company", "fieldtype": "Link", "options": "Company", "reqd": 1, "read_only": 1},
+  {"fieldname": "display_title", "label": "Display Title", "fieldtype": "Data", "length": 140},
   {"fieldname": "note_html", "label": "Note", "fieldtype": "Text Editor"}
  ],
  "permissions": [
