@@ -175,6 +175,14 @@ def test_accounting_center_uses_one_versioned_full_entry_editor():
         assert text in editor
 
 
+def test_accounting_center_preserves_pending_write_completion():
+    _run_review_component_case("accounting_center_pending_write")
+
+
+def test_accounting_center_reversed_evidence_is_read_only():
+    _run_review_component_case("accounting_center_reversed_evidence")
+
+
 def test_posted_entry_editor_frontend():
     _run_review_component_case("posted_entry_editor")
 

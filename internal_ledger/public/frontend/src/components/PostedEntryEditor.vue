@@ -4,10 +4,14 @@ import TransactionEvidence from './TransactionEvidence.vue';
 import {directions, transactionTypes} from '../labels';
 import {errorMessage} from '../api';
 const props = defineProps({transaction: {type: String, required: true}, canWrite: Boolean, evidenceOnly: Boolean, disabled: Boolean});
-const emit = defineEmits(['saved', 'deleted', 'closed']);
+const emit = defineEmits(['saved', 'deleted', 'closed', 'busy-change']);
 const aggregate = ref(null), form = ref(null), accounts = ref([]);
 const busy = ref(false), loading = ref(false), error = ref('');
-const canEdit = computed(() => props.canWrite && !props.disabled && !!aggregate.value && !busy.value && !loading.value);
+const evidenceBusy = ref(false);
+const writeBusy = computed(() => busy.value || evidenceBusy.value);
+watch(writeBusy, value => emit('busy-change', value), {flush: 'sync'});
+const canEdit = computed(() => props.canWrite && !props.disabled && !!aggregate.value && !writeBusy.value && !loading.value);
+function close() {if (!writeBusy.value && !props.disabled) emit('closed');}
 const occurredAt = computed({get: () => form.value.occurred_at.replace(' ', 'T'),
   set: value => {form.value.occurred_at = value.replace('T', ' ');}});
 const debitLines = ref([]), creditLines = ref([]);
@@ -92,7 +96,7 @@ async function remove() {
   <section aria-label="整笔账目">
     <div class="ledger-edit-heading">
       <h3>{{ evidenceOnly ? '备注与附件' : canWrite ? '编辑整笔账目' : '查看整笔账目' }}</h3>
-      <button type="button" :disabled="busy || disabled" @click="emit('closed')">关闭</button>
+      <button type="button" :disabled="writeBusy || disabled" @click="close">关闭</button>
     </div>
     <p v-if="loading" role="status">正在载入账目…</p>
     <p v-if="error" role="alert">{{ error }}</p>
@@ -135,7 +139,7 @@ async function remove() {
         <p v-for="(line, index) in (side === 'debit' ? debitLines : creditLines)" :key="index">{{ accountLabel(line.account) }} · {{ line[side] }}</p>
       </section>
     </template>
-    <TransactionEvidence v-if="form || evidenceOnly" :transaction="transaction" :can-write="canWrite" :disabled="disabled || busy || loading" @saved="emit('saved')" />
+    <TransactionEvidence v-if="form || evidenceOnly" :transaction="transaction" :can-write="canWrite" :disabled="disabled || busy || loading" @busy-change="evidenceBusy = $event" @saved="emit('saved')" />
   </section>
 </template>
 

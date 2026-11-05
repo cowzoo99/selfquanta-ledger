@@ -674,6 +674,93 @@ async function run(name) {
     page.state.remember = true; await page.state.submit(); await Vue.nextTick();
     assert.match(text(page.root), /仅处理本笔（不保存规则）/); assert.match(text(page.root), /前往核对已有分类规则/);
     page.app.unmount();
+  } else if (name === 'accounting_center_pending_write') {
+    for (const operation of ['rebuild_posted_entry', 'permanently_delete_transactions', 'save_evidence']) {
+      const rows = ['one', 'two'].map(id => {
+        const row = item('pending-' + id); row.draft.status = 'Posted';
+        row.posting = {name: 'posting-' + id, status: 'Posted'}; return row;
+      });
+      const pending = deferred(); let refreshed = 0;
+      global.window = {prompt: () => '误录', confirm: () => true};
+      frappe.call = async args => {
+        calls.push(args);
+        if (args.method.endsWith(operation)) return pending.promise;
+        if (args.method.endsWith('get_posted_entry')) return {message: postedAggregate(rows.find(row => row.transaction.name === args.args.transaction))};
+        if (args.method.endsWith('list_leaf_accounts')) return {message: []};
+        return {message: {display_title: '原始标题', note_html: '<p>现有备注</p>', note_version: 'n1', attachments: []}};
+      };
+      const page = mount('pages/AccountingCenter.vue', {items: rows, canWrite: true, onRefresh: () => refreshed++}, true);
+      await page.state.openEditor(rows[0].transaction.name); await settle();
+      page.state.selectedTransactions = [rows[1].transaction.name];
+      const editor = child(page.root._vnode, 'PostedEntryEditor');
+      const writing = operation === 'save_evidence' ? child(page.root._vnode, 'TransactionEvidence').setupState.save()
+        : operation === 'rebuild_posted_entry' ? editor.setupState.save() : editor.setupState.remove();
+      assert.equal(page.state.editorBusy, true, 'write lock must reach the parent before the next render');
+      await page.state.openEditor(rows[1].transaction.name);
+      assert.equal(page.state.selected, rows[0].transaction.name);
+      await settle();
+      const buttons = descendants(page.root).filter(el => el.type === 'button');
+      const rowButtons = buttons.filter(el => text(el) === '编辑整笔账目');
+      assert.ok(rowButtons.length >= 2);
+      assert.ok(rowButtons.every(el => el.props.disabled), operation + ': row switching must be disabled while a write is pending');
+      const movement = buttons.find(el => text(el) === '收支变动明细'); assert.equal(movement.props.disabled, true);
+      movement.props.onClick(); assert.equal(page.state.ledgerView, 'entries');
+      rowButtons.at(-1).props.onClick(); await settle(); assert.equal(page.state.selected, rows[0].transaction.name);
+      const close = buttons.find(el => text(el) === '关闭'); assert.equal(close.props.disabled, true);
+      close.props.onClick(); assert.equal(page.state.selected, rows[0].transaction.name);
+      const reversals = buttons.filter(el => text(el) === '作废并冲销'); assert.ok(reversals.every(el => el.props.disabled));
+      const before = calls.length; await page.state.deleteSelectedTransactions(); assert.equal(calls.length, before);
+      const link = descendants(page.root).find(el => el.type === 'a' && el.props.href === '/app/voucher-draft');
+      assert.equal(link.props['aria-disabled'], true); let prevented = false;
+      link.props.onClick({preventDefault: () => {prevented = true;}}); assert.equal(prevented, true);
+      assert.equal(refreshed, 0);
+      pending.resolve({message: operation === 'permanently_delete_transactions'
+        ? [{transaction: rows[0].transaction.name, status: 'deleted'}]
+        : operation === 'save_evidence' ? {note_html: '<p>已保存</p>', note_version: 'n2', attachments: []} : postedAggregate(rows[0])});
+      await writing; await settle();
+      assert.equal(refreshed, 1, operation + ': completion must emit exactly one refresh');
+      assert.equal(page.state.selected, ''); assert.deepEqual([...page.state.selectedTransactions], []);
+      assert.match(page.state.notice, operation === 'permanently_delete_transactions' ? /已永久删除账目/ : /账目已保存/);
+      assert.equal(descendants(page.root).find(el => el.type === 'button' && text(el) === '收支变动明细').props.disabled, false);
+      page.app.unmount();
+    }
+  } else if (name === 'accounting_center_reversed_evidence') {
+    const row = item('reversed'); row.draft.status = 'Posted';
+    row.posting = {name: 'posting-reversed', status: 'Reversed', reversal_journal_entry: 'reversal-one'};
+    frappe.call = async args => {
+      calls.push(args);
+      if (args.method.endsWith('get_posted_entry')) throw new Error('已冲销凭证不能编辑或删除');
+      return {message: {display_title: '已冲销账目标题', note_html: '<p>保留的冲销备注</p>', note_version: 'n1',
+        attachments: [{name: 'f1', file_name: '原始凭据.pdf', file_url: '/private/files/reversed.pdf', is_image: false}]}};
+    };
+    const page = mount('pages/AccountingCenter.vue', {items: [row], canWrite: true}, true);
+    for (const view of ['entries', 'movements']) {
+      page.state.ledgerView = view; await settle();
+      await page.state.openEditor(row.transaction.name); await settle();
+      const evidence = child(page.root._vnode, 'TransactionEvidence');
+      assert.ok(evidence, 'reversed entries must keep evidence access');
+      assert.equal(evidence.props.canWrite, false);
+      assert.equal(child(page.root._vnode, 'PostedEntryEditor').props.evidenceOnly, true);
+      assert.match(text(page.root), /已冲销账目标题/);
+      assert.equal(descendants(page.root).find(el => el.props.innerHTML)?.props.innerHTML, '<p>保留的冲销备注</p>');
+      assert.ok(descendants(page.root).some(el => el.type === 'a' && el.props.href === '/private/files/reversed.pdf'));
+      assert.equal(descendants(page.root).filter(el => ['input', 'select', 'textarea'].includes(el.type)).length, 0);
+      assert.doesNotMatch(text(page.root), /编辑整笔账目|保存整笔账目|永久删除|保存标题和备注|上传附件|删除附件/);
+      const before = calls.length;
+      await evidence.setupState.save(); await child(page.root._vnode, 'PostedEntryEditor').setupState.save();
+      await child(page.root._vnode, 'PostedEntryEditor').setupState.remove(); assert.equal(calls.length, before);
+      page.state.selected = ''; await settle();
+    }
+    assert.equal(calls.filter(row => row.method.endsWith('get_posted_entry')).length, 0);
+    assert.equal(calls.filter(row => row.method.endsWith('get_evidence')).length, 2);
+    page.app.unmount();
+    const nonposted = item('not-posted');
+    const compatible = mount('pages/AccountingCenter.vue', {items: [nonposted], canWrite: true}, true);
+    await compatible.state.openEditor(nonposted.transaction.name); await settle();
+    assert.equal(child(compatible.root._vnode, 'PostedEntryEditor').props.evidenceOnly, true);
+    assert.equal(child(compatible.root._vnode, 'TransactionEvidence').props.canWrite, true);
+    assert.match(text(compatible.root), /保存标题和备注/);
+    compatible.app.unmount();
   } else if (name === 'accounting_center') {
     const income = item('capital', 'new', {direction: 'income', amount: 50000,
       occurred_at: '2026-08-13 15:38:00', counterparty: '股东投入'});

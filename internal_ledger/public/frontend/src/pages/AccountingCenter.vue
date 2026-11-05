@@ -8,7 +8,12 @@ const selected = ref('');
 const editorPanel = ref(null);
 const reversalFor = ref(''), reversalReason = ref(''), busy = ref(false), error = ref(''), notice = ref('');
 const selectedTransactions = ref([]);
-const evidenceOnly = computed(() => !!selected.value && !entries.value.some(entry => entry.transaction === selected.value));
+const editorBusy = ref(false);
+const locked = computed(() => busy.value || editorBusy.value);
+const isReversed = entry => entry.posting?.status === 'Reversed' || !!entry.posting?.reversal_journal_entry;
+const selectedReversed = computed(() => isReversed(props.items.find(item => item.transaction.name === selected.value) || {}));
+const evidenceOnly = computed(() => selectedReversed.value || (!!selected.value && !entries.value.some(entry => entry.transaction === selected.value)));
+const editorCanWrite = computed(() => props.canWrite && !selectedReversed.value);
 const ledgerView = ref('entries');
 const title = '会计中心';
 const currentYear = new Date().getFullYear();
@@ -26,18 +31,25 @@ const entries = computed(() => props.items.filter(item => item.draft?.status ===
     posting: item.posting,
     movement: {incoming, line: (incoming ? debit : credit)[0], amount: item.transaction.amount}};
 }));
-const deletableEntries = computed(() => entries.value.filter(entry => entry.posting?.status === 'Posted'));
+const deletableEntries = computed(() => entries.value.filter(entry => entry.posting?.status === 'Posted' && !isReversed(entry)));
 const allDeletableSelected = computed(() => deletableEntries.value.length > 0 &&
   deletableEntries.value.every(entry => selectedTransactions.value.includes(entry.transaction)));
 function toggleAllDeletable() {
-  if (!props.canWrite || busy.value) return;
+  if (!props.canWrite || locked.value) return;
   selectedTransactions.value = allDeletableSelected.value ? [] : deletableEntries.value.map(entry => entry.transaction);
 }
 async function openEditor(name) {
-  if (busy.value) return;
+  if (locked.value) return;
   selected.value = name; error.value = ''; notice.value = '';
   await nextTick();
   editorPanel.value?.scrollIntoView?.({behavior: 'smooth', block: 'start'});
+}
+function switchView(view) {if (!locked.value) ledgerView.value = view;}
+function closeEditor() {if (!locked.value) selected.value = '';}
+function blockNavigation(event) {if (locked.value) event.preventDefault();}
+function openReversal(entry) {
+  if (locked.value) return;
+  reversalFor.value = entry.name; reversalReason.value = '';
 }
 function completed(kind) {
   selected.value = ''; selectedTransactions.value = [];
@@ -45,7 +57,7 @@ function completed(kind) {
   emit('refresh');
 }
 async function deleteSelectedTransactions() {
-  if (!props.canWrite || busy.value) return;
+  if (!props.canWrite || locked.value) return;
   const names = selectedTransactions.value.filter(name => deletableEntries.value.some(entry => entry.transaction === name));
   if (!names.length) {error.value = '请先选择要永久删除的账目'; return;}
   busy.value = true; error.value = ''; notice.value = '';
@@ -72,7 +84,7 @@ async function deleteSelectedTransactions() {
   finally {busy.value = false;}
 }
 async function reversePosting(entry) {
-  if (!props.canWrite || busy.value) return;
+  if (!props.canWrite || locked.value) return;
   if (!reversalReason.value.trim()) {error.value = '请填写冲销原因'; return;}
   busy.value = true; error.value = ''; notice.value = '';
   try {
@@ -90,34 +102,34 @@ async function reversePosting(entry) {
     <h2 id="accounting-center-title">{{ title }}</h2>
     <p>从凭证草稿核对借贷分录，管理员确认后生成正式记账凭证，并可继续查看总账。</p>
     <p v-if="error" role="alert">{{ error }}</p><p v-if="notice" role="status">{{ notice }}</p>
-    <a class="ledger-primary-action" href="#ledger-overview">
+    <a class="ledger-primary-action" href="#ledger-overview" :aria-disabled="locked" @click="blockNavigation">
       <strong>标准总账总览</strong>
       <span>按日期和凭证分开查看借方、贷方，并可切换收支变动明细</span>
     </a>
     <div class="ledger-cards">
-      <a class="ledger-card" href="/app/voucher-draft"><strong>凭证草稿</strong><span>查看自动分类和人工补充后形成的借贷草稿</span></a>
-      <a class="ledger-card" href="/app/ledger-workbench/accounting#ledger-overview"><strong>正式记账凭证</strong><span>查看并受控维护管理员确认过账后的正式凭证</span></a>
-      <a class="ledger-card" :href="generalLedgerHref"><strong>总账报表</strong><span>按科目和期间查询正式账簿</span></a>
+      <a class="ledger-card" :aria-disabled="locked" @click="blockNavigation" href="/app/voucher-draft"><strong>凭证草稿</strong><span>查看自动分类和人工补充后形成的借贷草稿</span></a>
+      <a class="ledger-card" :aria-disabled="locked" @click="blockNavigation" href="/app/ledger-workbench/accounting#ledger-overview"><strong>正式记账凭证</strong><span>查看并受控维护管理员确认过账后的正式凭证</span></a>
+      <a class="ledger-card" :aria-disabled="locked" @click="blockNavigation" :href="generalLedgerHref"><strong>总账报表</strong><span>按科目和期间查询正式账簿</span></a>
     </div>
     <div id="ledger-overview" class="ledger-overview">
       <div class="ledger-view-tabs" role="tablist" aria-label="总账展示方式">
-        <button type="button" :aria-current="ledgerView === 'entries' ? 'page' : undefined" @click="ledgerView = 'entries'">借贷分录</button>
-        <button type="button" :aria-current="ledgerView === 'movements' ? 'page' : undefined" @click="ledgerView = 'movements'">收支变动明细</button>
+        <button type="button" :aria-current="ledgerView === 'entries' ? 'page' : undefined" :disabled="locked" @click="switchView('entries')">借贷分录</button>
+        <button type="button" :aria-current="ledgerView === 'movements' ? 'page' : undefined" :disabled="locked" @click="switchView('movements')">收支变动明细</button>
       </div>
       <section v-if="selected" ref="editorPanel" class="ledger-edit-panel">
-        <PostedEntryEditor :key="selected" :transaction="selected" :can-write="canWrite" :disabled="busy" :evidence-only="evidenceOnly"
-          @saved="completed('saved')" @deleted="completed('deleted')" @closed="selected = ''" />
+        <PostedEntryEditor :key="selected" :transaction="selected" :can-write="editorCanWrite" :disabled="busy" :evidence-only="evidenceOnly"
+          @busy-change="editorBusy = $event" @saved="completed('saved')" @deleted="completed('deleted')" @closed="closeEditor" />
       </section>
       <p v-if="!entries.length">暂无已过账凭证。</p>
       <div v-else-if="ledgerView === 'entries'" class="ledger-voucher-list">
         <div v-if="canWrite && deletableEntries.length" class="ledger-delete-toolbar">
-          <label><input type="checkbox" :checked="allDeletableSelected" @change="toggleAllDeletable">全选可永久删除账目</label>
-          <button type="button" :disabled="busy || !selectedTransactions.length" @click="deleteSelectedTransactions">永久删除选中项</button>
+          <label><input type="checkbox" :disabled="locked" :checked="allDeletableSelected" @change="toggleAllDeletable">全选可永久删除账目</label>
+          <button type="button" :disabled="locked || !selectedTransactions.length" @click="deleteSelectedTransactions">永久删除选中项</button>
         </div>
         <article v-for="entry in entries" :key="entry.name" class="ledger-overview-voucher">
           <div class="ledger-voucher-heading">
             <div class="ledger-voucher-select">
-              <input v-if="canWrite && entry.posting?.status === 'Posted'" v-model="selectedTransactions" type="checkbox"
+              <input v-if="canWrite && entry.posting?.status === 'Posted' && !isReversed(entry)" v-model="selectedTransactions" :disabled="locked" type="checkbox"
                 :value="entry.transaction" :aria-label="`选择永久删除 ${entry.summary}`">
               <div><strong>{{ entry.summary }}</strong><span>{{ entry.date }} · {{ entry.name }}</span></div>
             </div>
@@ -126,16 +138,16 @@ async function reversePosting(entry) {
               <span>{{ entry.posting.reversal_journal_entry }}</span>
             </div>
             <div class="ledger-entry-actions">
-              <button type="button" :disabled="busy" @click="openEditor(entry.transaction)">{{ canWrite ? '编辑整笔账目' : '查看整笔账目' }}</button>
-              <button v-if="canWrite && entry.posting?.status === 'Posted'" type="button" :disabled="busy" @click="openEditor(entry.transaction)">永久删除</button>
-              <button v-if="canWrite && entry.posting && entry.posting.status === 'Posted'" type="button"
-                @click="reversalFor = entry.name; reversalReason = ''">作废并冲销</button>
+              <button type="button" :disabled="locked" @click="openEditor(entry.transaction)">{{ isReversed(entry) ? '查看备注与附件' : canWrite ? '编辑整笔账目' : '查看整笔账目' }}</button>
+              <button v-if="canWrite && entry.posting?.status === 'Posted' && !isReversed(entry)" type="button" :disabled="locked" @click="openEditor(entry.transaction)">永久删除</button>
+              <button v-if="canWrite && entry.posting && entry.posting.status === 'Posted' && !isReversed(entry)" type="button" :disabled="locked"
+                @click="openReversal(entry)">作废并冲销</button>
             </div>
           </div>
-          <div v-if="reversalFor === entry.name" class="ledger-reversal">
+          <div v-if="canWrite && reversalFor === entry.name" class="ledger-reversal">
             <label>冲销原因<input v-model="reversalReason" type="text" maxlength="500"></label>
-            <button type="button" :disabled="busy" @click="reversePosting(entry)">确认作废并生成冲销凭证</button>
-            <button type="button" :disabled="busy" @click="reversalFor = ''; reversalReason = ''">取消</button>
+            <button type="button" :disabled="locked" @click="reversePosting(entry)">确认作废并生成冲销凭证</button>
+            <button type="button" :disabled="locked" @click="reversalFor = ''; reversalReason = ''">取消</button>
           </div>
           <div class="ledger-entry-columns">
             <div class="ledger-debit-column">
@@ -161,8 +173,8 @@ async function reversePosting(entry) {
             {{ entry.movement.incoming ? '+' : '-' }}{{ amount(entry.movement.amount) }}
           </strong>
           <div class="ledger-entry-actions">
-            <button type="button" :disabled="busy" @click="openEditor(entry.transaction)">{{ canWrite ? '编辑整笔账目' : '查看整笔账目' }}</button>
-            <button v-if="canWrite && entry.posting?.status === 'Posted'" type="button" :disabled="busy" @click="openEditor(entry.transaction)">永久删除</button>
+            <button type="button" :disabled="locked" @click="openEditor(entry.transaction)">{{ isReversed(entry) ? '查看备注与附件' : canWrite ? '编辑整笔账目' : '查看整笔账目' }}</button>
+            <button v-if="canWrite && entry.posting?.status === 'Posted' && !isReversed(entry)" type="button" :disabled="locked" @click="openEditor(entry.transaction)">永久删除</button>
           </div>
         </article>
       </div>
@@ -171,7 +183,7 @@ async function reversePosting(entry) {
     <ul class="ledger-items">
       <li v-for="item in items" :key="item.transaction.name">
         <strong>{{ item.display_title || item.transaction.counterparty || '未提供交易对象' }} · {{ item.transaction.amount }} · {{ item.transaction.occurred_at }}</strong>
-        <button type="button" @click="openEditor(item.transaction.name)">{{ canWrite ? '编辑' : '查看' }}备注与附件</button>
+        <button type="button" :disabled="locked" @click="openEditor(item.transaction.name)">{{ canWrite && !isReversed(item) ? '编辑' : '查看' }}备注与附件</button>
       </li>
     </ul>
   </section>

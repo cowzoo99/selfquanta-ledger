@@ -2,11 +2,12 @@
 import {ref, computed, watch, onBeforeUnmount} from 'vue';
 import {evidenceCall, errorMessage} from '../api';
 const props = defineProps({transaction: {type: String, required: true}, canWrite: Boolean, disabled: Boolean});
-const emit = defineEmits(['saved']);
+const emit = defineEmits(['saved', 'busy-change']);
 const editor = ref(null), displayTitle = ref(''), note = ref(''), renderedNote = ref(''), attachments = ref([]);
 const noteVersion = ref('');
 const busy = ref(false), loading = ref(false), error = ref(''), notice = ref('');
 const ready = ref(false);
+watch(busy, value => emit('busy-change', value), {flush: 'sync'});
 const canEdit = computed(() => props.canWrite && !props.disabled && ready.value && !busy.value && !loading.value);
 const mimeTypes = {png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp', pdf: 'application/pdf',
   doc: 'application/msword', docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
