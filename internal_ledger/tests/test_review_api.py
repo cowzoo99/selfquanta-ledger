@@ -248,7 +248,7 @@ def test_latest_batch_counts_follow_drafts_duplicate_resolution_and_manual_work(
 
     draft()  # Older batches must not contribute to the latest batch summary.
     source_id = uuid4().hex
-    common = {"payment_account": account("1001")}
+    common = {"payment_account": account("1001"), "occurred_at": "2026-10-02 10:00:00"}
     batch = save_batch("wechat", uuid4().hex, [
         tx(source_id=source_id, raw_row=2, **common),
         tx(source_id=source_id, raw_row=3, **common),
@@ -336,7 +336,7 @@ def assert_foreign_child_rejected(manual):
                               "人工确认", str(source.posting_date))
     else:
         source = approve_draft(source.name)
-    tx_name = transaction()
+    tx_name = transaction(occurred_at="2026-10-02 10:00:00")
     target = frappe.get_doc("Voucher Draft", create_draft(tx_name, classify(tx_name)))
     source_snapshot = frappe.get_doc("Voucher Draft", source.name).as_dict()
     target_snapshot = target.as_dict()
