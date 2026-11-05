@@ -15,7 +15,7 @@ def additional_draft():
     from internal_ledger.accounting.classifier import classify
     from internal_ledger.accounting.drafts import create_draft
 
-    name = transaction(direction="expense", amount=Decimal("12.50"))
+    name = transaction(direction="expense", amount=Decimal("12.50"), occurred_at="2026-10-02 10:00:00")
     return frappe.get_doc("Voucher Draft", create_draft(name, classify(name)))
 
 
