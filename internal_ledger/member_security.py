@@ -1,3 +1,5 @@
+from urllib.parse import urlsplit
+
 import frappe
 from frappe.core.doctype.user.user import test_password_strength
 
@@ -14,6 +16,11 @@ ALLOWED_RESET_PATHS = {"/update-password"}
 TEMPORARY_PASSWORD_REDIRECTS = "internal_ledger_temporary_password_redirect"
 LEDGER_HOME = "/app/ledger-workbench/dashboard"
 LEDGER_ROLES = {"账套管理员", "账务查看者"}
+
+
+def _same_origin_reset_url(url: str) -> str:
+    parsed = urlsplit(url)
+    return parsed.path + (f"?{parsed.query}" if parsed.query else "")
 
 
 def validate_temporary_password(password: str, confirm_password: str, user_data: tuple | None = None) -> None:
@@ -39,7 +46,7 @@ def revoke_sessions(user: str) -> None:
 def redirect_temporary_password(login_manager) -> None:
     user = login_manager.user
     if frappe.db.get_value("User", user, "internal_ledger_must_change_password"):
-        url = frappe.get_doc("User", user)._reset_password(send_email=False)
+        url = _same_origin_reset_url(frappe.get_doc("User", user)._reset_password(send_email=False))
         frappe.cache.hset("redirect_after_login", user, url)
         frappe.cache.hset(TEMPORARY_PASSWORD_REDIRECTS, user, url)
         frappe.cache.hdel("home_page", user)
@@ -97,7 +104,7 @@ def block_temporary_password_session() -> None:
                  or path == "/app" or path.startswith("/app/"))):
         url = frappe.cache.hget(TEMPORARY_PASSWORD_REDIRECTS, user)
         if not url:
-            url = frappe.get_doc("User", user)._reset_password(send_email=False)
+            url = _same_origin_reset_url(frappe.get_doc("User", user)._reset_password(send_email=False))
             frappe.cache.hset(TEMPORARY_PASSWORD_REDIRECTS, user, url)
         frappe.local.flags.redirect_location = url
         raise frappe.Redirect
