@@ -1,6 +1,6 @@
 import unittest
 
-from internal_ledger.member_security import _same_origin_reset_url
+from internal_ledger.member_security import _same_origin_reset_url, _temporary_redirect
 
 
 class ResetUrlTestCase(unittest.TestCase):
@@ -17,6 +17,11 @@ class ResetUrlTestCase(unittest.TestCase):
             _same_origin_reset_url("/update-password?key=example"),
             "/update-password?key=example",
         )
+
+    def test_before_request_redirect_has_temporary_location_header(self):
+        response = _temporary_redirect("/update-password?key=example").get_response()
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.headers["Location"], "/update-password?key=example")
 
 
 if __name__ == "__main__":

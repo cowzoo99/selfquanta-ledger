@@ -216,6 +216,7 @@ def test_post_login_flagged_session_can_deliver_reset_redirect():
 
 
 def test_flagged_desk_request_redirects_after_login_page_ignores_reset_target():
+    from werkzeug.routing import RequestRedirect
     from werkzeug.wrappers import Request
 
     from internal_ledger.member_security import block_temporary_password_session, redirect_temporary_password
@@ -233,9 +234,12 @@ def test_flagged_desk_request_redirects_after_login_page_ignores_reset_target():
         frappe.local.request = Request.from_values(
             path="/desk/internal-ledger/ledger-workbench/members", method="GET"
         )
-        with unittest.TestCase().assertRaises(frappe.Redirect):
+        with unittest.TestCase().assertRaises(RequestRedirect) as raised:
             block_temporary_password_session()
         assert frappe.local.flags.redirect_location == expected
+        response = raised.exception.get_response()
+        assert response.status_code == 302
+        assert response.headers["Location"] == expected
     finally:
         frappe.cache.hdel("redirect_after_login", doc.name)
         frappe.cache.hdel("internal_ledger_temporary_password_redirect", doc.name)

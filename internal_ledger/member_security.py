@@ -2,6 +2,7 @@ from urllib.parse import urlsplit
 
 import frappe
 from frappe.core.doctype.user.user import test_password_strength
+from werkzeug.routing import RequestRedirect
 
 
 ALLOWED_RESET_COMMANDS = {
@@ -21,6 +22,12 @@ LEDGER_ROLES = {"账套管理员", "账务查看者"}
 def _same_origin_reset_url(url: str) -> str:
     parsed = urlsplit(url)
     return parsed.path + (f"?{parsed.query}" if parsed.query else "")
+
+
+def _temporary_redirect(url: str) -> RequestRedirect:
+    redirect = RequestRedirect(url)
+    redirect.code = 302
+    return redirect
 
 
 def validate_temporary_password(password: str, confirm_password: str, user_data: tuple | None = None) -> None:
@@ -107,7 +114,7 @@ def block_temporary_password_session() -> None:
             url = _same_origin_reset_url(frappe.get_doc("User", user)._reset_password(send_email=False))
             frappe.cache.hset(TEMPORARY_PASSWORD_REDIRECTS, user, url)
         frappe.local.flags.redirect_location = url
-        raise frappe.Redirect
+        raise _temporary_redirect(url)
     raise frappe.AuthenticationError("请先修改临时密码")
 
 
