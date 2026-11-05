@@ -5,6 +5,8 @@ const props = defineProps({transaction: {type: String, required: true}, canWrite
 const emit = defineEmits(['saved', 'busy-change']);
 const editor = ref(null), displayTitle = ref(''), note = ref(''), renderedNote = ref(''), attachments = ref([]);
 const noteVersion = ref('');
+const savedTitle = ref(''), savedNote = ref('');
+const dirty = computed(() => displayTitle.value !== savedTitle.value || note.value !== savedNote.value);
 const busy = ref(false), loading = ref(false), error = ref(''), notice = ref('');
 const ready = ref(false);
 watch(busy, value => emit('busy-change', value), {flush: 'sync'});
@@ -16,7 +18,8 @@ const mimeTypes = {png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp
 let generation = 0;
 function apply(data) {
   displayTitle.value = data.display_title || '';
-  note.value = data.note_html; renderedNote.value = data.note_html; attachments.value = data.attachments; noteVersion.value = data.note_version;
+  note.value = data.note_html || ''; renderedNote.value = note.value; attachments.value = data.attachments; noteVersion.value = data.note_version;
+  savedTitle.value = displayTitle.value; savedNote.value = note.value;
   if (editor.value) editor.value.innerHTML = data.note_html;
 }
 async function load() {
@@ -60,8 +63,8 @@ function table() {
   range.selectNodeContents(body.firstChild.firstChild); range.collapse(true);
   selection.removeAllRanges(); selection.addRange(range); note.value = editor.value.innerHTML;
 }
-async function write(method, args) {
-  if (!canEdit.value) return;
+async function write(method, args, coordinated = false) {
+  if (!(coordinated ? props.canWrite && ready.value && !busy.value && !loading.value : canEdit.value)) return false;
   const request = ++generation;
   busy.value = true; error.value = ''; notice.value = '';
   try {
@@ -70,12 +73,22 @@ async function write(method, args) {
       if (method === 'save_evidence') {apply(data); emit('saved', data);}
       else attachments.value = data.attachments;
       notice.value = '已保存';
+      return true;
     }
   } catch (e) { if (request === generation) error.value = errorMessage(e); }
   finally { if (request === generation) busy.value = false; }
+  return false;
 }
 function save() { return write('save_evidence', {display_title: displayTitle.value,
   note_html: note.value, expected_version: noteVersion.value}); }
+async function savePending() {
+  if (!ready.value || loading.value || busy.value) {error.value = '请等待备注与附件载入或保存完成'; return false;}
+  if (!dirty.value) return true;
+  // The full-entry editor owns the write lock while committing these fields.
+  return write('save_evidence', {display_title: displayTitle.value,
+    note_html: note.value, expected_version: noteVersion.value}, true);
+}
+defineExpose({savePending});
 function remove(attachment) { return write('delete_evidence_file', {attachment_name: attachment.name}); }
 async function upload(event) {
   const file = event.target.files?.[0];

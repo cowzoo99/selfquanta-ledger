@@ -4,8 +4,9 @@ import TransactionEvidence from './TransactionEvidence.vue';
 import {directions, transactionTypes} from '../labels';
 import {errorMessage} from '../api';
 const props = defineProps({transaction: {type: String, required: true}, canWrite: Boolean, evidenceOnly: Boolean, disabled: Boolean});
-const emit = defineEmits(['saved', 'deleted', 'closed', 'busy-change']);
+const emit = defineEmits(['saved', 'evidence-saved', 'deleted', 'closed', 'busy-change']);
 const aggregate = ref(null), form = ref(null), accounts = ref([]);
+const evidence = ref(null);
 const busy = ref(false), loading = ref(false), error = ref('');
 const evidenceBusy = ref(false);
 const writeBusy = computed(() => busy.value || evidenceBusy.value);
@@ -60,12 +61,14 @@ function removeLine(line, side) {
   const target = side === 'debit' ? debitLines.value : creditLines.value;
   target.splice(target.indexOf(line), 1);
 }
+function evidenceSaved() {if (!busy.value) emit('evidence-saved');}
 async function save() {
   if (!canEdit.value) return;
   if (!debitLines.value.length || !creditLines.value.length) {error.value = '借方和贷方至少各保留一条分录'; return;}
   const request = generation;
   busy.value = true; error.value = '';
   try {
+    if (!await evidence.value.savePending() || request !== generation) return;
     await frappe.call({method: 'internal_ledger.api.posting_api.rebuild_posted_entry', type: 'POST',
       args: {transaction: props.transaction, values: JSON.stringify(form.value), expected_version: aggregate.value.version}});
     if (request === generation) emit('saved');
@@ -139,7 +142,7 @@ async function remove() {
         <p v-for="(line, index) in (side === 'debit' ? debitLines : creditLines)" :key="index">{{ accountLabel(line.account) }} · {{ line[side] }}</p>
       </section>
     </template>
-    <TransactionEvidence v-if="form || evidenceOnly" :transaction="transaction" :can-write="canWrite" :disabled="disabled || busy || loading" @busy-change="evidenceBusy = $event" @saved="emit('saved')" />
+    <TransactionEvidence v-if="form || evidenceOnly" ref="evidence" :transaction="transaction" :can-write="canWrite" :disabled="disabled || busy || loading" @busy-change="evidenceBusy = $event" @saved="evidenceSaved" />
   </section>
 </template>
 

@@ -58,4 +58,11 @@ def permanently_delete_transactions(transactions, reason: str, expected_versions
     require_ledger_admin()
     names = frappe.parse_json(transactions) if isinstance(transactions, str) else transactions
     versions = frappe.parse_json(expected_versions) if isinstance(expected_versions, str) else expected_versions
-    return posted_entry_maintenance.permanently_delete_transactions(names, reason, versions)
+    # Retry the whole request only after SQL rollback has restored every removed file.
+    for attempt in range(3):
+        try:
+            return posted_entry_maintenance.permanently_delete_transactions(names, reason, versions)
+        except frappe.QueryDeadlockError:
+            frappe.db.rollback()
+            if attempt == 2:
+                raise

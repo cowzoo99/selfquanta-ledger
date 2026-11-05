@@ -109,6 +109,8 @@ async function run(name) {
       if (args.method.endsWith('list_leaf_accounts')) return {message: [{name: '资金', account_name: '银行存款', account_number: '1002'},
         {name: '费用', account_name: '办公费', account_number: '560201'}]};
       if (args.method.endsWith('permanently_delete_transactions')) return {message: [{transaction: 'tx-posted', status: deleteStatus, message: '删除失败'}]};
+      if (args.method.endsWith('save_evidence')) return {message: {display_title: args.args.display_title,
+        note_html: args.args.note_html, note_version: 'n2', attachments: []}};
       return {message: {display_title: '原始标题', note_html: '<p>现有备注</p>', note_version: 'n1', attachments: []}};
     };
     const page = mount('components/PostedEntryEditor.vue', {transaction: 'tx-posted', canWrite: true,
@@ -674,6 +676,80 @@ async function run(name) {
     page.state.remember = true; await page.state.submit(); await Vue.nextTick();
     assert.match(text(page.root), /仅处理本笔（不保存规则）/); assert.match(text(page.root), /前往核对已有分类规则/);
     page.app.unmount();
+  } else if (name === 'accounting_center_evidence_preserves_accounting') {
+    const row = item('mixed'); row.draft.status = 'Posted'; row.posting = {status: 'Posted'};
+    let refreshed = 0;
+    frappe.call = async args => {
+      calls.push(args);
+      if (args.method.endsWith('get_posted_entry')) return {message: postedAggregate(row)};
+      if (args.method.endsWith('list_leaf_accounts')) return {message: []};
+      return {message: {display_title: args.args.display_title || '原始标题', note_html: args.args.note_html || '<p>现有备注</p>',
+        note_version: 'n2', attachments: []}};
+    };
+    const page = mount('pages/AccountingCenter.vue', {items: [row], canWrite: true, onRefresh: () => refreshed++}, true);
+    await page.state.openEditor(row.transaction.name); await settle();
+    const editor = child(page.root._vnode, 'PostedEntryEditor');
+    descendants(page.root).find(el => el.props['aria-label'] === '交易对象').props['onUpdate:modelValue']('尚未保存的新对象');
+    const evidence = child(page.root._vnode, 'TransactionEvidence');
+    evidence.setupState.displayTitle = '已核对标题';
+    await evidence.setupState.save(); await settle();
+    assert.equal(refreshed, 1);
+    assert.equal(page.state.selected, row.transaction.name, 'saving evidence must keep the accounting form mounted');
+    // App.refresh clears its list while the refreshed request is in flight.
+    page.props.items = []; await settle();
+    assert.equal(editor.setupState.form?.counterparty, '尚未保存的新对象', 'refresh loading must preserve accounting edits');
+    page.props.items = [{...row, display_title: '已核对标题'}]; await settle();
+    assert.equal(child(page.root._vnode, 'PostedEntryEditor'), editor);
+    assert.equal(editor.setupState.form.counterparty, '尚未保存的新对象');
+    assert.equal(calls.filter(call => call.method.endsWith('get_posted_entry')).length, 1);
+    assert.equal(calls.filter(call => call.type === 'POST').length, 1);
+    page.app.unmount();
+  } else if (name === 'accounting_center_full_save_commits_evidence') {
+    const row = item('mixed-full'); row.draft.status = 'Posted'; row.posting = {status: 'Posted'};
+    const evidenceWrites = [], rebuilds = []; let refreshed = 0;
+    frappe.call = async args => {
+      calls.push(args);
+      if (args.method.endsWith('save_evidence')) {const pending = deferred(); evidenceWrites.push(pending); return pending.promise;}
+      if (args.method.endsWith('rebuild_posted_entry')) {const pending = deferred(); rebuilds.push(pending); return pending.promise;}
+      if (args.method.endsWith('get_posted_entry')) return {message: postedAggregate(row)};
+      if (args.method.endsWith('list_leaf_accounts')) return {message: []};
+      return {message: {display_title: '原始标题', note_html: '<p>现有备注</p>', note_version: 'n1', attachments: []}};
+    };
+    const page = mount('pages/AccountingCenter.vue', {items: [row], canWrite: true, onRefresh: () => refreshed++}, true);
+    await page.state.openEditor(row.transaction.name); await settle();
+    const editor = child(page.root._vnode, 'PostedEntryEditor'), evidence = child(page.root._vnode, 'TransactionEvidence');
+    editor.setupState.form.counterparty = '新对象'; evidence.setupState.displayTitle = '新标题';
+    const note = descendants(page.root).find(el => el.props['aria-label'] === '流水备注');
+    note.innerHTML = '<p>新备注</p>'; note.props.onInput({target: note});
+    let saving = editor.setupState.save(); await settle();
+    assert.equal(evidenceWrites.length, 1, 'full save must commit the dirty evidence first');
+    assert.equal(rebuilds.length, 0);
+    assert.equal(page.state.editorBusy, true);
+    await editor.setupState.save(); await evidence.setupState.save(); await settle();
+    assert.equal(evidenceWrites.length, 1, 'busy handlers must not duplicate either POST');
+    evidenceWrites[0].reject(new Error('备注版本冲突')); await saving; await settle();
+    assert.equal(rebuilds.length, 0); assert.equal(refreshed, 0);
+    assert.equal(page.state.selected, row.transaction.name); assert.equal(page.state.editorBusy, false);
+    assert.equal(evidence.setupState.note, '<p>新备注</p>'); assert.equal(editor.setupState.form.counterparty, '新对象');
+    assert.match(text(page.root), /备注版本冲突/);
+    saving = editor.setupState.save(); await settle();
+    evidenceWrites[1].resolve({message: {display_title: '新标题', note_html: '<p>新备注</p>', note_version: 'n2', attachments: []}});
+    await settle();
+    assert.equal(refreshed, 0, 'the intermediate evidence save must not refresh or close the full editor');
+    assert.equal(page.state.selected, row.transaction.name); assert.equal(page.state.editorBusy, true);
+    assert.equal(rebuilds.length, 1);
+    const write = calls.find(call => call.method.endsWith('save_evidence'));
+    assert.equal(write.args.display_title, '新标题'); assert.equal(write.args.note_html, '<p>新备注</p>');
+    rebuilds[0].reject(new Error('重建校验失败')); await saving; await settle();
+    assert.equal(refreshed, 0); assert.equal(page.state.selected, row.transaction.name);
+    assert.equal(evidence.setupState.note, '<p>新备注</p>'); assert.equal(editor.setupState.form.counterparty, '新对象');
+    saving = editor.setupState.save(); await settle(); await editor.setupState.save();
+    assert.equal(evidenceWrites.length, 2, 'retrying the rebuild must not resend already saved evidence');
+    assert.equal(rebuilds.length, 2);
+    rebuilds[1].resolve({message: postedAggregate(row)}); await saving; await settle();
+    assert.equal(refreshed, 1); assert.equal(page.state.selected, '');
+    assert.equal(page.state.editorBusy, false); assert.deepEqual([...page.state.selectedTransactions], []);
+    page.app.unmount();
   } else if (name === 'accounting_center_pending_write') {
     for (const operation of ['rebuild_posted_entry', 'permanently_delete_transactions', 'save_evidence']) {
       const rows = ['one', 'two'].map(id => {
@@ -719,8 +795,10 @@ async function run(name) {
         : operation === 'save_evidence' ? {note_html: '<p>已保存</p>', note_version: 'n2', attachments: []} : postedAggregate(rows[0])});
       await writing; await settle();
       assert.equal(refreshed, 1, operation + ': completion must emit exactly one refresh');
-      assert.equal(page.state.selected, ''); assert.deepEqual([...page.state.selectedTransactions], []);
-      assert.match(page.state.notice, operation === 'permanently_delete_transactions' ? /已永久删除账目/ : /账目已保存/);
+      assert.equal(page.state.selected, operation === 'save_evidence' ? rows[0].transaction.name : '');
+      assert.deepEqual([...page.state.selectedTransactions], operation === 'save_evidence' ? [rows[1].transaction.name] : []);
+      assert.match(page.state.notice, operation === 'permanently_delete_transactions' ? /已永久删除账目/
+        : operation === 'save_evidence' ? /标题和备注已保存/ : /账目已保存/);
       assert.equal(descendants(page.root).find(el => el.type === 'button' && text(el) === '收支变动明细').props.disabled, false);
       page.app.unmount();
     }
@@ -819,8 +897,8 @@ async function run(name) {
       const evidence = child(page.root._vnode, 'TransactionEvidence');
       page.state.selectedTransactions = ['tx-office'];
       await evidence.setupState.save(); await settle();
-      assert.equal(page.state.selected, '', 'evidence save also closes the shared panel');
-      assert.deepEqual([...page.state.selectedTransactions], []);
+      assert.equal(page.state.selected, 'tx-capital', 'evidence save keeps the accounting panel open');
+      assert.deepEqual([...page.state.selectedTransactions], ['tx-office']);
       assert.equal(refreshed, view === 'entries' ? 1 : 4, 'one refresh per successful operation');
       edit.props.onClick(); await settle();
       await child(page.root._vnode, 'PostedEntryEditor').setupState.save(); await settle();

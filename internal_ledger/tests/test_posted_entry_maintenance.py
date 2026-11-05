@@ -1,6 +1,7 @@
 import json
 import unittest
 from copy import deepcopy
+from contextlib import contextmanager
 from hashlib import sha256
 from decimal import Decimal
 from unittest.mock import patch
@@ -485,7 +486,8 @@ def test_permanent_delete_removes_all_layers_and_keeps_minimal_audit():
     assert not evidence.path.exists() and not source.path.exists()
     audit = frappe.get_doc("Internal Ledger Audit Event", {"action": "permanently_delete_transaction",
         "reference_name": item.transaction})
-    assert (audit.company, audit.actor, audit.result) == (frappe.flags.classification_company, "Administrator", "success")
+    assert (audit.company, audit.actor, audit.result) == (
+        frappe.flags.classification_company, "Administrator", "success;reason:录入错误")
     assert "private evidence content" not in frappe.as_json(audit.as_dict())
     assert frappe.allowed_http_methods_for_whitelisted_func[posting_api.permanently_delete_transactions] == ["POST"]
 
@@ -687,3 +689,251 @@ def test_permanent_delete_attachment_success_removes_direct_files_permanently():
         assert not frappe.db.exists("File", file.name)
         assert not file.path.exists()
         assert not frappe.db.exists("Deleted Document", {"deleted_doctype": "File", "deleted_name": file.name})
+
+
+def test_rebuild_attachment_rollback_restores_direct_files_after_repost_and_audit_failure():
+    item = posted_fixture()
+    files = aggregate_attachments(item)
+    before = posting_snapshot(item)
+
+    def fail_after_posting_removed(*args, **kwargs):
+        assert all(not frappe.db.exists("File", file.name) and not file.path.exists() for file in files[:2])
+        raise frappe.ValidationError("模拟重建后期失败")
+
+    for target in ("post_draft", "record_audit"):
+        with patch("internal_ledger.accounting.posted_entry_maintenance." + target, fail_after_posting_removed):
+            with unittest.TestCase().assertRaisesRegex(frappe.ValidationError, "模拟重建后期失败"):
+                posting_api.rebuild_posted_entry(item.transaction, changed_values(item), before["aggregate"]["version"])
+        assert posting_snapshot(item) == before
+        for file in files:
+            assert frappe.get_doc("File", file.name).as_dict() == file.metadata
+            assert file.path.exists(), file.metadata.attached_to_doctype
+            assert file.path.read_bytes() == file.content
+
+
+def test_rebuild_attachment_success_removes_only_old_posting_files():
+    item = posted_fixture()
+    files = aggregate_attachments(item)
+    posting_api.rebuild_posted_entry(item.transaction, changed_values(item),
+                                    posting_api.get_posted_entry(item.transaction)["version"])
+    for file in files[:2]:
+        assert not frappe.db.exists("File", file.name)
+        assert not file.path.exists()
+    for file in files[2:]:
+        assert frappe.get_doc("File", file.name).as_dict() == file.metadata
+        assert file.path.read_bytes() == file.content
+
+
+def test_permanent_delete_audit_cleans_and_bounds_reason():
+    item = posted_fixture()
+    assert delete_item(item, "  <b>录入错误</b>\n\t 重复导入 " + "补充说明" * 100)["status"] == "deleted"
+    result = frappe.db.get_value("Internal Ledger Audit Event",
+        {"action": "permanently_delete_transaction", "reference_name": item.transaction}, "result")
+    assert result.startswith("success;reason:录入错误 重复导入 补充说明")
+    assert len(result) <= 140
+    assert not any(value in result for value in ("<", ">", "\n", "\t"))
+
+
+def test_permanent_delete_audit_masks_account_numbers_before_truncation():
+    item = posted_fixture()
+    reason = "错账 分组6222.0212.3456.7890 卡号6222021234567890123 账号 6222-0212 3456-7890 １２３４５６７８９０ GB82 WEST 1234 5698 7654 32"
+    assert delete_item(item, reason)["status"] == "deleted"
+    result = frappe.db.get_value("Internal Ledger Audit Event",
+        {"action": "permanently_delete_transaction", "reference_name": item.transaction}, "result")
+    assert "错账" in result and "[已隐去]" in result
+    assert not any(value in result for value in ("6222", "1234", "１２３４", "GB82", "7654"))
+
+
+def test_permanent_delete_locks_sorted_batches_before_any_selected_transaction():
+    first, second = posted_fixture(), second_posted_fixture()
+    items = [first, second]
+    items.sort(key=lambda item: frappe.db.get_value("Imported Transaction", item.transaction, "import_batch"), reverse=True)
+    batches = sorted(frappe.db.get_value("Imported Transaction", item.transaction, "import_batch") for item in items)
+    versions = {item.transaction: posting_api.get_posted_entry(item.transaction)["version"] for item in items}
+    locked = []
+    get_doc, get_value = frappe.get_doc, frappe.db.get_value
+
+    def observe_locks(*args, **kwargs):
+        if kwargs.get("for_update") and args[0] in ("Import Batch", "Imported Transaction"):
+            locked.append((args[0], args[1]))
+        return get_doc(*args, **kwargs)
+
+    def observe_batch_locks(*args, **kwargs):
+        if kwargs.get("for_update") and args[0] == "Import Batch":
+            locked.append((args[0], args[1]))
+        return get_value(*args, **kwargs)
+
+    with patch.object(frappe, "get_doc", observe_locks), patch.object(frappe.db, "get_value", observe_batch_locks):
+        results = posting_api.permanently_delete_transactions([item.transaction for item in items], "重复录入", versions)
+    assert [row["transaction"] for row in results] == [item.transaction for item in items]
+    assert all(row["status"] == "deleted" for row in results)
+    assert locked[:2] == [("Import Batch", name) for name in batches], locked
+
+
+def test_permanent_delete_direct_service_locks_batch_before_transaction():
+    from internal_ledger.accounting.posted_entry_maintenance import permanently_delete_transaction
+
+    item = posted_fixture()
+    version = posting_api.get_posted_entry(item.transaction)["version"]
+    locked = []
+    get_doc, get_value = frappe.get_doc, frappe.db.get_value
+
+    def observe_locks(*args, **kwargs):
+        if kwargs.get("for_update") and args[0] in ("Import Batch", "Imported Transaction"):
+            locked.append(args[0])
+        return get_doc(*args, **kwargs)
+
+    def observe_batch_locks(*args, **kwargs):
+        if kwargs.get("for_update") and args[0] == "Import Batch":
+            locked.append(args[0])
+        return get_value(*args, **kwargs)
+
+    with patch.object(frappe, "get_doc", observe_locks), patch.object(frappe.db, "get_value", observe_batch_locks):
+        permanently_delete_transaction(item.transaction, "重复录入", version)
+    assert locked[0] == "Import Batch", locked
+
+
+def test_permanent_delete_request_deadlock_retry_is_bounded():
+    deadlock = frappe.QueryDeadlockError("injected deletion deadlock")
+    with patch.object(posting_api.posted_entry_maintenance, "permanently_delete_transactions", side_effect=deadlock) as remove:
+        with patch.object(frappe.db, "rollback") as rollback:
+            with unittest.TestCase().assertRaises(frappe.QueryDeadlockError) as raised:
+                posting_api.permanently_delete_transactions(["synthetic"], "重复录入", {"synthetic": "version"})
+    assert raised.exception is deadlock
+    assert remove.call_count == rollback.call_count == 3
+
+
+@contextmanager
+def committed_deletion_fixture():
+    """Committed, synthetic rows for request rollback and independent connections."""
+    frappe.db.rollback()
+    original_settings = frappe.db.get_singles_dict("Internal Ledger Settings")
+    had_year = frappe.db.exists("Fiscal Year", "2026")
+    set_up()
+    company = frappe.flags.classification_company
+    first, second = posted_fixture(), second_posted_fixture()
+    items = [first, second]
+    batches = [frappe.db.get_value("Imported Transaction", item.transaction, "import_batch") for item in items]
+    frappe.db.set_value("Imported Transaction", second.transaction, "import_batch", batches[0])
+    source = source_fixture(first)
+    files = aggregate_attachments(first) + aggregate_attachments(second)
+    files.append(frappe._dict(name=source.file, path=source.path, content=source.path.read_bytes(),
+                             metadata=frappe.get_doc("File", source.file).as_dict()))
+    versions = {item.transaction: posting_api.get_posted_entry(item.transaction)["version"] for item in items}
+    frappe.db.commit()
+    try:
+        yield frappe._dict(entries=items, files=files, source=source, versions=versions)
+    finally:
+        frappe.set_user("Administrator")
+        frappe.db.rollback()
+        # Clean only this committed synthetic fixture, even when a concurrency assertion fails.
+        names = [item.transaction for item in items]
+        drafts = [item.draft for item in items]
+        journals = [item.journal for item in items]
+        for file in files:
+            frappe.db.delete("File", {"name": file.name})
+            file.path.unlink(missing_ok=True)
+        for doctype, filters in (
+            ("GL Entry", {"company": company}), ("Journal Entry Account", {"parent": ["in", journals]}),
+            ("Journal Entry", {"name": ["in", journals]}), ("Posting Link", {"voucher_draft": ["in", drafts]}),
+            ("Voucher Draft Line", {"parent": ["in", drafts]}), ("Voucher Draft", {"name": ["in", drafts]}),
+            ("Imported Transaction", {"name": ["in", names]}), ("Internal Ledger Source File", {"name": source.carrier}),
+            ("Import Batch", {"name": ["in", batches]}), ("Classification Rule", {"company": company}),
+            ("Internal Ledger Audit Event", {"company": company}),
+        ):
+            frappe.db.delete(doctype, filters)
+        parents = names + drafts + journals + batches + [item.link for item in items] + [source.carrier]
+        frappe.db.delete("Deleted Document", {"deleted_name": ["in", parents + [file.name for file in files]]})
+        frappe.db.delete("Comment", {"reference_name": ["in", parents]})
+        for field in ("company", "base_currency", "fiscal_year_start"):
+            frappe.db.set_single_value("Internal Ledger Settings", field, original_settings.get(field))
+        frappe.delete_doc("Company", company, force=True)
+        if not had_year:
+            frappe.delete_doc("Fiscal Year", "2026", force=True)
+        frappe.db.commit()
+        frappe.clear_cache()
+
+
+def test_permanent_delete_request_retries_all_aggregates_after_restoring_files():
+    from internal_ledger.accounting import posted_entry_maintenance as service
+
+    with committed_deletion_fixture() as fixture:
+        names = [item.transaction for item in fixture.entries]
+        snapshots = [posting_snapshot(item) for item in fixture.entries]
+        remove, audit = service.permanently_delete_transactions, service.record_deleted_audit
+        attempts = 0
+
+        def observe_attempt(*args):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 2:
+                assert [posting_snapshot(item) for item in fixture.entries] == snapshots
+                for file in fixture.files:
+                    assert frappe.get_doc("File", file.name).as_dict() == file.metadata
+                    assert file.path.read_bytes() == file.content
+            return remove(*args)
+
+        def deadlock_after_second_delete(action, reference, company, result):
+            if attempts == 1 and reference.name == names[1]:
+                assert all(not frappe.db.exists("File", file.name) and not file.path.exists() for file in fixture.files)
+                # InnoDB deadlocks roll back SQL before the request receives the exception.
+                frappe.db.sql("ROLLBACK")
+                raise frappe.QueryDeadlockError("injected late deletion deadlock")
+            return audit(action, reference, company, result)
+
+        with patch.object(service, "permanently_delete_transactions", observe_attempt), \
+                patch.object(service, "record_deleted_audit", deadlock_after_second_delete):
+            results = posting_api.permanently_delete_transactions(names, "重复导入", fixture.versions)
+        assert attempts == 2
+        assert results == [{"transaction": name, "status": "deleted"} for name in names]
+        assert all(not file.path.exists() and not frappe.db.exists("File", file.name) for file in fixture.files)
+        assert frappe.db.count("Internal Ledger Audit Event",
+            {"action": "permanently_delete_transaction", "reference_name": ["in", names]}) == 2
+
+
+def test_permanent_delete_same_batch_with_two_independent_connections():
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier, Event
+
+    site, sites_path = frappe.local.site, frappe.local.sites_path
+    with committed_deletion_fixture() as fixture:
+        names = [item.transaction for item in fixture.entries]
+        start = Barrier(2)
+        locked = {name: Event() for name in names}
+        get_doc = frappe.get_doc
+
+        def interleave_transaction_locks(*args, **kwargs):
+            doc = get_doc(*args, **kwargs)
+            if (kwargs.get("for_update") and args[0] == "Imported Transaction"
+                    and args[1] in locked and not locked[args[1]].is_set()):
+                locked[args[1]].set()
+                # Old transaction-first locking lets both connections reach this point.
+                # Batch-first locking serializes them; the first proceeds after this bounded wait.
+                locked[names[1] if args[1] == names[0] else names[0]].wait(timeout=1)
+            return doc
+
+        def remove_one(name):
+            frappe.init(site=site, sites_path=sites_path)
+            frappe.connect()
+            frappe.set_user("Administrator")
+            try:
+                frappe.db.sql("SET SESSION innodb_lock_wait_timeout = 10")
+                start.wait(timeout=20)
+                result = posting_api.permanently_delete_transactions([name], "并发删除重复项", {name: fixture.versions[name]})
+                frappe.db.commit()
+                return result[0]
+            finally:
+                frappe.db.rollback()
+                frappe.destroy()
+
+        with patch.object(frappe, "get_doc", interleave_transaction_locks), ThreadPoolExecutor(max_workers=2) as pool:
+            pending = [pool.submit(remove_one, name) for name in names]
+            results = [future.result(timeout=40) for future in pending]
+        frappe.db.rollback()
+        assert results == [{"transaction": name, "status": "deleted"} for name in names]
+        assert not frappe.db.exists("Import Batch", fixture.source.batch)
+        assert not frappe.db.exists("Internal Ledger Source File", fixture.source.carrier)
+        assert all(not file.path.exists() and not frappe.db.exists("File", file.name) for file in fixture.files)
+        assert frappe.db.count("Internal Ledger Audit Event",
+            {"action": "permanently_delete_transaction", "reference_name": ["in", names]}) == 2
+        print("DELETE CONCURRENCY EVIDENCE: two independent connections; two deletions; shared source removed")

@@ -3,7 +3,9 @@ from dataclasses import asdict, dataclass
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from hashlib import sha256
+import re
 from typing import Literal
+import unicodedata
 from uuid import uuid4
 
 import frappe
@@ -241,28 +243,32 @@ def rebuild_posted_entry(transaction: str, values: dict, expected_version: str) 
     require_ledger_admin()
     point = "posted_rebuild_" + uuid4().hex
     frappe.db.savepoint(point)
-    try:
-        tx, draft, link = _locked_documents(transaction)
-        if posted_entry_version(tx, draft, link) != expected_version:
-            frappe.throw("账目已被其他人修改，请刷新后重试")
-        parsed = _validated_values(values, tx, draft.company)
-        _assert_unique_dedupe_key(tx, parsed)
-        remark = _existing_evidence_remark(tx.name, draft.company)
-        old_journal = _remove_formal_posting(link, draft, resulting_status="Draft")
-        _update_imported_transaction(tx, parsed)
-        _replace_draft_snapshot(draft, parsed)
-        approve_draft(draft.name)
-        new_journal = post_draft(draft.name, remark_override=remark)
-        record_audit("rebuild_posted_entry", "Voucher Draft", draft.name,
-                     f"old:{old_journal};new:{new_journal}")
-        result = get_posted_entry(tx.name)
-    except frappe.QueryDeadlockError:
-        raise
-    except Exception:
-        frappe.db.rollback(save_point=point)
+    with ExitStack() as undo_files:
+        try:
+            tx, draft, link = _locked_documents(transaction)
+            if posted_entry_version(tx, draft, link) != expected_version:
+                frappe.throw("账目已被其他人修改，请刷新后重试")
+            parsed = _validated_values(values, tx, draft.company)
+            _assert_unique_dedupe_key(tx, parsed)
+            remark = _existing_evidence_remark(tx.name, draft.company)
+            for doctype, name in (("Journal Entry", link.journal_entry), ("Posting Link", link.name)):
+                _preserve_attached_files(doctype, name, undo_files)
+            old_journal = _remove_formal_posting(link, draft, resulting_status="Draft")
+            _update_imported_transaction(tx, parsed)
+            _replace_draft_snapshot(draft, parsed)
+            approve_draft(draft.name)
+            new_journal = post_draft(draft.name, remark_override=remark)
+            record_audit("rebuild_posted_entry", "Voucher Draft", draft.name,
+                         f"old:{old_journal};new:{new_journal}")
+            result = get_posted_entry(tx.name)
+        except frappe.QueryDeadlockError:
+            raise
+        except Exception:
+            frappe.db.rollback(save_point=point)
+            frappe.db.release_savepoint(point)
+            raise
         frappe.db.release_savepoint(point)
-        raise
-    frappe.db.release_savepoint(point)
+        undo_files.pop_all()
     return result
 
 
@@ -338,14 +344,36 @@ def _delete_empty_batch_source(batch, undo_files):
                       flags={"ledger_import_write": _IMPORT_WRITE, "source_delete": _SOURCE_DELETE})
 
 
-def permanently_delete_transaction(transaction: str, reason: str, expected_version: str) -> dict:
-    require_ledger_admin()
+def _deletion_audit_result(reason):
     if not isinstance(reason, str) or not reason.strip():
         frappe.throw("永久删除必须填写原因")
+    reason = unicodedata.normalize("NFKC", reason)
+    reason = "".join(char if not unicodedata.category(char).startswith("C") else " " if char.isspace() else ""
+                     for char in reason)
+    reason = _plain_text(clean_note(reason))
+    if not reason:
+        frappe.throw("永久删除必须填写原因")
+    # Mask IBAN-like values and long digit runs, including grouped card/account numbers.
+    reason = re.sub(r"(?<![A-Za-z0-9])[A-Z]{2}\d{2}(?:[ -]?[A-Z0-9]){11,30}(?![A-Za-z0-9])|\d(?:[\W_]*\d){5,}",
+                    "[已隐去]", reason, flags=re.IGNORECASE)
+    return ("success;reason:" + reason)[:140]
+
+
+def _lock_import_batches(transactions):
+    batches = frappe.db.get_values("Imported Transaction", {"name": ["in", transactions]}, "import_batch", pluck=True)
+    for name in sorted(set(batches)):
+        # Shared source cleanup takes this lock before any selected transaction lock.
+        frappe.db.get_value("Import Batch", name, "name", for_update=True)
+
+
+def permanently_delete_transaction(transaction: str, reason: str, expected_version: str) -> dict:
+    require_ledger_admin()
+    audit_result = _deletion_audit_result(reason)
     point = "posted_delete_" + uuid4().hex
     frappe.db.savepoint(point)
     with ExitStack() as undo_files:
         try:
+            _lock_import_batches([transaction])
             tx, draft, link = _locked_documents(transaction)
             if posted_entry_version(tx, draft, link) != expected_version:
                 frappe.throw("账目已被其他人修改，请刷新后重试")
@@ -367,7 +395,7 @@ def permanently_delete_transaction(transaction: str, reason: str, expected_versi
                                        "name", for_update=True):
                 _delete_empty_batch_source(batch, undo_files)
             record_deleted_audit("permanently_delete_transaction",
-                frappe._dict(doctype="Imported Transaction", name=tx.name), batch.company, "success")
+                frappe._dict(doctype="Imported Transaction", name=tx.name), batch.company, audit_result)
         except frappe.QueryDeadlockError:
             raise
         except Exception:
@@ -387,6 +415,7 @@ def permanently_delete_transactions(transactions: list[str], reason: str, expect
         frappe.throw("流水参数无效")
     if not isinstance(expected_versions, dict):
         frappe.throw("账目版本参数无效")
+    _lock_import_batches(transactions)
     results = []
     for name in dict.fromkeys(transactions):
         try:

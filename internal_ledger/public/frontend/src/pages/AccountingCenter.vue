@@ -5,14 +5,16 @@ import {errorMessage} from '../api';
 const props = defineProps({items: {type: Array, default: () => []}, canWrite: Boolean});
 const emit = defineEmits(['refresh']);
 const selected = ref('');
+const selectedRow = ref(null);
 const editorPanel = ref(null);
 const reversalFor = ref(''), reversalReason = ref(''), busy = ref(false), error = ref(''), notice = ref('');
 const selectedTransactions = ref([]);
 const editorBusy = ref(false);
 const locked = computed(() => busy.value || editorBusy.value);
 const isReversed = entry => entry.posting?.status === 'Reversed' || !!entry.posting?.reversal_journal_entry;
-const selectedReversed = computed(() => isReversed(props.items.find(item => item.transaction.name === selected.value) || {}));
-const evidenceOnly = computed(() => selectedReversed.value || (!!selected.value && !entries.value.some(entry => entry.transaction === selected.value)));
+const currentRow = computed(() => props.items.find(item => item.transaction.name === selected.value) || selectedRow.value || {});
+const selectedReversed = computed(() => isReversed(currentRow.value));
+const evidenceOnly = computed(() => selectedReversed.value || currentRow.value.draft?.status !== 'Posted');
 const editorCanWrite = computed(() => props.canWrite && !selectedReversed.value);
 const ledgerView = ref('entries');
 const title = '会计中心';
@@ -40,6 +42,7 @@ function toggleAllDeletable() {
 }
 async function openEditor(name) {
   if (locked.value) return;
+  selectedRow.value = props.items.find(item => item.transaction.name === name);
   selected.value = name; error.value = ''; notice.value = '';
   await nextTick();
   editorPanel.value?.scrollIntoView?.({behavior: 'smooth', block: 'start'});
@@ -54,6 +57,10 @@ function openReversal(entry) {
 function completed(kind) {
   selected.value = ''; selectedTransactions.value = [];
   error.value = ''; notice.value = kind === 'deleted' ? '已永久删除账目' : '账目已保存';
+  emit('refresh');
+}
+function evidenceSaved() {
+  error.value = ''; notice.value = '标题和备注已保存';
   emit('refresh');
 }
 async function deleteSelectedTransactions() {
@@ -118,7 +125,7 @@ async function reversePosting(entry) {
       </div>
       <section v-if="selected" ref="editorPanel" class="ledger-edit-panel">
         <PostedEntryEditor :key="selected" :transaction="selected" :can-write="editorCanWrite" :disabled="busy" :evidence-only="evidenceOnly"
-          @busy-change="editorBusy = $event" @saved="completed('saved')" @deleted="completed('deleted')" @closed="closeEditor" />
+          @busy-change="editorBusy = $event" @saved="completed('saved')" @evidence-saved="evidenceSaved" @deleted="completed('deleted')" @closed="closeEditor" />
       </section>
       <p v-if="!entries.length">暂无已过账凭证。</p>
       <div v-else-if="ledgerView === 'entries'" class="ledger-voucher-list">
