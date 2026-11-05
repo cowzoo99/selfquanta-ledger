@@ -60,11 +60,11 @@ async function reversePosting(entry) {
         <article v-for="entry in entries" :key="entry.name" class="ledger-overview-voucher">
           <div class="ledger-voucher-heading">
             <div><strong>{{ entry.summary }}</strong><span>{{ entry.date }} · {{ entry.name }}</span></div>
-            <div v-if="entry.posting?.status === 'Reversed'">
+            <div v-if="entry.posting && entry.posting.status === 'Reversed'">
               <strong>已作废（已生成冲销凭证）</strong>
               <span>{{ entry.posting.reversal_journal_entry }}</span>
             </div>
-            <button v-else-if="canWrite && entry.posting?.status === 'Posted'" type="button"
+            <button v-else-if="canWrite && entry.posting && entry.posting.status === 'Posted'" type="button"
               @click="reversalFor = entry.name; reversalReason = ''">作废并冲销</button>
           </div>
           <div v-if="reversalFor === entry.name" class="ledger-reversal">

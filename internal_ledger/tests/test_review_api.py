@@ -11,11 +11,12 @@ def draft():
     return make_draft("expense", "expense", account("560201"), None)
 
 
-def additional_draft():
+def additional_draft(day=2):
     from internal_ledger.accounting.classifier import classify
     from internal_ledger.accounting.drafts import create_draft
 
-    name = transaction(direction="expense", amount=Decimal("12.50"), occurred_at="2026-10-02 10:00:00")
+    name = transaction(direction="expense", amount=Decimal("12.50"),
+                       occurred_at=f"2026-10-{day:02d} 10:00:00")
     return frappe.get_doc("Voucher Draft", create_draft(name, classify(name)))
 
 
@@ -70,7 +71,7 @@ def test_batch_review_approves_or_rejects_all_selected_drafts():
     assert [row["status"] for row in outcomes] == ["Approved", "Approved"]
     assert all(frappe.get_doc("Voucher Draft", row.name).status == "Approved" for row in approved)
 
-    rejected = [additional_draft(), additional_draft()]
+    rejected = [additional_draft(3), additional_draft(4)]
     outcomes = batch_review_drafts([row.name for row in rejected], "reject", "批量核对不通过")
     assert [row["status"] for row in outcomes] == ["Rejected", "Rejected"]
     assert all(frappe.get_doc("Voucher Draft", row.name).rejection_reason == "批量核对不通过"

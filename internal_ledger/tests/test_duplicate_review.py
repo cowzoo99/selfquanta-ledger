@@ -266,10 +266,11 @@ def test_duplicate_scope_limits_reads_and_writes_and_keeps_legacy_history():
     from internal_ledger.tests.test_permissions import user
 
     candidates = []
-    for count in (2, 3):
+    for day, count in enumerate((2, 3), start=1):
         source_id = uuid4().hex
         batch = save_batch("wechat", uuid4().hex, [
-            tx(source_id=source_id, payment_account=account("1001"), raw_row=row + 2)
+            tx(source_id=source_id, payment_account=account("1001"), raw_row=row + 2,
+               occurred_at=f"2026-10-{day:02d} 10:00:00")
             for row in range(count)])
         candidates.append(frappe.get_all("Imported Transaction", filters={"import_batch": batch,
             "status": "Duplicate"}, fields=["name", "import_batch"], order_by="raw_row"))

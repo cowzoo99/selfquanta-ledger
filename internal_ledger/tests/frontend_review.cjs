@@ -102,7 +102,7 @@ async function run(name) {
     };
     const page = mount('components/TransactionEvidence.vue', {transaction: 'tx-retry', canWrite: true}); await settle();
     assert.match(text(page.root), /暂时无法读取证据/);
-    const save = () => descendants(page.root).find(el => el.type === 'button' && text(el) === '保存备注');
+    const save = () => descendants(page.root).find(el => el.type === 'button' && text(el) === '保存标题和备注');
     assert.equal(save().props.disabled, true, 'a failed read must never unlock an empty-note save');
     assert.equal(descendants(page.root).find(el => el.props.role === 'textbox')?.props.contenteditable, undefined, 'failed reads do not show an editable blank note');
     await page.state.save(); await page.state.remove({name: 'file-one'});
@@ -127,7 +127,7 @@ async function run(name) {
     const link = descendants(page.root).find(el => el.type === 'a');
     assert.equal(link.props.href, '/private/files/unique.png'); assert.match(text(link), /原始收据.png/);
     if (canWrite) {
-      for (const label of ['加粗', '项目列表', '插入 2×2 表格', '保存备注', '上传附件', '删除附件']) assert.match(text(page.root), new RegExp(label));
+      for (const label of ['加粗', '项目列表', '插入 2×2 表格', '保存标题和备注', '上传附件', '删除附件']) assert.match(text(page.root), new RegExp(label));
       const editor = descendants(page.root).find(el => el.props.role === 'textbox');
       editor.innerHTML = '<p>新的备注</p>'; editor.props.onInput({target: editor});
       await page.state.save(); await settle();
@@ -157,7 +157,7 @@ async function run(name) {
       assert.match(text(page.root), /备注已被其他人修改/);
       assert.equal(page.state.note, '<p>尚未保存的冲突草稿</p>');
     } else {
-      assert.doesNotMatch(text(page.root), /保存备注|上传附件|删除附件|插入 2×2 表格/);
+      assert.doesNotMatch(text(page.root), /保存标题和备注|上传附件|删除附件|插入 2×2 表格/);
       await page.state.save(); await page.state.remove(evidence().attachments[0]);
       await page.state.upload({target: {files: [{name: '收据.png'}]}});
       assert.equal(calls.length, 1, 'viewer handlers must not write');
