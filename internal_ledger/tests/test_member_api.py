@@ -125,7 +125,7 @@ def test_flagged_session_allows_only_reset_and_logout():
         block_temporary_password_session()
     frappe.local.request = SimpleNamespace(path="/update-password")
     block_temporary_password_session()
-    for path, command in (("/desk", None), ("/api/resource/User", None),
+    for path, command in (("/api/resource/User", None),
                           ("/api/method/frappe.client.get_list", None),
                           ("/update-password", "frappe.client.get_list")):
         frappe.local.request = SimpleNamespace(path=path)
@@ -213,6 +213,33 @@ def test_post_login_flagged_session_can_deliver_reset_redirect():
             assert "/update-password?key=" in frappe.cache.hget("redirect_after_login", doc.name)
     finally:
         frappe.cache.hdel("redirect_after_login", doc.name)
+
+
+def test_flagged_desk_request_redirects_after_login_page_ignores_reset_target():
+    from werkzeug.wrappers import Request
+
+    from internal_ledger.member_security import block_temporary_password_session, redirect_temporary_password
+
+    doc = member()
+    frappe.set_user(doc.name)
+    try:
+        redirect_temporary_password(SimpleNamespace(user=doc.name))
+        expected = frappe.cache.hget("redirect_after_login", doc.name)
+        assert "/update-password?key=" in expected
+        # Frappe's System User login page ignores data.redirect_to when redirect-to is present,
+        # and core consumes this cache entry before the browser requests that original page.
+        frappe.cache.hdel("redirect_after_login", doc.name)
+        frappe.local.form_dict = frappe._dict()
+        frappe.local.request = Request.from_values(
+            path="/desk/internal-ledger/ledger-workbench/members", method="GET"
+        )
+        with unittest.TestCase().assertRaises(frappe.Redirect):
+            block_temporary_password_session()
+        assert frappe.local.flags.redirect_location == expected
+    finally:
+        frappe.cache.hdel("redirect_after_login", doc.name)
+        frappe.cache.hdel("internal_ledger_temporary_password_redirect", doc.name)
+        frappe.local.flags.pop("redirect_location", None)
 
 
 def test_unflagged_guest_and_administrator_requests_are_unchanged():

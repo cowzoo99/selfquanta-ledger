@@ -11,6 +11,7 @@ ALLOWED_RESET_COMMANDS = {
     "frappe.auth.logout",
 }
 ALLOWED_RESET_PATHS = {"/update-password"}
+TEMPORARY_PASSWORD_REDIRECTS = "internal_ledger_temporary_password_redirect"
 LEDGER_HOME = "/app/ledger-workbench/dashboard"
 LEDGER_ROLES = {"账套管理员", "账务查看者"}
 
@@ -40,6 +41,7 @@ def redirect_temporary_password(login_manager) -> None:
     if frappe.db.get_value("User", user, "internal_ledger_must_change_password"):
         url = frappe.get_doc("User", user)._reset_password(send_email=False)
         frappe.cache.hset("redirect_after_login", user, url)
+        frappe.cache.hset(TEMPORARY_PASSWORD_REDIRECTS, user, url)
         frappe.cache.hdel("home_page", user)
         frappe.local.flags.home_page = url
         return
@@ -88,6 +90,17 @@ def block_temporary_password_session() -> None:
         return
     if not command and getattr(frappe.local.request, "path", "") in ALLOWED_RESET_PATHS:
         return
+    request = getattr(frappe.local, "request", None)
+    path = getattr(request, "path", "")
+    if (not command and getattr(request, "method", "GET") == "GET"
+            and (path == "/desk" or path.startswith("/desk/")
+                 or path == "/app" or path.startswith("/app/"))):
+        url = frappe.cache.hget(TEMPORARY_PASSWORD_REDIRECTS, user)
+        if not url:
+            url = frappe.get_doc("User", user)._reset_password(send_email=False)
+            frappe.cache.hset(TEMPORARY_PASSWORD_REDIRECTS, user, url)
+        frappe.local.flags.redirect_location = url
+        raise frappe.Redirect
     raise frappe.AuthenticationError("请先修改临时密码")
 
 
@@ -96,3 +109,4 @@ def clear_temporary_password_flag(doc, method=None) -> None:
     if (_request_command() == "frappe.core.doctype.user.user.update_password"
             and not doc.reset_password_key and doc.internal_ledger_must_change_password):
         doc.db_set("internal_ledger_must_change_password", 0)
+        frappe.cache.hdel(TEMPORARY_PASSWORD_REDIRECTS, doc.name)
