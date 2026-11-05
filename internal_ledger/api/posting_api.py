@@ -1,7 +1,12 @@
 import frappe
 
-from internal_ledger.accounting import posting, posting_maintenance, reversal
+from internal_ledger.accounting import posted_entry_maintenance, posting, posting_maintenance, reversal
 from internal_ledger.permissions import require_ledger_admin
+
+
+@frappe.whitelist(methods=["GET", "POST"])
+def get_posted_entry(transaction: str) -> dict:
+    return posted_entry_maintenance.get_posted_entry(transaction)
 
 
 @frappe.whitelist(methods=["POST"])
