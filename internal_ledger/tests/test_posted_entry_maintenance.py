@@ -639,3 +639,51 @@ def second_posted_fixture():
     journal = posting_api.post_draft(doc.name)
     return frappe._dict(transaction=doc.imported_transaction, draft=doc.name,
                         journal=journal, link=link_for(doc.name))
+
+
+def aggregate_attachments(item):
+    from pathlib import Path
+
+    batch = frappe.db.get_value("Imported Transaction", item.transaction, "import_batch")
+    files = []
+    for doctype, name in (("Journal Entry", item.journal), ("Posting Link", item.link),
+                          ("Voucher Draft", item.draft), ("Imported Transaction", item.transaction),
+                          ("Import Batch", batch)):
+        doc = frappe.get_doc({"doctype": "File", "file_name": f"direct-{uuid4().hex}.txt",
+            "content": uuid4().hex, "is_private": 1,
+            "attached_to_doctype": doctype, "attached_to_name": name}).insert(ignore_permissions=True)
+        path = Path(doc.get_full_path())
+        files.append(frappe._dict(name=doc.name, path=path, content=path.read_bytes(),
+                                 metadata=frappe.get_doc("File", doc.name).as_dict()))
+    return files
+
+
+def test_permanent_delete_attachment_rollback_restores_direct_files_and_metadata():
+    from internal_ledger.accounting.posted_entry_maintenance import permanently_delete_transaction
+
+    item = posted_fixture()
+    files = aggregate_attachments(item)
+    before = posting_snapshot(item)
+
+    def fail_after_cascades(*args):
+        assert all(not frappe.db.exists("File", file.name) and not file.path.exists() for file in files)
+        raise frappe.ValidationError("模拟附件删除后审计失败")
+
+    with patch("internal_ledger.accounting.posted_entry_maintenance.record_deleted_audit", fail_after_cascades):
+        with unittest.TestCase().assertRaisesRegex(frappe.ValidationError, "模拟附件删除后审计失败"):
+            permanently_delete_transaction(item.transaction, "错误", before["aggregate"]["version"])
+    assert posting_snapshot(item) == before
+    for file in files:
+        assert frappe.get_doc("File", file.name).as_dict() == file.metadata
+        assert file.path.exists(), file.metadata.attached_to_doctype
+        assert file.path.read_bytes() == file.content
+
+
+def test_permanent_delete_attachment_success_removes_direct_files_permanently():
+    item = posted_fixture()
+    files = aggregate_attachments(item)
+    assert delete_item(item)["status"] == "deleted"
+    for file in files:
+        assert not frappe.db.exists("File", file.name)
+        assert not file.path.exists()
+        assert not frappe.db.exists("Deleted Document", {"deleted_doctype": "File", "deleted_name": file.name})

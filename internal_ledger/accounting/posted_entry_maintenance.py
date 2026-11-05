@@ -266,7 +266,7 @@ def rebuild_posted_entry(transaction: str, values: dict, expected_version: str) 
     return result
 
 
-def _delete_attached_files(doctype, name, marker, undo_files):
+def _preserve_attached_files(doctype, name, undo_files):
     names = frappe.db.get_values("File", {"attached_to_doctype": doctype, "attached_to_name": name},
         "name", order_by="name", for_update=True, pluck=True)
     for file_name in names:
@@ -283,8 +283,14 @@ def _delete_attached_files(doctype, name, marker, undo_files):
                     if not path.exists():
                         path.write_bytes(content)
 
+        # File rows and metadata use the database rollback; disk bytes need compensation.
         undo_files.callback(restore_blob)
         frappe.db.after_rollback.add(restore_blob)
+    return names
+
+
+def _delete_attached_files(doctype, name, marker, undo_files):
+    for file_name in _preserve_attached_files(doctype, name, undo_files):
         frappe.delete_doc("File", file_name, ignore_permissions=True, delete_permanently=True,
                           flags={marker[0]: marker[1]})
 
@@ -327,6 +333,7 @@ def _delete_empty_batch_source(batch, undo_files):
         # The batch and carrier deliberately link to one another.
         frappe.delete_doc("Internal Ledger Source File", name, force=True, ignore_permissions=True,
                           delete_permanently=True, flags={"source_delete": _SOURCE_DELETE})
+    _preserve_attached_files("Import Batch", batch.name, undo_files)
     frappe.delete_doc("Import Batch", batch.name, force=True, ignore_permissions=True, delete_permanently=True,
                       flags={"ledger_import_write": _IMPORT_WRITE, "source_delete": _SOURCE_DELETE})
 
@@ -345,6 +352,10 @@ def permanently_delete_transaction(transaction: str, reason: str, expected_versi
             batch = frappe.get_doc("Import Batch", tx.import_batch, for_update=True)
             if batch.company != draft.company:
                 frappe.throw("导入批次不属于当前账套", frappe.PermissionError)
+            # Native document deletion cascades into ordinary File rows immediately.
+            for doctype, name in (("Journal Entry", link.journal_entry), ("Posting Link", link.name),
+                                  ("Voucher Draft", draft.name), ("Imported Transaction", tx.name)):
+                _preserve_attached_files(doctype, name, undo_files)
             _remove_formal_posting(link, draft, delete_permanently=True)
             _delete_evidence_and_files(tx.name, batch.company, undo_files)
             frappe.delete_doc("Voucher Draft", draft.name, ignore_permissions=True, delete_permanently=True)
