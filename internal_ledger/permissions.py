@@ -13,6 +13,7 @@ _AUDIT_INSERT = object()
 _SOURCE_INSERT = object()
 _IMPORT_WRITE = object()
 _JOURNAL_WRITE = object()
+_JOURNAL_DELETE = object()
 _EVIDENCE_WRITE = object()
 _EVIDENCE_FILE_WRITE = object()
 _NATIVE_FILE_DEDUP = object()
@@ -205,7 +206,8 @@ def protect_journal_write(doc, method=None):
     old = doc.get_doc_before_save()
     if company and (doc.company == company or (old and old.company == company)):
         require_ledger_admin()
-        if doc.flags.ledger_journal_write is not _JOURNAL_WRITE:
+        service_delete = method == "on_trash" and frappe.flags.get("ledger_journal_delete") is _JOURNAL_DELETE
+        if doc.flags.ledger_journal_write is not _JOURNAL_WRITE and not service_delete:
             frappe.throw("当前账套凭证只能由过账或冲销服务写入", frappe.PermissionError)
 
 

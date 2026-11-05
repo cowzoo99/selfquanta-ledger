@@ -80,7 +80,7 @@ def test_json_note_payload_is_sanitized_on_save():
     assert "<table>" in save_note(api, tx, table)["note_html"]
 
 
-def test_posted_entry_title_and_note_are_editable_without_changing_formal_voucher():
+def test_posted_entry_title_and_note_synchronize_to_voucher_and_general_ledger():
     from internal_ledger.accounting.posting import post_draft
     from internal_ledger.api.review_api import approve_draft
     from internal_ledger.api import evidence_api as api
@@ -90,7 +90,6 @@ def test_posted_entry_title_and_note_are_editable_without_changing_formal_vouche
         frappe.get_doc({"doctype": "Fiscal Year", "year": "2026", "year_start_date": "2026-01-01",
                         "year_end_date": "2026-12-31"}).insert()
     doc = draft()
-    original_summary = doc.summary
     approve_draft(doc.name)
     journal_name = post_draft(doc.name)
     before = api.get_evidence(doc.imported_transaction)
@@ -99,8 +98,10 @@ def test_posted_entry_title_and_note_are_editable_without_changing_formal_vouche
 
     assert saved["display_title"] == "新展示标题"
     assert "过账后补充备注" in saved["note_html"]
-    assert frappe.db.get_value("Voucher Draft", doc.name, "summary") == original_summary
-    assert frappe.db.get_value("Journal Entry", journal_name, "user_remark") == original_summary
+    expected = "新展示标题；过账后补充备注"
+    assert frappe.db.get_value("Voucher Draft", doc.name, "summary") == expected
+    assert frappe.db.get_value("Journal Entry", journal_name, "user_remark") == expected
+    assert set(frappe.get_all("GL Entry", filters={"voucher_no": journal_name}, pluck="remarks")) == {expected}
     assert frappe.db.count("Internal Ledger Audit Event", {
         "reference_name": doc.imported_transaction, "action": "update_evidence_note"}) == 1
 

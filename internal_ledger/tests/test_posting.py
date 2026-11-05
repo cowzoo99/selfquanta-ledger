@@ -108,6 +108,54 @@ def test_success_does_not_commit_callers_transaction():
     assert frappe.db.get_value("Voucher Draft", doc.name, "status") == "Approved"
 
 
+def test_synchronized_delete_removes_formal_and_general_ledger_but_preserves_source():
+    from internal_ledger.accounting.posting import post_draft
+    from internal_ledger.accounting.posting_maintenance import delete_posting
+
+    doc = approved_draft()
+    transaction = doc.imported_transaction
+    journal = post_draft(doc.name)
+    link = link_for(doc.name)
+    assert frappe.db.count("GL Entry", {"voucher_no": journal}) == 2
+
+    result = delete_posting(link, "录入错误")
+
+    assert result == {"posting_link": link, "journal_entry": journal, "draft": doc.name,
+                      "status": "deleted"}
+    assert not frappe.db.exists("Journal Entry", journal)
+    assert not frappe.db.exists("GL Entry", {"voucher_no": journal})
+    assert not frappe.db.exists("Posting Link", link)
+    assert frappe.db.exists("Imported Transaction", transaction)
+    saved = frappe.get_doc("Voucher Draft", doc.name)
+    assert saved.status == "Rejected"
+    assert saved.rejection_reason == "已同步删除：录入错误"
+    assert frappe.db.count("Internal Ledger Audit Event", {
+        "action": "delete_posting", "reference_doctype": "Voucher Draft",
+        "reference_name": doc.name, "result": "success"}) == 1
+
+
+def test_delete_postings_api_is_atomic_and_admin_only():
+    from internal_ledger.accounting.posting import post_draft
+    from internal_ledger.api.posting_api import delete_postings
+    from internal_ledger.api.review_api import approve_draft
+    from internal_ledger.tests.test_permissions import user
+    from internal_ledger.tests.test_review_api import additional_draft
+
+    first = approved_draft()
+    second = approve_draft(additional_draft(day=3).name)
+    first_journal, second_journal = post_draft(first.name), post_draft(second.name)
+    links = [link_for(first.name), link_for(second.name)]
+    viewer = user("账务查看者")
+    frappe.set_user(viewer)
+    with unittest.TestCase().assertRaises(frappe.PermissionError):
+        delete_postings(links, "无权操作")
+    frappe.set_user("Administrator")
+    result = delete_postings(links, "批量纠错")
+    assert [row["status"] for row in result] == ["deleted", "deleted"]
+    assert not frappe.db.exists("Journal Entry", first_journal)
+    assert not frappe.db.exists("Journal Entry", second_journal)
+
+
 def test_database_unique_constraints_reject_direct_duplicate_links():
     from internal_ledger.accounting.posting import post_draft
 

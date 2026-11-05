@@ -47,9 +47,11 @@ def test_password_validation_rejects_mismatch_and_policy_failure():
     with unittest.TestCase().assertRaises(frappe.ValidationError):
         validate_temporary_password("Valid-looking-123!", "different")
     with patch("internal_ledger.member_security.test_password_strength", return_value={
-        "feedback": {"password_policy_validation_passed": False},
+        "feedback": {"password_policy_validation_passed": False,
+                     "warning": "密码过于常见",
+                     "suggestions": ["请使用更长且难以猜测的密码"]},
     }):
-        with unittest.TestCase().assertRaises(frappe.ValidationError):
+        with unittest.TestCase().assertRaisesRegex(frappe.ValidationError, "密码过于常见"):
             validate_temporary_password("weak", "weak", ("Member", "", "", "member@example.invalid", None))
 
 

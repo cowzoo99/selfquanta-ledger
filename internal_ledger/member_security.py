@@ -23,7 +23,8 @@ def validate_temporary_password(password: str, confirm_password: str, user_data:
     result = test_password_strength(password, user_data=user_data)
     feedback = result.get("feedback")
     if feedback and not feedback.get("password_policy_validation_passed", False):
-        frappe.throw("临时密码不符合密码安全策略")
+        details = [feedback.get("warning"), *(feedback.get("suggestions") or [])]
+        frappe.throw("；".join(item for item in details if item) or "临时密码不符合密码安全策略")
 
 
 def revoke_sessions(user: str) -> None:

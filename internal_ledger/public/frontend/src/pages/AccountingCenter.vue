@@ -6,6 +6,7 @@ const props = defineProps({items: {type: Array, default: () => []}, canWrite: Bo
 const emit = defineEmits(['refresh']);
 const selected = ref('');
 const reversalFor = ref(''), reversalReason = ref(''), busy = ref(false), error = ref(''), notice = ref('');
+const postingLinks = ref([]);
 const ledgerView = ref('entries');
 const title = '会计中心';
 const currentYear = new Date().getFullYear();
@@ -23,6 +24,26 @@ const entries = computed(() => props.items.filter(item => item.draft?.status ===
     posting: item.posting,
     movement: {incoming, line: (incoming ? debit : credit)[0], amount: item.transaction.amount}};
 }));
+const deletableEntries = computed(() => entries.value.filter(entry => entry.posting?.status === 'Posted'));
+const allDeletableSelected = computed(() => deletableEntries.value.length > 0 &&
+  deletableEntries.value.every(entry => postingLinks.value.includes(entry.posting.name)));
+function toggleAllDeletable() {
+  postingLinks.value = allDeletableSelected.value ? [] : deletableEntries.value.map(entry => entry.posting.name);
+}
+async function deleteSelectedPostings() {
+  if (!postingLinks.value.length) {error.value = '请先选择要同步删除的凭证'; return;}
+  const reason = window.prompt('请输入同步删除原因（原始流水会保留）');
+  if (!reason?.trim()) return;
+  if (!window.confirm(`确认同步删除选中的 ${postingLinks.value.length} 张凭证？对应总账记录将一并删除。`)) return;
+  busy.value = true; error.value = ''; notice.value = '';
+  try {
+    await frappe.call({method: 'internal_ledger.api.posting_api.delete_postings', type: 'POST',
+      args: {posting_links: JSON.stringify(postingLinks.value), reason: reason.trim()}});
+    postingLinks.value = []; notice.value = '已同步删除凭证与对应总账记录，原始流水仍保留';
+    emit('refresh');
+  } catch (e) {error.value = errorMessage(e);}
+  finally {busy.value = false;}
+}
 async function reversePosting(entry) {
   if (!reversalReason.value.trim()) {error.value = '请填写冲销原因'; return;}
   busy.value = true; error.value = ''; notice.value = '';
@@ -57,9 +78,17 @@ async function reversePosting(entry) {
       </div>
       <p v-if="!entries.length">暂无已过账凭证。</p>
       <div v-else-if="ledgerView === 'entries'" class="ledger-voucher-list">
+        <div v-if="canWrite && deletableEntries.length" class="ledger-delete-toolbar">
+          <label><input type="checkbox" :checked="allDeletableSelected" @change="toggleAllDeletable">全选可删除凭证</label>
+          <button type="button" :disabled="busy || !postingLinks.length" @click="deleteSelectedPostings">同步删除选中项</button>
+        </div>
         <article v-for="entry in entries" :key="entry.name" class="ledger-overview-voucher">
           <div class="ledger-voucher-heading">
-            <div><strong>{{ entry.summary }}</strong><span>{{ entry.date }} · {{ entry.name }}</span></div>
+            <div class="ledger-voucher-select">
+              <input v-if="canWrite && entry.posting?.status === 'Posted'" v-model="postingLinks" type="checkbox"
+                :value="entry.posting.name" :aria-label="`选择同步删除 ${entry.summary}`">
+              <div><strong>{{ entry.summary }}</strong><span>{{ entry.date }} · {{ entry.name }}</span></div>
+            </div>
             <div v-if="entry.posting && entry.posting.status === 'Reversed'">
               <strong>已作废（已生成冲销凭证）</strong>
               <span>{{ entry.posting.reversal_journal_entry }}</span>
@@ -116,6 +145,9 @@ async function reversePosting(entry) {
 .ledger-overview-voucher, .ledger-movement-row { border: 1px solid var(--border-color, #d9dee3); border-radius: 10px; overflow: hidden; background: var(--card-bg, #fff); }
 .ledger-voucher-heading { display: flex; justify-content: space-between; gap: 12px; padding: 12px 16px; background: #f5f7f9; }
 .ledger-voucher-heading > div { display: grid; gap: 4px; }
+.ledger-voucher-heading .ledger-voucher-select { display: flex; align-items: start; gap: 10px; }
+.ledger-voucher-heading .ledger-voucher-select > div { display: grid; gap: 4px; }
+.ledger-delete-toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 14px; border: 1px solid var(--border-color, #d9dee3); border-radius: 10px; background: #fff4ef; }
 .ledger-reversal { display: flex; flex-wrap: wrap; align-items: end; gap: 8px; padding: 10px 16px; background: #fff4ef; }
 .ledger-reversal label { display: grid; gap: 4px; flex: 1 1 280px; }
 .ledger-voucher-heading span, .ledger-movement-row span { color: #606b75; }

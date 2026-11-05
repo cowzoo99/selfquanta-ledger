@@ -1,6 +1,6 @@
 import frappe
 
-from internal_ledger.accounting import posting, reversal
+from internal_ledger.accounting import posting, posting_maintenance, reversal
 from internal_ledger.permissions import require_ledger_admin
 
 
@@ -27,3 +27,15 @@ def reverse_posting(posting_link: str, reason: str) -> str:
 def approve_and_post(draft_names):
     from internal_ledger.accounting.batch_workflow import approve_and_post as post_batch
     return post_batch(frappe.parse_json(draft_names) if isinstance(draft_names, str) else draft_names)
+
+
+@frappe.whitelist(methods=["POST"])
+def delete_postings(posting_links, reason: str) -> list[dict]:
+    require_ledger_admin()
+    posting_links = frappe.parse_json(posting_links) if isinstance(posting_links, str) else posting_links
+    if not isinstance(posting_links, list) or not posting_links:
+        frappe.throw("请选择要同步删除的凭证")
+    if any(not isinstance(name, str) or not name for name in posting_links):
+        frappe.throw("凭证关联参数无效")
+    posting_links = list(dict.fromkeys(posting_links))
+    return [posting_maintenance.delete_posting(name, reason) for name in posting_links]

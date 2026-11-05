@@ -161,6 +161,14 @@ def test_accounting_center_supports_posted_metadata_and_safe_reversal():
     assert '@refresh="refresh"' in app
 
 
+def test_accounting_center_uses_synchronized_batch_delete_instead_of_native_delete():
+    accounting = (ROOT / "public/frontend/src/pages/AccountingCenter.vue").read_text(encoding="utf-8")
+
+    for text in ("全选可删除凭证", "同步删除选中项",
+                 "internal_ledger.api.posting_api.delete_postings", "posting_links"):
+        assert text in accounting
+
+
 def test_default_workspace_patch_sets_only_blank_ledger_users():
     from internal_ledger.patches.set_selfledger_default_workspace import execute
     from internal_ledger.tests.test_permissions import user

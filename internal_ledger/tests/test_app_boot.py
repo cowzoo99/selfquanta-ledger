@@ -21,6 +21,11 @@ def test_member_page_is_admin_only_in_the_workbench_source():
     assert re.search(r"const page = computed\(\(\) => navigation.some\(entry => entry\[0\] === props.view\) \|\| \['duplicates', 'classification'\].includes\(props.view\) \? props.view : 'dashboard'\)", app)
     assert "export async function memberCall(method, args = {})" in api
     assert "internal_ledger.api.member_api.${method}" in api
+    members = (root / "pages" / "EnterpriseMembers.vue").read_text(encoding="utf-8")
+    assert "建议至少 12 位" in members
+    assert "大写字母、小写字母、数字和特殊符号" in members
+    assert 'aria-describedby="member-password-help"' in members
+    assert 'aria-describedby="reset-password-help"' in members
 
 
 def load_tests(loader, tests, pattern):

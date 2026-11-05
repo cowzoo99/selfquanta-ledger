@@ -78,7 +78,8 @@ async function resetPassword() {
         <label for="member-name">姓名</label><input id="member-name" v-model="form.first_name" required autocomplete="name">
         <label for="member-account">登录账号</label><input id="member-account" v-model="form.login_account" required pattern="[A-Za-z][A-Za-z0-9_]{2,31}" autocomplete="off" aria-describedby="member-account-help">
         <small id="member-account-help">3-32 位英文、数字或下划线，必须以英文字母开头。</small>
-        <label for="member-password">临时密码</label><input id="member-password" v-model="form.temporary_password" type="password" required autocomplete="new-password">
+        <label for="member-password">临时密码</label><input id="member-password" v-model="form.temporary_password" type="password" required autocomplete="new-password" aria-describedby="member-password-help">
+        <small id="member-password-help">建议至少 12 位，包含大写字母、小写字母、数字和特殊符号；避免姓名、登录账号和常见词。</small>
         <label for="member-confirm">确认密码</label><input id="member-confirm" v-model="form.confirm_password" type="password" required autocomplete="new-password">
         <p v-if="error" role="alert">{{ error }}</p>
         <button type="submit">{{ saving ? '正在保存…' : '创建成员' }}</button><button type="button" @click="createDialog.close()">取消</button>
@@ -88,7 +89,8 @@ async function resetPassword() {
       <h3 id="reset-member-title">重置临时密码</h3>
       <form @submit.prevent="resetPassword"><fieldset :disabled="saving">
         <label for="reset-account">登录账号</label><input id="reset-account" :value="reset.login_account || reset.user" readonly autocomplete="off">
-        <label for="reset-password">临时密码</label><input id="reset-password" v-model="reset.temporary_password" type="password" required autocomplete="new-password">
+        <label for="reset-password">临时密码</label><input id="reset-password" v-model="reset.temporary_password" type="password" required autocomplete="new-password" aria-describedby="reset-password-help">
+        <small id="reset-password-help">建议至少 12 位，包含大写字母、小写字母、数字和特殊符号；避免姓名、登录账号和常见词。</small>
         <label for="reset-confirm">确认密码</label><input id="reset-confirm" v-model="reset.confirm_password" type="password" required autocomplete="new-password">
         <p v-if="error" role="alert">{{ error }}</p>
         <button type="submit">{{ saving ? '正在保存…' : '重置密码' }}</button><button type="button" @click="resetDialog.close()">取消</button>

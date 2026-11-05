@@ -141,6 +141,9 @@ def save_evidence(tx_name: str, note_html: str, expected_version: str = None,
             evidence.display_title = display_title
         evidence.note_html = note_html
         evidence.save()
+        from internal_ledger.accounting.posting_maintenance import sync_posted_summary
+
+        sync_posted_summary(tx.name, evidence.display_title or "", evidence.note_html or "")
         return _serialize_evidence(evidence)
 
 
