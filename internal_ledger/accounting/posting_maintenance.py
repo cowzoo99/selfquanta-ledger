@@ -63,7 +63,38 @@ def delete_posting(posting_link: str, reason: str) -> dict:
     if draft.status != "Posted" or journal.docstatus != 1 or journal.reversal_of:
         frappe.throw("草稿、凭证与过账关联状态不一致")
 
+    journal_name = _remove_formal_posting(link, draft, resulting_status="Rejected")
+    frappe.db.set_value("Voucher Draft", draft.name, {
+        "rejection_reason": f"已同步删除：{reason}",
+    }, update_modified=False)
+    record_audit("delete_posting", "Voucher Draft", draft.name, "success")
+    return {"posting_link": link.name, "journal_entry": journal_name,
+            "draft": draft.name, "status": "deleted"}
+
+
+def _remove_formal_posting(link, draft, *, resulting_status: str | None = None) -> str:
+    require_ledger_admin()
+    journal = frappe.get_doc("Journal Entry", link.journal_entry, for_update=True)
+    if journal.company != draft.company:
+        frappe.throw("凭证不属于当前账套", frappe.PermissionError)
+    if journal.docstatus != 1 or journal.reversal_of:
+        frappe.throw("正式凭证状态不允许重建")
+    series = None
+    if resulting_status == "Draft":
+        from frappe.model.naming import NamingSeries, parse_naming_series
+
+        def capture_counter(prefix, digits):
+            nonlocal series
+            # Resolve date placeholders from the old name, not today's date.
+            key = journal.name[:len(prefix)]
+            series = (key, frappe.db.get_value("Series", key, "current", order_by="name", for_update=True))
+            return "#" * digits
+
+        parse_naming_series(NamingSeries(journal.naming_series).series,
+                            doc=journal, number_generator=capture_counter)
     journal.flags.ledger_journal_write = _JOURNAL_WRITE
+    # Ledger admins have no generic cancel right; this checked service owns cancellation.
+    journal.flags.ignore_permissions = True
     journal.cancel()
     frappe.db.delete("GL Entry", {"voucher_type": "Journal Entry", "voucher_no": journal.name})
     frappe.delete_doc("Posting Link", link.name, ignore_permissions=True)
@@ -73,9 +104,10 @@ def delete_posting(posting_link: str, reason: str) -> dict:
         frappe.delete_doc("Journal Entry", journal.name, ignore_permissions=True)
     finally:
         frappe.flags.ledger_journal_delete = previous_delete
-    frappe.db.set_value("Voucher Draft", draft.name, {
-        "status": "Rejected", "rejection_reason": f"已同步删除：{reason}",
-    }, update_modified=False)
-    record_audit("delete_posting", "Voucher Draft", draft.name, "success")
-    return {"posting_link": link.name, "journal_entry": journal.name,
-            "draft": draft.name, "status": "deleted"}
+    # Frappe decrements the last number on delete. Rebuild must not reuse its identity.
+    if series and series[1] is not None:
+        frappe.db.sql("UPDATE `tabSeries` SET current = %s WHERE name = %s AND current < %s",
+                      (series[1], series[0], series[1]))
+    if resulting_status:
+        frappe.db.set_value("Voucher Draft", draft.name, "status", resulting_status, update_modified=False)
+    return journal.name

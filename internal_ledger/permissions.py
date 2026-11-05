@@ -12,6 +12,7 @@ LEDGER_DOCTYPES = ("Import Batch", "Imported Transaction", "Classification Rule"
 _AUDIT_INSERT = object()
 _SOURCE_INSERT = object()
 _IMPORT_WRITE = object()
+_POSTED_ENTRY_REBUILD = object()
 _JOURNAL_WRITE = object()
 _JOURNAL_DELETE = object()
 _EVIDENCE_WRITE = object()

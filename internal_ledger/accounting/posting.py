@@ -31,7 +31,7 @@ def validate_period(company, posting_date):
     return company_doc
 
 
-def post_draft(draft_name: str) -> str:
+def post_draft(draft_name: str, *, remark_override: str | None = None) -> str:
     """Post once in the caller's transaction; let every failure propagate."""
     require_ledger_admin()
     draft = frappe.get_doc("Voucher Draft", draft_name, for_update=True)
@@ -53,8 +53,11 @@ def post_draft(draft_name: str) -> str:
         frappe.throw("草稿本位币必须与公司币种一致")
     journal = frappe.get_doc({
         "doctype": "Journal Entry", "voucher_type": "Journal Entry", "company": draft.company,
-        "posting_date": draft.posting_date, "user_remark": draft.summary or "", "accounts": [],
+        "posting_date": draft.posting_date,
+        "user_remark": (draft.summary or "") if remark_override is None else remark_override, "accounts": [],
     })
+    if remark_override is not None:
+        journal.remark = remark_override
     for line in draft.lines:
         currency = frappe.db.get_value("Account", line.account, "account_currency", for_update=True)
         if currency and currency != draft.base_currency:

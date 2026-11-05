@@ -31,6 +31,9 @@ class VoucherDraft(Document):
 
         from internal_ledger.api.review_api import assert_transition
 
+        from internal_ledger.permissions import _POSTED_ENTRY_REBUILD
+
+        rebuilding = self.flags.posted_entry_rebuild is _POSTED_ENTRY_REBUILD
         previous = self.get_doc_before_save()
         if not previous and not self.is_new():
             previous = frappe.get_doc("Voucher Draft", self.name)
@@ -52,7 +55,7 @@ class VoucherDraft(Document):
             if self.flags.review_transition != self.status and not posting:
                 frappe.throw("状态只能由审核服务变更")
             assert_transition(previous.status, self.status)
-        if previous and not self.flags.review_edit:
+        if previous and not self.flags.review_edit and not rebuilding:
             protected = ("is_manual_override", "manual_override_by", "rejection_reason")
             if any(self.get(field) != previous.get(field) for field in protected) and not self.flags.review_transition:
                 frappe.throw("审核元数据只能由审核服务变更")
@@ -67,7 +70,7 @@ class VoucherDraft(Document):
         lines = [DraftLine(row.account, Decimal(str(row.debit or 0)), Decimal(str(row.credit or 0)))
                  for row in self.lines]
         validate_balanced(lines)
-        if manual_insert or (previous and previous.is_manual_override and not previous.classification_rule):
+        if rebuilding or manual_insert or (previous and previous.is_manual_override and not previous.classification_rule):
             self.validate_manual_classification(previous, lines)
             return
         _, expected = current_draft(self.imported_transaction)
@@ -98,7 +101,10 @@ class VoucherDraft(Document):
 
 
     def validate_manual_classification(self, previous, lines):
-        if previous and any(self.get(field) != previous.get(field) for field in (
+        from internal_ledger.permissions import _POSTED_ENTRY_REBUILD
+
+        rebuilding = self.flags.posted_entry_rebuild is _POSTED_ENTRY_REBUILD
+        if previous and not rebuilding and any(self.get(field) != previous.get(field) for field in (
                 "classification_rule", "classification_reason", "transaction_type")):
             frappe.throw("人工分类快照不可更换")
         tx = frappe.get_doc("Imported Transaction", self.imported_transaction, for_update=True)

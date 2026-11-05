@@ -44,3 +44,10 @@ def delete_postings(posting_links, reason: str) -> list[dict]:
         frappe.throw("凭证关联参数无效")
     posting_links = list(dict.fromkeys(posting_links))
     return [posting_maintenance.delete_posting(name, reason) for name in posting_links]
+
+
+@frappe.whitelist(methods=["POST"])
+def rebuild_posted_entry(transaction: str, values, expected_version: str) -> dict:
+    require_ledger_admin()
+    parsed = frappe.parse_json(values) if isinstance(values, str) else values
+    return posted_entry_maintenance.rebuild_posted_entry(transaction, parsed, expected_version)
