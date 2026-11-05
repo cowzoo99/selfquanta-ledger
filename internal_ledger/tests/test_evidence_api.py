@@ -86,6 +86,9 @@ def test_posted_entry_title_and_note_are_editable_without_changing_formal_vouche
     from internal_ledger.api import evidence_api as api
     from internal_ledger.tests.test_review_api import draft
 
+    if not frappe.db.exists("Fiscal Year", "2026"):
+        frappe.get_doc({"doctype": "Fiscal Year", "year": "2026", "year_start_date": "2026-01-01",
+                        "year_end_date": "2026-12-31"}).insert()
     doc = draft()
     original_summary = doc.summary
     approve_draft(doc.name)
