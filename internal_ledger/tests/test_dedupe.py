@@ -256,6 +256,7 @@ def load_tests(loader, tests, pattern):
             test_fallback_uses_transaction_fields_but_not_file_row,
             test_save_batch_preserves_normalized_rows_and_settings,
             test_duplicates_are_retained_with_one_canonical_across_batches,
+            test_same_day_core_payment_is_flagged_when_source_and_summary_differ,
             test_amount_resolves_currency_from_import_batch,
             test_batch_deadlock_preserves_original_exception,
             test_canonical_insert_deadlock_preserves_original_exception,
