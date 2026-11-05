@@ -280,10 +280,10 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 const source = fs.readFileSync(process.argv[1], 'utf8');
-function boot(pathname, route, ready) {
+function boot(pathname, route, ready, user = 'Administrator', roles = []) {
   const events = {}, assigned = [], routed = [];
   const context = {document: {}, window: {location: {pathname, assign: value => assigned.push(value)}},
-    frappe: {session: {user: 'Administrator'}, user_roles: [], app: ready ? {sidebar: {}} : {},
+    frappe: {session: {user}, user_roles: roles, app: ready ? {sidebar: {}} : {},
       get_route: () => route, set_route: (...values) => routed.push(values),
       router: {on: (name, fn) => {events[name] = fn;}}},
     $: () => ({on: (name, fn) => {events[name] = fn;}}),
@@ -306,10 +306,14 @@ const form = boot('/desk/journal-entry/SYNTHETIC', null, true);
 assert.doesNotThrow(() => form.events.app_ready());
 assert.doesNotThrow(() => form.events.tick());
 assert.equal(form.assigned.length + form.routed.length, 0);
+const journalList = boot('/app/journal-entry', ['List', 'Journal Entry', 'List'], true,
+  '13283112536@163.com', ['账套管理员']);
+journalList.events.app_ready();
+assert.equal(JSON.stringify(journalList.routed[0]), JSON.stringify(['ledger-workbench', 'accounting']));
 const legacy = boot('/desk/setup/home', ['Workspaces', 'Home'], true);
 legacy.events.app_ready();
 assert.equal(JSON.stringify(legacy.routed[0]), JSON.stringify(['ledger-workbench', 'dashboard']));
-console.log('PASS: actual Desk script tolerates null routes, waits for native sidebar, preserves native form and strict home redirect');
+console.log('PASS: actual Desk script waits for native sidebar, redirects the unsafe Journal Entry list, preserves forms and strict home redirect');
 """
     result = subprocess.run(["node", "-e", harness, str(script)], capture_output=True, text=True)
     assert result.returncode == 0, result.stdout + result.stderr

@@ -241,6 +241,12 @@ def test_roles_and_custom_permissions_are_idempotent_and_viewer_read_only():
         assert frappe.has_permission("Journal Entry", action, user=admin)
     for action in ("cancel", "delete"):
         assert not frappe.has_permission("Journal Entry", action, user=admin)
+    for actor in (viewer, admin):
+        assert frappe.has_permission("Accounting Dimension", "read", user=actor)
+        assert not frappe.has_permission("Accounting Dimension", "write", user=actor)
+    frappe.set_user(viewer)
+    assert isinstance(frappe.get_list("Accounting Dimension", fields=["name"], limit_page_length=1), list)
+    frappe.set_user("Administrator")
     assert frappe.db.count("Custom DocPerm", {"parent": "Journal Entry", "role": "账套管理员",
                                              "permlevel": 0}) == 1
     for report_name in LEDGER_REPORTS:

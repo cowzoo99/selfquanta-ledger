@@ -582,7 +582,9 @@ async function run(name) {
       {account: '560201 - 办公费 - 逆熵云', account_number: '560201', account_name: '办公费', debit: 13000, credit: 0},
       {account: '100201 - 基本存款账户 - 逆熵云', account_number: '100201', account_name: '基本存款账户', debit: 0, credit: 13000},
     ]});
-    const page = mount('pages/AccountingCenter.vue', {items: [income, expense]});
+    frappe.call = async args => {calls.push(args); return {message: {
+      display_title: '', note_html: '', note_version: 'version-one', attachments: []}};};
+    const page = mount('pages/AccountingCenter.vue', {items: [income, expense], canWrite: true}, true);
     const body = text(page.root);
     for (const label of ['会计中心', '标准总账总览', '借贷分录', '收支变动明细', '凭证草稿', '正式记账凭证', '总账报表']) assert.match(body, new RegExp(label));
     const links = descendants(page.root).filter(el => el.type === 'a');
@@ -593,7 +595,7 @@ async function run(name) {
     assert.equal(primary?.props.href, '#ledger-overview');
     assert.match(text(primary), /日期.*凭证.*借方.*贷方/s);
     assert.ok(hrefs.includes('/app/voucher-draft'));
-    assert.ok(hrefs.includes('/app/journal-entry'));
+    assert.ok(hrefs.includes('/app/ledger-workbench/accounting#ledger-overview'));
     assert.ok(hrefs.includes(ledgerHref));
     const vouchers = descendants(page.root).filter(el => el.props.class === 'ledger-overview-voucher');
     assert.equal(vouchers.length, 2);
@@ -603,11 +605,20 @@ async function run(name) {
     assert.doesNotMatch(text(debit), /实收资本/);
     assert.match(text(credit), /贷方.*实收资本.*CNY 50,000\.00/s);
     assert.doesNotMatch(text(credit), /基本存款账户/);
+    let editButtons = descendants(page.root).filter(el => el.type === 'button' && text(el) === '编辑标题和备注');
+    assert.equal(editButtons.length, 2);
+    editButtons[0].props.onClick(); await settle();
+    assert.equal(page.state.selected, 'tx-capital');
+    assert.match(text(page.root), /编辑标题、备注与附件/);
     const movementTab = descendants(page.root).find(el => el.type === 'button' && text(el) === '收支变动明细');
     movementTab.props.onClick(); await Vue.nextTick();
     const movements = descendants(page.root).find(el => el.props.class === 'ledger-movement-list');
     assert.match(text(movements), /转入.*增加.*\+CNY 50,000\.00/s);
     assert.match(text(movements), /转出.*减少.*-CNY 13,000\.00/s);
+    editButtons = descendants(movements).filter(el => el.type === 'button' && text(el) === '编辑标题和备注');
+    assert.equal(editButtons.length, 2);
+    editButtons[1].props.onClick(); await settle();
+    assert.equal(page.state.selected, 'tx-office');
     page.app.unmount();
   } else if (name === 'route_scope') {
     const mounts = [], wrapper = {ledger_ready: true, ledger_root: {}};

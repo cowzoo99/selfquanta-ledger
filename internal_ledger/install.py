@@ -39,7 +39,7 @@ def ensure_roles() -> None:
     # App schemas are authoritative, including sites with legacy Custom DocPerm overrides.
     frappe.db.delete("Custom DocPerm", {"parent": ["in", LEDGER_DOCTYPES]})
     for role, allowed in ROLE_PERMISSIONS.items():
-        for doctype in ("Journal Entry", "Account", "GL Entry"):
+        for doctype in ("Journal Entry", "Account", "GL Entry", "Accounting Dimension"):
             add_permission(doctype, role, ptype="read")
             actions = allowed if doctype == "Journal Entry" else {"read", "report"}
             frappe.db.set_value("Custom DocPerm", {"parent": doctype, "role": role, "permlevel": 0},
@@ -95,7 +95,7 @@ def _permission_state():
 
     fields = ["parent", "role", "permlevel", "if_owner", *rights]
     rows = frappe.get_all("Custom DocPerm", filters={"parent": ["in", [*LEDGER_DOCTYPES,
-        "Journal Entry", "Account", "GL Entry"]]}, fields=fields)
+        "Journal Entry", "Account", "GL Entry", "Accounting Dimension"]]}, fields=fields)
     permissions = sorted(tuple(row.get(field) or ("" if field in ("parent", "role") else 0)
                                for field in fields) for row in rows)
     report_roles = tuple((report, tuple(sorted(frappe.get_all(

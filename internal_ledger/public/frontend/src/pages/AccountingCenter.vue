@@ -1,10 +1,11 @@
 <script setup>
-import {computed, ref} from 'vue';
+import {computed, nextTick, ref} from 'vue';
 import TransactionEvidence from '../components/TransactionEvidence.vue';
 import {errorMessage} from '../api';
 const props = defineProps({items: {type: Array, default: () => []}, canWrite: Boolean});
 const emit = defineEmits(['refresh']);
 const selected = ref('');
+const editorPanel = ref(null);
 const reversalFor = ref(''), reversalReason = ref(''), busy = ref(false), error = ref(''), notice = ref('');
 const postingLinks = ref([]);
 const ledgerView = ref('entries');
@@ -29,6 +30,11 @@ const allDeletableSelected = computed(() => deletableEntries.value.length > 0 &&
   deletableEntries.value.every(entry => postingLinks.value.includes(entry.posting.name)));
 function toggleAllDeletable() {
   postingLinks.value = allDeletableSelected.value ? [] : deletableEntries.value.map(entry => entry.posting.name);
+}
+async function editTransaction(name) {
+  selected.value = name;
+  await nextTick();
+  editorPanel.value?.scrollIntoView?.({behavior: 'smooth', block: 'start'});
 }
 async function deleteSelectedPostings() {
   if (!postingLinks.value.length) {error.value = '请先选择要同步删除的凭证'; return;}
@@ -68,7 +74,7 @@ async function reversePosting(entry) {
     </a>
     <div class="ledger-cards">
       <a class="ledger-card" href="/app/voucher-draft"><strong>凭证草稿</strong><span>查看自动分类和人工补充后形成的借贷草稿</span></a>
-      <a class="ledger-card" href="/app/journal-entry"><strong>正式记账凭证</strong><span>查看管理员确认过账后的正式凭证</span></a>
+      <a class="ledger-card" href="/app/ledger-workbench/accounting#ledger-overview"><strong>正式记账凭证</strong><span>查看并受控维护管理员确认过账后的正式凭证</span></a>
       <a class="ledger-card" :href="generalLedgerHref"><strong>总账报表</strong><span>按科目和期间查询正式账簿</span></a>
     </div>
     <div id="ledger-overview" class="ledger-overview">
@@ -76,6 +82,13 @@ async function reversePosting(entry) {
         <button type="button" :aria-current="ledgerView === 'entries' ? 'page' : undefined" @click="ledgerView = 'entries'">借贷分录</button>
         <button type="button" :aria-current="ledgerView === 'movements' ? 'page' : undefined" @click="ledgerView = 'movements'">收支变动明细</button>
       </div>
+      <section v-if="selected" ref="editorPanel" class="ledger-edit-panel" aria-labelledby="ledger-edit-title">
+        <div class="ledger-edit-heading">
+          <h3 id="ledger-edit-title">编辑标题、备注与附件</h3>
+          <button type="button" @click="selected = ''">关闭</button>
+        </div>
+        <TransactionEvidence :transaction="selected" :can-write="canWrite" @saved="emit('refresh')" />
+      </section>
       <p v-if="!entries.length">暂无已过账凭证。</p>
       <div v-else-if="ledgerView === 'entries'" class="ledger-voucher-list">
         <div v-if="canWrite && deletableEntries.length" class="ledger-delete-toolbar">
@@ -93,8 +106,11 @@ async function reversePosting(entry) {
               <strong>已作废（已生成冲销凭证）</strong>
               <span>{{ entry.posting.reversal_journal_entry }}</span>
             </div>
-            <button v-else-if="canWrite && entry.posting && entry.posting.status === 'Posted'" type="button"
-              @click="reversalFor = entry.name; reversalReason = ''">作废并冲销</button>
+            <div v-if="canWrite" class="ledger-entry-actions">
+              <button type="button" @click="editTransaction(entry.transaction)">编辑标题和备注</button>
+              <button v-if="entry.posting && entry.posting.status === 'Posted'" type="button"
+                @click="reversalFor = entry.name; reversalReason = ''">作废并冲销</button>
+            </div>
           </div>
           <div v-if="reversalFor === entry.name" class="ledger-reversal">
             <label>冲销原因<input v-model="reversalReason" type="text" maxlength="500"></label>
@@ -124,6 +140,7 @@ async function reversePosting(entry) {
             {{ entry.movement.incoming ? '转入 · 增加' : '转出 · 减少' }}
             {{ entry.movement.incoming ? '+' : '-' }}{{ amount(entry.movement.amount) }}
           </strong>
+          <button v-if="canWrite" type="button" @click="editTransaction(entry.transaction)">编辑标题和备注</button>
         </article>
       </div>
     </div>
@@ -131,10 +148,9 @@ async function reversePosting(entry) {
     <ul class="ledger-items">
       <li v-for="item in items" :key="item.transaction.name">
         <strong>{{ item.display_title || item.transaction.counterparty || '未提供交易对象' }} · {{ item.transaction.amount }} · {{ item.transaction.occurred_at }}</strong>
-        <button type="button" @click="selected = item.transaction.name">查看备注与附件</button>
+        <button type="button" @click="editTransaction(item.transaction.name)">{{ canWrite ? '编辑' : '查看' }}备注与附件</button>
       </li>
     </ul>
-    <TransactionEvidence v-if="selected" :transaction="selected" :can-write="canWrite" @saved="emit('refresh')" />
   </section>
 </template>
 
@@ -147,7 +163,11 @@ async function reversePosting(entry) {
 .ledger-voucher-heading > div { display: grid; gap: 4px; }
 .ledger-voucher-heading .ledger-voucher-select { display: flex; align-items: start; gap: 10px; }
 .ledger-voucher-heading .ledger-voucher-select > div { display: grid; gap: 4px; }
+.ledger-entry-actions { display: flex !important; flex-wrap: wrap; align-items: center; gap: 8px; }
 .ledger-delete-toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 14px; border: 1px solid var(--border-color, #d9dee3); border-radius: 10px; background: #fff4ef; }
+.ledger-edit-panel { margin: 12px 0 16px; padding: 14px 16px; border: 2px solid #17658a; border-radius: 10px; background: #f5fbff; scroll-margin-top: 20px; }
+.ledger-edit-heading { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.ledger-edit-heading h3 { margin: 0; }
 .ledger-reversal { display: flex; flex-wrap: wrap; align-items: end; gap: 8px; padding: 10px 16px; background: #fff4ef; }
 .ledger-reversal label { display: grid; gap: 4px; flex: 1 1 280px; }
 .ledger-voucher-heading span, .ledger-movement-row span { color: #606b75; }
@@ -158,7 +178,7 @@ async function reversePosting(entry) {
 .ledger-debit-column h4, .ledger-credit-column h4 { margin: 0 0 10px; }
 .ledger-entry-line { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; padding: 7px 0; }
 .ledger-entry-line span { overflow-wrap: anywhere; }
-.ledger-movement-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 16px; padding: 14px 16px; }
+.ledger-movement-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 16px; padding: 14px 16px; }
 .ledger-movement-row div { display: grid; gap: 4px; }
 .movement-in { color: #19733b; }
 .movement-out { color: #b33a2b; }
