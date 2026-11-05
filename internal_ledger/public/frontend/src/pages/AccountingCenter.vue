@@ -1,13 +1,14 @@
 <script setup>
 import {computed, nextTick, ref} from 'vue';
-import TransactionEvidence from '../components/TransactionEvidence.vue';
+import PostedEntryEditor from '../components/PostedEntryEditor.vue';
 import {errorMessage} from '../api';
 const props = defineProps({items: {type: Array, default: () => []}, canWrite: Boolean});
 const emit = defineEmits(['refresh']);
 const selected = ref('');
 const editorPanel = ref(null);
 const reversalFor = ref(''), reversalReason = ref(''), busy = ref(false), error = ref(''), notice = ref('');
-const postingLinks = ref([]);
+const selectedTransactions = ref([]);
+const evidenceOnly = computed(() => !!selected.value && !entries.value.some(entry => entry.transaction === selected.value));
 const ledgerView = ref('entries');
 const title = '会计中心';
 const currentYear = new Date().getFullYear();
@@ -27,30 +28,51 @@ const entries = computed(() => props.items.filter(item => item.draft?.status ===
 }));
 const deletableEntries = computed(() => entries.value.filter(entry => entry.posting?.status === 'Posted'));
 const allDeletableSelected = computed(() => deletableEntries.value.length > 0 &&
-  deletableEntries.value.every(entry => postingLinks.value.includes(entry.posting.name)));
+  deletableEntries.value.every(entry => selectedTransactions.value.includes(entry.transaction)));
 function toggleAllDeletable() {
-  postingLinks.value = allDeletableSelected.value ? [] : deletableEntries.value.map(entry => entry.posting.name);
+  if (!props.canWrite || busy.value) return;
+  selectedTransactions.value = allDeletableSelected.value ? [] : deletableEntries.value.map(entry => entry.transaction);
 }
-async function editTransaction(name) {
-  selected.value = name;
+async function openEditor(name) {
+  if (busy.value) return;
+  selected.value = name; error.value = ''; notice.value = '';
   await nextTick();
   editorPanel.value?.scrollIntoView?.({behavior: 'smooth', block: 'start'});
 }
-async function deleteSelectedPostings() {
-  if (!postingLinks.value.length) {error.value = '请先选择要同步删除的凭证'; return;}
-  const reason = window.prompt('请输入同步删除原因（原始流水会保留）');
-  if (!reason?.trim()) return;
-  if (!window.confirm(`确认同步删除选中的 ${postingLinks.value.length} 张凭证？对应总账记录将一并删除。`)) return;
+function completed(kind) {
+  selected.value = ''; selectedTransactions.value = [];
+  error.value = ''; notice.value = kind === 'deleted' ? '已永久删除账目' : '账目已保存';
+  emit('refresh');
+}
+async function deleteSelectedTransactions() {
+  if (!props.canWrite || busy.value) return;
+  const names = selectedTransactions.value.filter(name => deletableEntries.value.some(entry => entry.transaction === name));
+  if (!names.length) {error.value = '请先选择要永久删除的账目'; return;}
   busy.value = true; error.value = ''; notice.value = '';
   try {
-    await frappe.call({method: 'internal_ledger.api.posting_api.delete_postings', type: 'POST',
-      args: {posting_links: JSON.stringify(postingLinks.value), reason: reason.trim()}});
-    postingLinks.value = []; notice.value = '已同步删除凭证与对应总账记录，原始流水仍保留';
-    emit('refresh');
+    const versions = {};
+    for (const transaction of names) {
+      const response = await frappe.call({method: 'internal_ledger.api.posting_api.get_posted_entry', type: 'GET', args: {transaction}});
+      versions[transaction] = response.message.version;
+    }
+    const reason = window.prompt(`请输入永久删除选中的 ${names.length} 笔账目的原因`);
+    if (!reason?.trim()) return;
+    if (!window.confirm('此操作将永久删除流水、附件、凭证和总账，且不可恢复。确认继续？')) return;
+    const response = await frappe.call({method: 'internal_ledger.api.posting_api.permanently_delete_transactions', type: 'POST',
+      args: {transactions: JSON.stringify(names), reason: reason.trim(), expected_versions: JSON.stringify(versions)}});
+    const results = response.message;
+    const deleted = names.filter(name => results.some(row => row.transaction === name && row.status === 'deleted'));
+    if (deleted.length === names.length) completed('deleted');
+    else if (deleted.length) {
+      selected.value = ''; selectedTransactions.value = [];
+      notice.value = `已永久删除 ${deleted.length} 笔账目，${names.length - deleted.length} 笔删除失败，请刷新后重试`;
+      emit('refresh');
+    } else error.value = results.find(row => row.status === 'failed')?.message || '永久删除失败，请刷新后重试';
   } catch (e) {error.value = errorMessage(e);}
   finally {busy.value = false;}
 }
 async function reversePosting(entry) {
+  if (!props.canWrite || busy.value) return;
   if (!reversalReason.value.trim()) {error.value = '请填写冲销原因'; return;}
   busy.value = true; error.value = ''; notice.value = '';
   try {
@@ -82,33 +104,31 @@ async function reversePosting(entry) {
         <button type="button" :aria-current="ledgerView === 'entries' ? 'page' : undefined" @click="ledgerView = 'entries'">借贷分录</button>
         <button type="button" :aria-current="ledgerView === 'movements' ? 'page' : undefined" @click="ledgerView = 'movements'">收支变动明细</button>
       </div>
-      <section v-if="selected" ref="editorPanel" class="ledger-edit-panel" aria-labelledby="ledger-edit-title">
-        <div class="ledger-edit-heading">
-          <h3 id="ledger-edit-title">编辑标题、备注与附件</h3>
-          <button type="button" @click="selected = ''">关闭</button>
-        </div>
-        <TransactionEvidence :transaction="selected" :can-write="canWrite" @saved="emit('refresh')" />
+      <section v-if="selected" ref="editorPanel" class="ledger-edit-panel">
+        <PostedEntryEditor :key="selected" :transaction="selected" :can-write="canWrite" :disabled="busy" :evidence-only="evidenceOnly"
+          @saved="completed('saved')" @deleted="completed('deleted')" @closed="selected = ''" />
       </section>
       <p v-if="!entries.length">暂无已过账凭证。</p>
       <div v-else-if="ledgerView === 'entries'" class="ledger-voucher-list">
         <div v-if="canWrite && deletableEntries.length" class="ledger-delete-toolbar">
-          <label><input type="checkbox" :checked="allDeletableSelected" @change="toggleAllDeletable">全选可删除凭证</label>
-          <button type="button" :disabled="busy || !postingLinks.length" @click="deleteSelectedPostings">同步删除选中项</button>
+          <label><input type="checkbox" :checked="allDeletableSelected" @change="toggleAllDeletable">全选可永久删除账目</label>
+          <button type="button" :disabled="busy || !selectedTransactions.length" @click="deleteSelectedTransactions">永久删除选中项</button>
         </div>
         <article v-for="entry in entries" :key="entry.name" class="ledger-overview-voucher">
           <div class="ledger-voucher-heading">
             <div class="ledger-voucher-select">
-              <input v-if="canWrite && entry.posting?.status === 'Posted'" v-model="postingLinks" type="checkbox"
-                :value="entry.posting.name" :aria-label="`选择同步删除 ${entry.summary}`">
+              <input v-if="canWrite && entry.posting?.status === 'Posted'" v-model="selectedTransactions" type="checkbox"
+                :value="entry.transaction" :aria-label="`选择永久删除 ${entry.summary}`">
               <div><strong>{{ entry.summary }}</strong><span>{{ entry.date }} · {{ entry.name }}</span></div>
             </div>
             <div v-if="entry.posting && entry.posting.status === 'Reversed'">
               <strong>已作废（已生成冲销凭证）</strong>
               <span>{{ entry.posting.reversal_journal_entry }}</span>
             </div>
-            <div v-if="canWrite" class="ledger-entry-actions">
-              <button type="button" @click="editTransaction(entry.transaction)">编辑标题和备注</button>
-              <button v-if="entry.posting && entry.posting.status === 'Posted'" type="button"
+            <div class="ledger-entry-actions">
+              <button type="button" :disabled="busy" @click="openEditor(entry.transaction)">{{ canWrite ? '编辑整笔账目' : '查看整笔账目' }}</button>
+              <button v-if="canWrite && entry.posting?.status === 'Posted'" type="button" :disabled="busy" @click="openEditor(entry.transaction)">永久删除</button>
+              <button v-if="canWrite && entry.posting && entry.posting.status === 'Posted'" type="button"
                 @click="reversalFor = entry.name; reversalReason = ''">作废并冲销</button>
             </div>
           </div>
@@ -140,7 +160,10 @@ async function reversePosting(entry) {
             {{ entry.movement.incoming ? '转入 · 增加' : '转出 · 减少' }}
             {{ entry.movement.incoming ? '+' : '-' }}{{ amount(entry.movement.amount) }}
           </strong>
-          <button v-if="canWrite" type="button" @click="editTransaction(entry.transaction)">编辑标题和备注</button>
+          <div class="ledger-entry-actions">
+            <button type="button" :disabled="busy" @click="openEditor(entry.transaction)">{{ canWrite ? '编辑整笔账目' : '查看整笔账目' }}</button>
+            <button v-if="canWrite && entry.posting?.status === 'Posted'" type="button" :disabled="busy" @click="openEditor(entry.transaction)">永久删除</button>
+          </div>
         </article>
       </div>
     </div>
@@ -148,7 +171,7 @@ async function reversePosting(entry) {
     <ul class="ledger-items">
       <li v-for="item in items" :key="item.transaction.name">
         <strong>{{ item.display_title || item.transaction.counterparty || '未提供交易对象' }} · {{ item.transaction.amount }} · {{ item.transaction.occurred_at }}</strong>
-        <button type="button" @click="editTransaction(item.transaction.name)">{{ canWrite ? '编辑' : '查看' }}备注与附件</button>
+        <button type="button" @click="openEditor(item.transaction.name)">{{ canWrite ? '编辑' : '查看' }}备注与附件</button>
       </li>
     </ul>
   </section>
@@ -166,8 +189,6 @@ async function reversePosting(entry) {
 .ledger-entry-actions { display: flex !important; flex-wrap: wrap; align-items: center; gap: 8px; }
 .ledger-delete-toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 14px; border: 1px solid var(--border-color, #d9dee3); border-radius: 10px; background: #fff4ef; }
 .ledger-edit-panel { margin: 12px 0 16px; padding: 14px 16px; border: 2px solid #17658a; border-radius: 10px; background: #f5fbff; scroll-margin-top: 20px; }
-.ledger-edit-heading { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
-.ledger-edit-heading h3 { margin: 0; }
 .ledger-reversal { display: flex; flex-wrap: wrap; align-items: end; gap: 8px; padding: 10px 16px; background: #fff4ef; }
 .ledger-reversal label { display: grid; gap: 4px; flex: 1 1 280px; }
 .ledger-voucher-heading span, .ledger-movement-row span { color: #606b75; }

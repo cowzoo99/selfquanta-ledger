@@ -1,13 +1,13 @@
 <script setup>
 import {ref, computed, watch, onBeforeUnmount} from 'vue';
 import {evidenceCall, errorMessage} from '../api';
-const props = defineProps({transaction: {type: String, required: true}, canWrite: Boolean});
+const props = defineProps({transaction: {type: String, required: true}, canWrite: Boolean, disabled: Boolean});
 const emit = defineEmits(['saved']);
 const editor = ref(null), displayTitle = ref(''), note = ref(''), renderedNote = ref(''), attachments = ref([]);
 const noteVersion = ref('');
 const busy = ref(false), loading = ref(false), error = ref(''), notice = ref('');
 const ready = ref(false);
-const canEdit = computed(() => props.canWrite && ready.value && !busy.value && !loading.value);
+const canEdit = computed(() => props.canWrite && !props.disabled && ready.value && !busy.value && !loading.value);
 const mimeTypes = {png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp', pdf: 'application/pdf',
   doc: 'application/msword', docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   xls: 'application/vnd.ms-excel', xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
@@ -109,15 +109,17 @@ async function upload(event) {
     <p v-if="loading" role="status">正在载入备注与附件…</p>
     <p v-if="error" role="alert">{{ error }}</p><p v-if="notice" role="status">{{ notice }}</p>
     <button v-if="!ready && !loading && error" type="button" @click="load">重试</button>
-    <label v-if="ready">展示标题
+    <label v-if="ready && canWrite">展示标题
       <input v-model="displayTitle" type="text" maxlength="140" :readonly="!canEdit" placeholder="可修改列表中显示的标题">
     </label>
+    <p v-if="ready && !canWrite">展示标题：{{ displayTitle }}</p>
     <div v-if="canWrite && ready" role="toolbar" aria-label="备注格式">
       <button type="button" :disabled="!canEdit" @mousedown.prevent @click="format('bold')">加粗</button>
       <button type="button" :disabled="!canEdit" @mousedown.prevent @click="format('list')">项目列表</button>
       <button type="button" :disabled="!canEdit" @mousedown.prevent @click="table">插入 2×2 表格</button>
     </div>
-    <div v-if="ready" ref="editor" class="ledger-evidence-editor" role="textbox" aria-label="流水备注" aria-multiline="true"
+    <div v-if="ready && !canWrite" class="ledger-evidence-editor" v-html="renderedNote" />
+    <div v-if="ready && canWrite" ref="editor" class="ledger-evidence-editor" role="textbox" aria-label="流水备注" aria-multiline="true"
       :aria-readonly="!canEdit" :contenteditable="canEdit" v-html="renderedNote" @input="input" />
     <template v-if="canWrite">
       <button type="button" :disabled="!canEdit" @click="save">保存标题和备注</button>

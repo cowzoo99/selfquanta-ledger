@@ -40,7 +40,7 @@ function compile(file, realChildren = false) {
     if (name.endsWith('labels')) return labels;
     if (name.endsWith('api')) return new Function(fs.readFileSync(path.join(src, 'api.js'), 'utf8').replaceAll('export ', '') +
       '; return {call, evidenceCall: typeof evidenceCall === "function" ? evidenceCall : undefined, errorMessage};')();
-    if (realChildren && /\/(Dashboard|ReviewCenter|DuplicateReview|AccountingCenter|DraftLines|TransactionEvidence)\.vue$/.test(name)) {
+    if (realChildren && /\/(Dashboard|ReviewCenter|DuplicateReview|AccountingCenter|DraftLines|TransactionEvidence|PostedEntryEditor)\.vue$/.test(name)) {
       return compile(path.posix.normalize(path.posix.join(path.posix.dirname(file), name)), true);
     }
     return {name, render() {return Vue.h('test-child', {'data-component': name});}};
@@ -92,8 +92,110 @@ function item(id, batch = 'new', values = {}) {
     draft: {name: id, status: 'Draft', lines: [{account: '费用', debit: 10}, {account: '资金', credit: 10}]},
     error: null, can_approve: true};
 }
+function postedAggregate(row = item('posted')) {
+  return {transaction: {...row.transaction, payment_account: '资金', summary: '原始摘要'},
+    draft: {...row.draft, posting_date: '2026-10-01', transaction_type: 'expense', status: 'Posted'},
+    posting: {name: 'posting-' + row.transaction.name, status: 'Posted'},
+    evidence: {display_title: '原始标题', note_html: '<p>现有备注</p>'}, version: 'version-' + row.transaction.name};
+}
 async function run(name) {
-  if (name === 'transaction_evidence_retry') {
+  if (name === 'posted_entry_editor') {
+    const aggregate = postedAggregate(), saved = [], deleted = [];
+    let deleteStatus = 'deleted', failSave = false;
+    frappe.call = async args => {
+      calls.push(args);
+      if (args.method.endsWith('rebuild_posted_entry') && failSave) throw new Error('账目已被其他人修改，请刷新后重试');
+      if (args.method.endsWith('get_posted_entry') || args.method.endsWith('rebuild_posted_entry')) return {message: aggregate};
+      if (args.method.endsWith('list_leaf_accounts')) return {message: [{name: '资金', account_name: '银行存款', account_number: '1002'},
+        {name: '费用', account_name: '办公费', account_number: '560201'}]};
+      if (args.method.endsWith('permanently_delete_transactions')) return {message: [{transaction: 'tx-posted', status: deleteStatus, message: '删除失败'}]};
+      return {message: {display_title: '原始标题', note_html: '<p>现有备注</p>', note_version: 'n1', attachments: []}};
+    };
+    const page = mount('components/PostedEntryEditor.vue', {transaction: 'tx-posted', canWrite: true,
+      onSaved: () => saved.push(true), onDeleted: () => deleted.push(true)}, true); await settle();
+    const field = label => descendants(page.root).find(el => el.props['aria-label'] === label);
+    for (const label of ['交易日期', '过账日期', '交易对象', '摘要', '收支方向', '业务分类', '金额', '支付账户', '借方分录', '贷方分录', '展示标题']) assert.match(text(page.root), new RegExp(label));
+    const change = (label, value) => field(label).props['onUpdate:modelValue'](value);
+    change('交易日期', '2026-11-05T10:11:12'); change('过账日期', '2026-11-06'); change('交易对象', '新对象');
+    change('摘要', '新摘要'); change('金额', 25); change('收支方向', 'income'); change('业务分类', 'capital');
+    change('支付账户', '资金'); change('借方科目 1', '资金'); change('借方金额 1', 25);
+    change('贷方科目 1', '费用'); change('贷方金额 1', 25);
+    await page.state.save(); await settle();
+    const rebuild = calls.find(row => row.method.endsWith('rebuild_posted_entry'));
+    assert.equal(rebuild.type, 'POST'); assert.equal(rebuild.args.transaction, 'tx-posted');
+    assert.equal(rebuild.args.expected_version, aggregate.version);
+    assert.deepEqual(JSON.parse(rebuild.args.values), {occurred_at: '2026-11-05 10:11:12', posting_date: '2026-11-06',
+      counterparty: '新对象', summary: '新摘要', direction: 'income', transaction_type: 'capital', amount: 25,
+      payment_account: '资金', lines: [{account: '资金', debit: 25, credit: 0}, {account: '费用', debit: 0, credit: 25}]});
+    assert.equal(saved.length, 1); assert.equal(aggregate.transaction.counterparty, 'posted', 'edits must not mutate the read aggregate');
+    const remove = descendants(page.root).find(el => el.type === 'button' && text(el) === '删除借方分录');
+    assert.equal(remove.props.disabled, true, 'retain at least one line on each side');
+    page.state.addLine('credit'); await settle();
+    assert.equal(page.state.creditLines.length, 2);
+    assert.ok(field('贷方金额 2'), 'a new zero-valued line must remain on its chosen side');
+    field('贷方金额 2').props['onUpdate:modelValue'](0);
+    await settle(); assert.ok(field('贷方金额 2'));
+    page.state.removeLine(page.state.creditLines[1], 'credit');
+    assert.equal(page.state.creditLines.length, 1);
+    page.state.removeLine(page.state.creditLines[0], 'credit'); assert.equal(page.state.creditLines.length, 1);
+    const evidenceEditor = descendants(page.root).find(el => el.props['aria-label'] === '流水备注');
+    evidenceEditor.innerHTML = '<p>未保存的备注草稿</p>'; evidenceEditor.props.onInput({target: evidenceEditor});
+    const originalCall = frappe.call, pendingSave = deferred();
+    frappe.call = async args => args.method.endsWith('rebuild_posted_entry') ? pendingSave.promise : originalCall(args);
+    const blockedSave = page.state.save(); await settle();
+    const busyEvidence = descendants(page.root).find(el => el.props['aria-label'] === '流水备注');
+    assert.ok(busyEvidence, 'busy rebuild must preserve the evidence editor DOM');
+    assert.equal(busyEvidence.props.contenteditable, false);
+    pendingSave.reject(new Error('账目已被其他人修改，请刷新后重试')); await blockedSave; await settle();
+    assert.equal(descendants(page.root).find(el => el.props['aria-label'] === '流水备注'), evidenceEditor);
+    assert.equal(evidenceEditor.innerHTML, '<p>未保存的备注草稿</p>');
+    assert.equal(child(page.root._vnode, 'TransactionEvidence').setupState.note, '<p>未保存的备注草稿</p>');
+    frappe.call = originalCall;
+    failSave = true; await page.state.save(); await settle();
+    assert.equal(saved.length, 1); assert.equal(page.state.form.counterparty, '新对象');
+    assert.match(text(page.root), /账目已被其他人修改/);
+    let confirmed = 0;
+    global.window = {prompt: () => '  ', confirm: () => {confirmed++; return true;}};
+    await page.state.remove(); assert.equal(confirmed, 0);
+    window.prompt = () => '错误导入'; window.confirm = message => {confirmed++; assert.equal(message, '此操作将永久删除流水、附件、凭证和总账，且不可恢复。确认继续？'); return false;};
+    await page.state.remove(); assert.equal(calls.filter(row => row.method.endsWith('permanently_delete_transactions')).length, 0);
+    window.confirm = () => true; deleteStatus = 'failed'; await page.state.remove(); await settle();
+    assert.equal(deleted.length, 0); assert.match(text(page.root), /删除失败/);
+    deleteStatus = 'deleted'; await page.state.remove();
+    const deletion = calls.at(-1); assert.equal(deletion.type, 'POST');
+    assert.deepEqual(JSON.parse(deletion.args.transactions), ['tx-posted']);
+    assert.deepEqual(JSON.parse(deletion.args.expected_versions), {'tx-posted': aggregate.version});
+    assert.equal(deletion.args.reason, '错误导入'); assert.equal(deleted.length, 1); page.app.unmount();
+    const viewer = mount('components/PostedEntryEditor.vue', {transaction: 'tx-posted', canWrite: false}, true); await settle();
+    assert.equal(descendants(viewer.root).filter(el => ['input', 'select', 'textarea'].includes(el.type)).length, 0);
+    assert.doesNotMatch(text(viewer.root), /保存整笔账目|永久删除|删除附件|上传附件/);
+    const before = calls.length; await viewer.state.save(); await viewer.state.remove(); assert.equal(calls.length, before);
+    assert.match(text(viewer.root), /费用支出/s);
+    assert.match(text(viewer.root), /展示标题：原始标题/);
+    assert.equal(descendants(viewer.root).find(el => el.props.innerHTML)?.props.innerHTML, '<p>现有备注</p>');
+    viewer.app.unmount();
+    const pending = deferred(), current = postedAggregate(item('latest'));
+    frappe.call = async args => {
+      calls.push(args);
+      if (args.method.endsWith('list_leaf_accounts')) return {message: []};
+      if (args.method.endsWith('get_evidence')) return {message: {note_html: '', note_version: 'n', attachments: []}};
+      return args.args.transaction === 'tx-slow' ? pending.promise : {message: current};
+    };
+    const switching = mount('components/PostedEntryEditor.vue', {transaction: 'tx-slow', canWrite: true});
+    const count = calls.length; await switching.state.save(); await switching.state.remove(); assert.equal(calls.length, count);
+    switching.props.transaction = 'tx-latest'; await settle();
+    pending.resolve({message: aggregate}); await settle();
+    assert.equal(switching.state.aggregate.version, current.version, 'late reads must not replace the current aggregate');
+    assert.equal(switching.state.form.counterparty, 'latest');
+    const lateSave = deferred(); frappe.call = async () => lateSave.promise;
+    let staleSaved = 0; switching.props.onSaved = () => staleSaved++;
+    const saving = switching.state.save(); switching.app.unmount(); lateSave.resolve({message: current}); await saving;
+    assert.equal(staleSaved, 0, 'an old save must not close a newly opened editor');
+    frappe.call = async args => {calls.push(args); throw new Error('账目无法读取');};
+    const failed = mount('components/PostedEntryEditor.vue', {transaction: 'tx-failed', canWrite: true}); await settle();
+    const failedCount = calls.length; await failed.state.save(); await failed.state.remove(); assert.equal(calls.length, failedCount);
+    assert.match(text(failed.root), /账目无法读取/); failed.app.unmount();
+  } else if (name === 'transaction_evidence_retry') {
     let fail = true;
     frappe.call = async args => {
       calls.push(args);
@@ -122,6 +224,7 @@ async function run(name) {
     global.FileReader = class {readAsDataURL() {this.result = 'data:image/png;base64,aGVsbG8='; this.onload();}};
     const page = mount('components/TransactionEvidence.vue', {transaction: 'tx-one', canWrite}); await settle();
     for (const label of ['备注与附件', '图片预览', '下载']) assert.match(text(page.root), new RegExp(label));
+    if (!canWrite) assert.equal(descendants(page.root).filter(el => ['input', 'select', 'textarea'].includes(el.type)).length, 0);
     assert.equal(calls[0].type, 'GET'); assert.equal(calls[0].args.tx_name, 'tx-one');
     assert.equal(descendants(page.root).find(el => el.type === 'img').props.src, '/private/files/unique.png');
     const link = descendants(page.root).find(el => el.type === 'a');
@@ -225,6 +328,8 @@ async function run(name) {
     const buttons = descendants(accounting.root).filter(el => el.type === 'button' && text(el).includes('查看备注与附件'));
     assert.equal(buttons.length, 2); buttons[1].props.onClick(); await settle();
     assert.equal(calls.find(row => row.method.endsWith('get_evidence')).args.tx_name, rows[1].transaction.name);
+    assert.equal(child(accounting.root._vnode, 'PostedEntryEditor').props.evidenceOnly, true);
+    assert.equal(calls.filter(row => row.method.endsWith('get_posted_entry')).length, 0);
     assert.doesNotMatch(text(accounting.root), /保存备注|上传附件/); accounting.app.unmount();
   } else if (name === 'classification_stale_requests') {
     const requests = [], summary = number => ({created: number, manual: 0, conflict: 0, failed: 0});
@@ -572,19 +677,29 @@ async function run(name) {
   } else if (name === 'accounting_center') {
     const income = item('capital', 'new', {direction: 'income', amount: 50000,
       occurred_at: '2026-08-13 15:38:00', counterparty: '股东投入'});
-    Object.assign(income.draft, {status: 'Posted', posting_date: '2026-08-13', summary: '收到股东投资款', lines: [
+    Object.assign(income.draft, {transaction_type: 'capital', status: 'Posted', posting_date: '2026-08-13', summary: '收到股东投资款', lines: [
       {account: '100201 - 基本存款账户 - 逆熵云', account_number: '100201', account_name: '基本存款账户', debit: 50000, credit: 0},
       {account: '3001 - 实收资本 - 逆熵云', account_number: '3001', account_name: '实收资本', debit: 0, credit: 50000},
     ]});
     const expense = item('office', 'new', {direction: 'expense', amount: 13000,
       occurred_at: '2026-08-14 12:00:00', counterparty: '办公采购'});
-    Object.assign(expense.draft, {status: 'Posted', posting_date: '2026-08-14', summary: '报销办公费', lines: [
+    Object.assign(expense.draft, {transaction_type: 'expense', status: 'Posted', posting_date: '2026-08-14', summary: '报销办公费', lines: [
       {account: '560201 - 办公费 - 逆熵云', account_number: '560201', account_name: '办公费', debit: 13000, credit: 0},
       {account: '100201 - 基本存款账户 - 逆熵云', account_number: '100201', account_name: '基本存款账户', debit: 0, credit: 13000},
     ]});
-    frappe.call = async args => {calls.push(args); return {message: {
-      display_title: '', note_html: '', note_version: 'version-one', attachments: []}};};
-    const page = mount('pages/AccountingCenter.vue', {items: [income, expense], canWrite: true}, true);
+    for (const row of [income, expense]) row.posting = {name: 'posting-' + row.transaction.name, status: 'Posted'};
+    let confirmCount = 0, refreshed = 0;
+    global.window = {prompt: () => '重复录入', confirm: () => {confirmCount++; return true;}};
+    frappe.call = async args => {
+      calls.push(args);
+      if (args.method.endsWith('get_posted_entry') || args.method.endsWith('rebuild_posted_entry')) {
+        return {message: postedAggregate([income, expense].find(row => row.transaction.name === args.args.transaction))};
+      }
+      if (args.method.endsWith('list_leaf_accounts')) return {message: []};
+      if (args.method.endsWith('permanently_delete_transactions')) return {message: JSON.parse(args.args.transactions).map(transaction => ({transaction, status: 'deleted'}))};
+      return {message: {display_title: '', note_html: '', note_version: 'version-one', attachments: []}};
+    };
+    const page = mount('pages/AccountingCenter.vue', {items: [income, expense], canWrite: true, onRefresh: () => refreshed++}, true);
     const body = text(page.root);
     for (const label of ['会计中心', '标准总账总览', '借贷分录', '收支变动明细', '凭证草稿', '正式记账凭证', '总账报表']) assert.match(body, new RegExp(label));
     const links = descendants(page.root).filter(el => el.type === 'a');
@@ -605,20 +720,56 @@ async function run(name) {
     assert.doesNotMatch(text(debit), /实收资本/);
     assert.match(text(credit), /贷方.*实收资本.*CNY 50,000\.00/s);
     assert.doesNotMatch(text(credit), /基本存款账户/);
-    let editButtons = descendants(page.root).filter(el => el.type === 'button' && text(el) === '编辑标题和备注');
-    assert.equal(editButtons.length, 2);
-    editButtons[0].props.onClick(); await settle();
-    assert.equal(page.state.selected, 'tx-capital');
-    assert.match(text(page.root), /编辑标题、备注与附件/);
-    const movementTab = descendants(page.root).find(el => el.type === 'button' && text(el) === '收支变动明细');
-    movementTab.props.onClick(); await Vue.nextTick();
-    const movements = descendants(page.root).find(el => el.props.class === 'ledger-movement-list');
-    assert.match(text(movements), /转入.*增加.*\+CNY 50,000\.00/s);
-    assert.match(text(movements), /转出.*减少.*-CNY 13,000\.00/s);
-    editButtons = descendants(movements).filter(el => el.type === 'button' && text(el) === '编辑标题和备注');
-    assert.equal(editButtons.length, 2);
-    editButtons[1].props.onClick(); await settle();
-    assert.equal(page.state.selected, 'tx-office');
+    for (const view of ['entries', 'movements']) {
+      page.state.ledgerView = view; await settle();
+      const container = descendants(page.root).find(el => el.props.class === (view === 'entries' ? 'ledger-voucher-list' : 'ledger-movement-list'));
+      const edit = descendants(container).find(el => el.type === 'button' && text(el) === '编辑整笔账目');
+      const remove = descendants(container).find(el => el.type === 'button' && text(el) === '永久删除');
+      assert.ok(edit && remove); edit.props.onClick(); await settle();
+      assert.equal(page.state.selected, 'tx-capital');
+      assert.match(text(page.root), /交易日期.*业务分类.*借方分录.*贷方分录/s);
+      assert.doesNotMatch(text(page.root), /编辑标题、备注与附件/);
+      const evidence = child(page.root._vnode, 'TransactionEvidence');
+      page.state.selectedTransactions = ['tx-office'];
+      await evidence.setupState.save(); await settle();
+      assert.equal(page.state.selected, '', 'evidence save also closes the shared panel');
+      assert.deepEqual([...page.state.selectedTransactions], []);
+      assert.equal(refreshed, view === 'entries' ? 1 : 4, 'one refresh per successful operation');
+      edit.props.onClick(); await settle();
+      await child(page.root._vnode, 'PostedEntryEditor').setupState.save(); await settle();
+      assert.equal(page.state.selected, '');
+      remove.props.onClick(); await settle();
+      await child(page.root._vnode, 'PostedEntryEditor').setupState.remove(); await settle();
+      assert.equal(page.state.selected, '');
+    }
+    assert.equal(refreshed, 6);
+    page.state.ledgerView = 'entries'; await settle(); page.state.toggleAllDeletable();
+    const readsBefore = calls.filter(row => row.method.endsWith('get_posted_entry')).length;
+    await page.state.deleteSelectedTransactions(); await settle();
+    const bulk = calls.filter(row => row.method.endsWith('permanently_delete_transactions')).at(-1);
+    assert.deepEqual(JSON.parse(bulk.args.transactions), ['tx-capital', 'tx-office']);
+    assert.deepEqual(JSON.parse(bulk.args.expected_versions), {'tx-capital': 'version-tx-capital', 'tx-office': 'version-tx-office'});
+    assert.equal(calls.filter(row => row.method.endsWith('get_posted_entry')).length, readsBefore + 2);
+    assert.equal(refreshed, 7); assert.deepEqual([...page.state.selectedTransactions], []);
+    const evidenceButton = descendants(page.root).find(el => el.type === 'button' && text(el) === '编辑备注与附件');
+    evidenceButton.props.onClick(); await settle();
+    assert.equal(child(page.root._vnode, 'PostedEntryEditor').props.evidenceOnly, false, 'posted bottom-list entries use the aggregate editor');
+    page.state.busy = true; await settle();
+    assert.equal(child(page.root._vnode, 'PostedEntryEditor').setupState.canEdit, false);
+    assert.equal(child(page.root._vnode, 'TransactionEvidence').props.canWrite, true);
+    assert.equal(child(page.root._vnode, 'TransactionEvidence').setupState.canEdit, false);
+    page.state.busy = false; page.state.selected = '';
+    page.props.canWrite = false; await settle();
+    assert.ok(descendants(page.root).filter(el => el.type === 'button').every(el => !/编辑整笔账目|永久删除|作废并冲销/.test(text(el))));
+    for (const view of ['entries', 'movements']) {
+      page.state.ledgerView = view; await settle();
+      const read = descendants(page.root).find(el => el.type === 'button' && text(el) === '查看整笔账目');
+      read.props.onClick(); await settle();
+      assert.match(text(page.root), /交易日期.*业务分类.*借方分录.*贷方分录/s);
+      assert.equal(descendants(page.root).filter(el => ['input', 'select', 'textarea'].includes(el.type)).length, 0);
+      page.state.selected = '';
+    }
+    const before = calls.length; await page.state.deleteSelectedTransactions(); assert.equal(calls.length, before);
     page.app.unmount();
   } else if (name === 'route_scope') {
     const mounts = [], wrapper = {ledger_ready: true, ledger_root: {}};

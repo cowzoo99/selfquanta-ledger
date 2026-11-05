@@ -161,12 +161,23 @@ def test_accounting_center_supports_posted_metadata_and_safe_reversal():
     assert '@refresh="refresh"' in app
 
 
-def test_accounting_center_uses_synchronized_batch_delete_instead_of_native_delete():
+def test_accounting_center_uses_one_versioned_full_entry_editor():
     accounting = (ROOT / "public/frontend/src/pages/AccountingCenter.vue").read_text(encoding="utf-8")
-
-    for text in ("全选可删除凭证", "同步删除选中项",
-                 "internal_ledger.api.posting_api.delete_postings", "posting_links"):
+    editor = (ROOT / "public/frontend/src/components/PostedEntryEditor.vue").read_text(encoding="utf-8")
+    assert "TransactionEvidence" not in accounting
+    assert "PostedEntryEditor" in accounting
+    for text in ("全选可永久删除账目", "永久删除选中项", "编辑整笔账目",
+                 "internal_ledger.api.posting_api.permanently_delete_transactions", "expected_versions"):
         assert text in accounting
+    assert "posting_api.delete_postings" not in accounting
+    assert "TransactionEvidence" in editor
+    for text in ("get_posted_entry", "rebuild_posted_entry", "expected_version", "transactionTypes"):
+        assert text in editor
+
+
+def test_posted_entry_editor_frontend():
+    _run_review_component_case("posted_entry_editor")
+
 
 
 def test_default_workspace_patch_sets_only_blank_ledger_users():
