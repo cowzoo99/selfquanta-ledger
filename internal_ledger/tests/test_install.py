@@ -2,7 +2,7 @@ import unittest
 
 import frappe
 
-from internal_ledger.install import ensure_roles, install_chart, load_chart_fixture
+from internal_ledger.install import ensure_roles, initialize_company, install_chart, load_chart_fixture
 
 
 def test_install_creates_roles_and_balanced_root_groups():
@@ -101,6 +101,19 @@ def test_settings_is_singleton_with_company_currency_and_year_start():
     assert str(saved.fiscal_year_start) == "2026-01-01"
 
 
+def test_initialize_company_rejects_invalid_or_second_company_without_mutation():
+    make_company()
+    before = frappe.get_all("Company", pluck="name")
+    for name, abbr in (("", "甲"), ("甲公司", ""), ("甲公司", "超过五个字符"), ("另一个客户公司", "另一")):
+        try:
+            initialize_company(name, abbr)
+        except frappe.ValidationError:
+            pass
+        else:
+            raise AssertionError("Invalid or second company must be rejected")
+    assert frappe.get_all("Company", pluck="name") == before
+
+
 def load_tests(loader, tests, pattern):
     def set_up():
         frappe.db.savepoint("internal_ledger_install_test")
@@ -118,5 +131,6 @@ def load_tests(loader, tests, pattern):
             test_install_chart_creates_accounts_and_is_idempotent,
             test_install_chart_rejects_existing_conflict_without_overwriting,
             test_settings_is_singleton_with_company_currency_and_year_start,
+            test_initialize_company_rejects_invalid_or_second_company_without_mutation,
         )
     )

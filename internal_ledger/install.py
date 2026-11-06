@@ -190,3 +190,36 @@ def install_default_rules(company: str) -> None:
         else:
             fields["credit_account"] = accounts[number]
         frappe.get_doc(fields).insert()
+
+
+def initialize_company(company_name: str, company_abbr: str) -> dict:
+    """Create the one company for a newly provisioned Site and install ledger defaults."""
+    require_ledger_admin()
+    company_name = (company_name or "").strip()
+    company_abbr = (company_abbr or "").strip()
+    if not company_name or not company_abbr or len(company_abbr) > 5:
+        frappe.throw("公司名称和 1 至 5 位公司简称为必填项")
+    companies = frappe.get_all("Company", pluck="name")
+    if companies and companies != [company_name]:
+        frappe.throw("此独立 Site 已配置其他公司")
+    if frappe.db.exists("Company", company_name):
+        company = frappe.get_doc("Company", company_name)
+        if company.company_name != company_name or company.abbr != company_abbr:
+            frappe.throw("现有公司与开通参数不一致")
+    else:
+        company = frappe.get_doc({
+            "doctype": "Company",
+            "company_name": company_name,
+            "abbr": company_abbr,
+            "default_currency": "CNY",
+            "country": "China",
+            "create_chart_of_accounts_based_on": "Standard Template",
+            "chart_of_accounts": "Standard",
+        }).insert()
+    install_chart(company.name)
+    settings = frappe.get_single("Internal Ledger Settings")
+    settings.company = company.name
+    settings.base_currency = "CNY"
+    settings.save()
+    install_default_rules(company.name)
+    return {"company": company.name, "abbr": company.abbr}

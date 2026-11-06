@@ -82,6 +82,7 @@ $required = @(
     'compose.yaml',
     'nginx.conf',
     'build_image.ps1',
+    'provision-site.ps1',
     'backup.ps1',
     'backup-and-upload.ps1',
     'systemd/selfquanta-ledger-backup.service',
@@ -217,6 +218,7 @@ $configurator = Get-ServiceBlock -Yaml $compose -Name 'configurator'
 $createSite = Get-ServiceBlock -Yaml $compose -Name 'create-site'
 Assert-True ($configurator -match '(?m)^\s+set -euo pipefail;') 'Configurator shell must enable strict failure propagation'
 Assert-True ($createSite -match '(?m)^\s+set -euo pipefail;') 'Create-site shell must enable strict failure propagation'
+Assert-True ($createSite -notmatch 'bench use') 'Create-site must not rewrite the shared default Site'
 $erpnextInstall = $createSite.IndexOf('--install-app erpnext')
 $hrmsInstall = $createSite.IndexOf('--install-app hrms')
 $ledgerInstall = $createSite.IndexOf('--install-app internal_ledger')
@@ -256,6 +258,17 @@ $hrmsBuild = $build.IndexOf("url = 'https://github.com/frappe/hrms'")
 $ledgerBuild = $build.IndexOf('url = $origin')
 Assert-True ($erpnextBuild -ge 0 -and $hrmsBuild -gt $erpnextBuild -and $ledgerBuild -gt $hrmsBuild) 'apps.json order must be ERPNext, HRMS, then Internal Ledger'
 
+$provision = Get-Content -Raw -LiteralPath (Join-Path $InfraRoot 'provision-site.ps1')
+Assert-True ($provision -match "ValidatePattern\('\^\[A-Za-z0-9\]\[A-Za-z0-9\.\-\]\+\$'\)") 'Provisioning must reject invalid Site hostnames'
+Assert-True ($provision -match 'Resolve-Path -LiteralPath \$AdminPasswordFile') 'Provisioning must require an existing admin password file'
+Assert-True ($provision -match 'test ! -d sites/') 'Provisioning must refuse an existing Site before mutation'
+Assert-True ($provision -notmatch '(?m)^\s*\[string\]\$AdminPassword\b' -and $provision -notmatch '--admin-password') 'Provisioning must never accept a command-line password value'
+$receiptFunction = [regex]::Match($provision, '(?s)function Write-ProvisioningReceipt.*?(?<body>site\s*=.*?return \$path)')
+Assert-True ($receiptFunction.Success -and $receiptFunction.Groups['body'].Value -match '(?s)site\s*=.*?company\s*=.*?image_sha\s*=.*?app_versions\s*=.*?created_at\s*=.*?operator\s*=' -and
+             $receiptFunction.Groups['body'].Value -notmatch '(?i)password|secret') 'Provisioning receipts must contain only non-secret metadata'
+Assert-True ($provision -match '(?s)try\s*\{.*?finally\s*\{') 'Provisioning must restore temporary process state in finally'
+Assert-True ($provision -match 'internal_ledger\.install\.initialize_company') 'Provisioning must initialize the company through the app function'
+
 $appLayer = Get-Content -Raw -LiteralPath (Join-Path $InfraRoot 'Dockerfile.app-layer')
 Assert-True ($appLayer -notmatch 'frappe:frappe' -and $appLayer -match 'frappe:root') 'App layer must use the runtime frappe group'
 
@@ -291,6 +304,13 @@ Assert-True ($deployDoc -match 'systemctl start selfquanta-ledger' -and $deployD
 Assert-True ($deployDoc -match '(?s)First install.*set -a; \. /etc/selfquanta/ledger/runtime\.env; set \+a; docker compose --env-file /srv/selfquanta/ledger/infra/versions\.env -f /srv/selfquanta/ledger/infra/compose\.yaml --profile init run --rm create-site.*systemctl start selfquanta-ledger') 'Deploy documentation must create the site once before the normal systemd start'
 Assert-True ($deployDoc -match 'previous SHA image' -and $deployDoc -match 'INTERNAL_LEDGER_IMAGE') 'Deploy documentation must explain rollback to the previous SHA image'
 
+$tenantDocPath = Join-Path $repositoryRoot 'docs/operations/tenant-provisioning.md'
+Assert-True (Test-Path -LiteralPath $tenantDocPath -PathType Leaf) 'Missing tenant provisioning runbook'
+$tenantDoc = Get-Content -Raw -LiteralPath $tenantDocPath
+Assert-True ($tenantDoc -match 'provision-site\.ps1' -and $tenantDoc -match '暂停与恢复' -and $tenantDoc -match '加密导出' -and $tenantDoc -match '销毁') 'Tenant runbook must cover open, suspend, export and destroy'
+Assert-True ($tenantDoc -match '\-Site' -and $tenantDoc -match '\-ConfirmSite' -and $tenantDoc -match 'VerifiedBackupManifest') 'Tenant destruction must require exact Site confirmation and a verified backup'
+Assert-True ($tenantDoc -notmatch 'drop-site[^\r\n]*--db-root-password') 'Tenant runbook must not put the database root password on the command line'
+
 $backupDoc = Get-Content -Raw -LiteralPath (Join-Path $repositoryRoot 'docs/operations/backup-restore.md')
 Assert-True ($backupDoc -match '/etc/selfquanta/ledger/cos\.yaml' -and $backupDoc -match 'COSCLI_CONFIG_FILE') 'Backup documentation must name the COSCLI config path and setting'
 Assert-True ($backupDoc -match 'systemctl list-timers' -and $backupDoc -match 'selfquanta-ledger-backup\.timer') 'Backup documentation must show timer inspection'
@@ -300,7 +320,7 @@ Assert-True ($backupDoc -match 'encrypted' -and $backupDoc -match 'SHA-256' -and
 Assert-True ($backupDoc -match 'infra/restore-check\.ps1' -and $backupDoc -match 'ledger-restore-' -and $backupDoc -match 'status.*PASS' -and $backupDoc -match 'restore-reports') 'Backup documentation must require isolated restore evidence'
 Assert-True ($backupDoc -match "export INTERNAL_LEDGER_IMAGE='internal-ledger:<manifest-git-sha>'" -and $backupDoc -match 'Replace.*40-character.*selected manifest') 'Restore documentation must quote and explain the manifest SHA image placeholder'
 
-$scripts = @('test-config.ps1', 'build_image.ps1', 'backup.ps1', 'backup-and-upload.ps1', 'restore-check.ps1')
+$scripts = @('test-config.ps1', 'build_image.ps1', 'provision-site.ps1', 'backup.ps1', 'backup-and-upload.ps1', 'restore-check.ps1')
 foreach ($name in $scripts) {
     $tokens = $null
     $errors = $null

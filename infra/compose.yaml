@@ -107,8 +107,7 @@ services:
         --admin-password "$$(cat /run/secrets/site_admin_password)"
         --install-app erpnext
         --install-app hrms
-        --install-app internal_ledger;
-        bench use "$$SITE_NAME"
+        --install-app internal_ledger
     environment:
       SITE_NAME: ${SITE_NAME:?set SITE_NAME}
     secrets:
