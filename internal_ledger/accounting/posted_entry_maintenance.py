@@ -20,7 +20,8 @@ from internal_ledger.importing.models import NormalizedTransaction
 
 from internal_ledger.internal_ledger.doctype.ledger_evidence.ledger_evidence import clean_note, clean_title
 from internal_ledger.permissions import (
-    _EVIDENCE_FILE_WRITE, _EVIDENCE_WRITE, _IMPORT_WRITE, _POSTED_ENTRY_REBUILD, _SOURCE_DELETE,
+    _EVIDENCE_FILE_WRITE, _EVIDENCE_WRITE, _IMPORT_WRITE, _JOURNAL_DELETE, _JOURNAL_WRITE,
+    _POSTED_ENTRY_REBUILD, _SOURCE_DELETE,
     _physical_file_path, document_company, record_audit, record_deleted_audit, require_ledger_admin,
 )
 
@@ -65,8 +66,10 @@ def _posted_documents(transaction, *, for_update):
         frappe.throw("只能维护已过账账目")
     link = frappe.get_doc("Posting Link", link_name, for_update=for_update)
     link.check_permission("read")
-    if link.status != "Posted" or link.reversal_journal_entry:
-        frappe.throw("已冲销凭证不能编辑或删除")
+    active = link.status == "Posted" and not link.reversal_journal_entry
+    reversed_entry = link.status == "Reversed" and bool(link.reversal_journal_entry)
+    if not (active or reversed_entry):
+        frappe.throw("凭证冲销状态不一致")
     return tx, draft, link
 
 
@@ -88,7 +91,8 @@ def serialize_posted_entry(tx, draft, link, version) -> dict:
         "draft": {**{field: draft.get(field) for field in (
             "name", "company", "base_currency", "posting_date", "summary", "transaction_type", "status")},
             "lines": lines},
-        "posting": {"name": link.name, "journal_entry": link.journal_entry, "status": link.status},
+        "posting": {"name": link.name, "journal_entry": link.journal_entry, "status": link.status,
+                    "reversal_journal_entry": link.reversal_journal_entry},
         "evidence": {"name": evidence.name, "display_title": clean_title(evidence.display_title),
                      "note_html": clean_note(evidence.note_html)},
         "version": version,
@@ -253,13 +257,17 @@ def rebuild_posted_entry(transaction: str, values: dict, expected_version: str) 
             remark = _existing_evidence_remark(tx.name, draft.company)
             for doctype, name in (("Journal Entry", link.journal_entry), ("Posting Link", link.name)):
                 _preserve_attached_files(doctype, name, undo_files)
+            reversal_journal = _remove_reversal_posting(link, draft, undo_files) if link.status == "Reversed" else None
             old_journal = _remove_formal_posting(link, draft, resulting_status="Draft")
             _update_imported_transaction(tx, parsed)
             _replace_draft_snapshot(draft, parsed)
             approve_draft(draft.name)
             new_journal = post_draft(draft.name, remark_override=remark)
             record_audit("rebuild_posted_entry", "Voucher Draft", draft.name,
-                         f"old:{old_journal};new:{new_journal}")
+                         ";".join(part for part in (
+                             f"old:{old_journal}",
+                             f"reversal:{reversal_journal}" if reversal_journal else None,
+                             f"new:{new_journal}") if part))
             result = get_posted_entry(tx.name)
         except frappe.QueryDeadlockError:
             raise
@@ -293,6 +301,35 @@ def _preserve_attached_files(doctype, name, undo_files):
         undo_files.callback(restore_blob)
         frappe.db.after_rollback.add(restore_blob)
     return names
+
+
+def _remove_reversal_posting(link, draft, undo_files, *, delete_permanently=False):
+    """Remove the submitted reversal so the original posting can be rebuilt or deleted atomically."""
+    if link.status != "Reversed" or not link.reversal_journal_entry:
+        frappe.throw("凭证冲销状态不一致")
+    reverse_name = link.reversal_journal_entry
+    reverse = frappe.get_doc("Journal Entry", reverse_name, for_update=True)
+    if (reverse.company != draft.company or reverse.docstatus != 1
+            or reverse.reversal_of != link.journal_entry):
+        frappe.throw("冲销凭证与原凭证不一致")
+    _preserve_attached_files("Journal Entry", reverse.name, undo_files)
+    reverse.flags.ledger_journal_write = _JOURNAL_WRITE
+    reverse.flags.ignore_permissions = True
+    reverse.cancel()
+    frappe.db.delete("GL Entry", {"voucher_type": "Journal Entry", "voucher_no": reverse.name})
+    link.status = "Posted"
+    link.reversal_journal_entry = None
+    link.reversal_reason = None
+    link.flags.posting_service = True
+    link.save()
+    previous_delete = frappe.flags.get("ledger_journal_delete")
+    frappe.flags.ledger_journal_delete = _JOURNAL_DELETE
+    try:
+        frappe.delete_doc("Journal Entry", reverse_name, ignore_permissions=True,
+                          delete_permanently=delete_permanently)
+    finally:
+        frappe.flags.ledger_journal_delete = previous_delete
+    return reverse_name
 
 
 def _delete_attached_files(doctype, name, marker, undo_files):
@@ -384,6 +421,8 @@ def permanently_delete_transaction(transaction: str, reason: str, expected_versi
             for doctype, name in (("Journal Entry", link.journal_entry), ("Posting Link", link.name),
                                   ("Voucher Draft", draft.name), ("Imported Transaction", tx.name)):
                 _preserve_attached_files(doctype, name, undo_files)
+            if link.status == "Reversed":
+                _remove_reversal_posting(link, draft, undo_files, delete_permanently=True)
             _remove_formal_posting(link, draft, delete_permanently=True)
             _delete_evidence_and_files(tx.name, batch.company, undo_files)
             frappe.delete_doc("Voucher Draft", draft.name, ignore_permissions=True, delete_permanently=True)

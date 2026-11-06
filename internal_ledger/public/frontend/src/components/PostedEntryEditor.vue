@@ -12,6 +12,7 @@ const evidenceBusy = ref(false);
 const writeBusy = computed(() => busy.value || evidenceBusy.value);
 watch(writeBusy, value => emit('busy-change', value), {flush: 'sync'});
 const canEdit = computed(() => props.canWrite && !props.disabled && !!aggregate.value && !writeBusy.value && !loading.value);
+const restoring = computed(() => aggregate.value?.posting?.status === 'Reversed');
 function close() {if (!writeBusy.value && !props.disabled) emit('closed');}
 const occurredAt = computed({get: () => form.value.occurred_at.replace(' ', 'T'),
   set: value => {form.value.occurred_at = value.replace('T', ' ');}});
@@ -79,7 +80,8 @@ async function remove() {
   if (!canEdit.value) return;
   const reason = window.prompt('请输入永久删除原因');
   if (!reason?.trim()) return;
-  if (!window.confirm('此操作将永久删除流水、附件、凭证和总账，且不可恢复。确认继续？')) return;
+  const scope = restoring.value ? '流水、附件、原凭证、冲销凭证和总账' : '流水、附件、凭证和总账';
+  if (!window.confirm(`此操作将永久删除${scope}，且不可恢复。确认继续？`)) return;
   const request = generation, transaction = props.transaction;
   busy.value = true; error.value = '';
   try {
@@ -98,7 +100,7 @@ async function remove() {
 <template>
   <section aria-label="整笔账目">
     <div class="ledger-edit-heading">
-      <h3>{{ evidenceOnly ? '备注与附件' : canWrite ? '编辑整笔账目' : '查看整笔账目' }}</h3>
+      <h3>{{ evidenceOnly ? '备注与附件' : canWrite ? restoring ? '编辑并恢复整笔账目' : '编辑整笔账目' : '查看整笔账目' }}</h3>
       <button type="button" :disabled="writeBusy || disabled" @click="close">关闭</button>
     </div>
     <p v-if="loading" role="status">正在载入账目…</p>

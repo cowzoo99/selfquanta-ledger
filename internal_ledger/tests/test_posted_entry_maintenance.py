@@ -24,6 +24,12 @@ def posted_fixture():
                         journal=journal, link=link_for(doc.name))
 
 
+def reversed_fixture():
+    item = posted_fixture()
+    item.reversal = posting_api.reverse_posting(item.link, "账目更正")
+    return item
+
+
 def test_get_posted_entry_returns_one_versioned_editable_aggregate():
     aggregate = posted_fixture()
     result = posting_api.get_posted_entry(aggregate.transaction)
@@ -102,12 +108,23 @@ def test_read_rejects_missing_draft_unposted_draft_or_missing_link():
         posting_api.get_posted_entry(doc.imported_transaction)
 
 
-def test_read_rejects_reversed_link_or_reversal_reference():
+def test_read_returns_reversed_entry_for_controlled_restore_or_delete():
+    aggregate = reversed_fixture()
+    result = posting_api.get_posted_entry(aggregate.transaction)
+    assert result["posting"] == {
+        "name": aggregate.link, "journal_entry": aggregate.journal,
+        "status": "Reversed", "reversal_journal_entry": aggregate.reversal,
+    }
+
+
+def test_read_rejects_inconsistent_reversal_state():
     aggregate = posted_fixture()
     for values in ({"status": "Reversed"}, {"status": "Posted", "reversal_journal_entry": aggregate.journal}):
         frappe.db.set_value("Posting Link", aggregate.link, values)
-        with unittest.TestCase().assertRaisesRegex(frappe.ValidationError, "已冲销凭证不能编辑或删除"):
+        with unittest.TestCase().assertRaisesRegex(frappe.ValidationError, "冲销状态不一致"):
             posting_api.get_posted_entry(aggregate.transaction)
+        frappe.db.set_value("Posting Link", aggregate.link, {
+            "status": "Posted", "reversal_journal_entry": None, "reversal_reason": None})
 
 
 def test_evidence_metadata_is_sanitized_and_read_does_not_write():
@@ -259,6 +276,43 @@ def test_rebuild_updates_transaction_draft_new_journal_and_general_ledger():
     assert frappe.db.exists("Internal Ledger Audit Event", {"action": "rebuild_posted_entry",
         "reference_name": old.draft, "result": f"old:{old.journal};new:{journal_name}"})
     assert frappe.allowed_http_methods_for_whitelisted_func[posting_api.rebuild_posted_entry] == ["POST"]
+
+
+def test_rebuild_reversed_entry_atomically_replaces_original_and_reversal():
+    old = reversed_fixture()
+    before = posting_api.get_posted_entry(old.transaction)
+    result = posting_api.rebuild_posted_entry(old.transaction, changed_values(old), before["version"])
+    new_journal = result["posting"]["journal_entry"]
+    assert result["posting"]["status"] == "Posted"
+    assert not result["posting"]["reversal_journal_entry"]
+    assert new_journal != old.journal
+    assert not frappe.db.exists("Journal Entry", old.journal)
+    assert not frappe.db.count("GL Entry", {"voucher_no": old.journal})
+    if new_journal != old.reversal:
+        assert not frappe.db.exists("Journal Entry", old.reversal)
+        assert not frappe.db.count("GL Entry", {"voucher_no": old.reversal})
+    journal = frappe.get_doc("Journal Entry", new_journal)
+    assert journal.docstatus == 1 and not journal.reversal_of
+    assert str(journal.posting_date) == "2026-08-16" and journal.user_remark == "调整后的办公采购"
+    gl = frappe.get_all("GL Entry", filters={"voucher_no": new_journal}, fields=["debit", "credit", "is_cancelled"])
+    assert len(gl) == 2 and all(not row.is_cancelled for row in gl)
+    assert sum(Decimal(str(row.debit)) for row in gl) == Decimal("125")
+    assert sum(Decimal(str(row.credit)) for row in gl) == Decimal("125")
+    assert frappe.db.count("Posting Link", {"voucher_draft": old.draft, "status": "Posted"}) == 1
+
+
+def test_rebuild_reversed_entry_rolls_back_original_and_reversal_on_failure():
+    old = reversed_fixture()
+    before = posting_api.get_posted_entry(old.transaction)
+    with patch("internal_ledger.accounting.posted_entry_maintenance.post_draft",
+               side_effect=frappe.ValidationError("模拟恢复过账失败")):
+        with unittest.TestCase().assertRaisesRegex(frappe.ValidationError, "模拟恢复过账失败"):
+            posting_api.rebuild_posted_entry(old.transaction, changed_values(old), before["version"])
+    link = frappe.get_doc("Posting Link", old.link)
+    assert link.status == "Reversed" and link.reversal_journal_entry == old.reversal
+    for journal in (old.journal, old.reversal):
+        assert frappe.db.exists("Journal Entry", journal)
+        assert frappe.db.count("GL Entry", {"voucher_no": journal}) == 2
 
 
 def test_rebuild_rolls_back_every_layer_when_reposting_fails():
@@ -603,12 +657,23 @@ def test_permanent_delete_batch_isolates_failure_and_rejects_invalid_inputs():
             posting_api.permanently_delete_transactions(names, "错误", versions)
 
 
-def test_permanent_delete_rejects_foreign_company_and_reversed_posting():
+def test_permanent_delete_reversed_posting_removes_original_and_reversal():
+    item = reversed_fixture()
+    version = posting_api.get_posted_entry(item.transaction)["version"]
+    result = posting_api.permanently_delete_transactions(
+        [item.transaction], "冲销账目无需保留", {item.transaction: version})
+    assert result == [{"transaction": item.transaction, "status": "deleted"}]
+    for journal in (item.journal, item.reversal):
+        assert not frappe.db.exists("Journal Entry", journal)
+        assert not frappe.db.count("GL Entry", {"voucher_no": journal})
+    for doctype, name in (("Imported Transaction", item.transaction), ("Voucher Draft", item.draft),
+                          ("Posting Link", item.link)):
+        assert not frappe.db.exists(doctype, name)
+
+
+def test_permanent_delete_rejects_foreign_company():
     item = posted_fixture()
     version = posting_api.get_posted_entry(item.transaction)["version"]
-    frappe.db.set_value("Posting Link", item.link, "reversal_journal_entry", item.journal)
-    assert posting_api.permanently_delete_transactions([item.transaction], "错误", {item.transaction: version})[0]["status"] == "failed"
-    frappe.db.set_value("Posting Link", item.link, "reversal_journal_entry", None)
     batch = frappe.db.get_value("Imported Transaction", item.transaction, "import_batch")
     frappe.db.set_value("Import Batch", batch, "company", "_Test Company")
     assert posting_api.permanently_delete_transactions([item.transaction], "错误", {item.transaction: version})[0]["status"] == "failed"

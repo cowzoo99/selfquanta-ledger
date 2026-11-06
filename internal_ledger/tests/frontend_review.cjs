@@ -805,32 +805,41 @@ async function run(name) {
   } else if (name === 'accounting_center_reversed_evidence') {
     const row = item('reversed'); row.draft.status = 'Posted';
     row.posting = {name: 'posting-reversed', status: 'Reversed', reversal_journal_entry: 'reversal-one'};
+    const aggregate = postedAggregate(row);
+    aggregate.posting = {...aggregate.posting, status: 'Reversed', reversal_journal_entry: 'reversal-one'};
     frappe.call = async args => {
       calls.push(args);
-      if (args.method.endsWith('get_posted_entry')) throw new Error('已冲销凭证不能编辑或删除');
+      if (args.method.endsWith('get_posted_entry') || args.method.endsWith('rebuild_posted_entry')) return {message: aggregate};
+      if (args.method.endsWith('list_leaf_accounts')) return {message: []};
+      if (args.method.endsWith('permanently_delete_transactions')) return {message: [
+        {transaction: row.transaction.name, status: 'deleted'}]};
       return {message: {display_title: '已冲销账目标题', note_html: '<p>保留的冲销备注</p>', note_version: 'n1',
         attachments: [{name: 'f1', file_name: '原始凭据.pdf', file_url: '/private/files/reversed.pdf', is_image: false}]}};
     };
+    global.window = {prompt: () => '冲销账目无需保留', confirm: () => true};
     const page = mount('pages/AccountingCenter.vue', {items: [row], canWrite: true}, true);
     for (const view of ['entries', 'movements']) {
       page.state.ledgerView = view; await settle();
+      const buttons = descendants(page.root).filter(el => el.type === 'button');
+      const edit = buttons.find(el => text(el) === '编辑并恢复整笔账目');
+      const remove = buttons.find(el => text(el) === '永久删除');
+      assert.ok(edit && remove, `${view} must expose controlled restore and permanent deletion`);
       await page.state.openEditor(row.transaction.name); await settle();
       const evidence = child(page.root._vnode, 'TransactionEvidence');
       assert.ok(evidence, 'reversed entries must keep evidence access');
-      assert.equal(evidence.props.canWrite, false);
-      assert.equal(child(page.root._vnode, 'PostedEntryEditor').props.evidenceOnly, true);
-      assert.match(text(page.root), /已冲销账目标题/);
-      assert.equal(descendants(page.root).find(el => el.props.innerHTML)?.props.innerHTML, '<p>保留的冲销备注</p>');
-      assert.ok(descendants(page.root).some(el => el.type === 'a' && el.props.href === '/private/files/reversed.pdf'));
-      assert.equal(descendants(page.root).filter(el => ['input', 'select', 'textarea'].includes(el.type)).length, 0);
-      assert.doesNotMatch(text(page.root), /编辑整笔账目|保存整笔账目|永久删除|保存标题和备注|上传附件|删除附件/);
-      const before = calls.length;
-      await evidence.setupState.save(); await child(page.root._vnode, 'PostedEntryEditor').setupState.save();
-      await child(page.root._vnode, 'PostedEntryEditor').setupState.remove(); assert.equal(calls.length, before);
+      assert.equal(evidence.props.canWrite, true);
+      assert.equal(child(page.root._vnode, 'PostedEntryEditor').props.evidenceOnly, false);
+      assert.match(text(page.root), /保存后.*恢复为有效账目/);
+      assert.equal(evidence.setupState.displayTitle, '已冲销账目标题');
+      assert.match(text(page.root), /保存整笔账目.*永久删除/s);
+      await child(page.root._vnode, 'PostedEntryEditor').setupState.save(); await settle();
+      assert.ok(calls.some(call => call.method.endsWith('rebuild_posted_entry')));
+      await page.state.openEditor(row.transaction.name); await settle();
+      await child(page.root._vnode, 'PostedEntryEditor').setupState.remove(); await settle();
+      assert.ok(calls.some(call => call.method.endsWith('permanently_delete_transactions')));
       page.state.selected = ''; await settle();
     }
-    assert.equal(calls.filter(row => row.method.endsWith('get_posted_entry')).length, 0);
-    assert.equal(calls.filter(row => row.method.endsWith('get_evidence')).length, 2);
+    assert.ok(calls.filter(call => call.method.endsWith('get_posted_entry')).length >= 2);
     page.app.unmount();
     const nonposted = item('not-posted');
     const compatible = mount('pages/AccountingCenter.vue', {items: [nonposted], canWrite: true}, true);

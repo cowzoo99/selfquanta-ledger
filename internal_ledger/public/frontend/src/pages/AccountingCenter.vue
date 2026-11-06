@@ -14,8 +14,8 @@ const locked = computed(() => busy.value || editorBusy.value);
 const isReversed = entry => entry.posting?.status === 'Reversed' || !!entry.posting?.reversal_journal_entry;
 const currentRow = computed(() => props.items.find(item => item.transaction.name === selected.value) || selectedRow.value || {});
 const selectedReversed = computed(() => isReversed(currentRow.value));
-const evidenceOnly = computed(() => selectedReversed.value || currentRow.value.draft?.status !== 'Posted');
-const editorCanWrite = computed(() => props.canWrite && !selectedReversed.value);
+const evidenceOnly = computed(() => currentRow.value.draft?.status !== 'Posted');
+const editorCanWrite = computed(() => props.canWrite);
 const ledgerView = ref('entries');
 const title = '会计中心';
 const currentYear = new Date().getFullYear();
@@ -33,7 +33,7 @@ const entries = computed(() => props.items.filter(item => item.draft?.status ===
     posting: item.posting,
     movement: {incoming, line: (incoming ? debit : credit)[0], amount: item.transaction.amount}};
 }));
-const deletableEntries = computed(() => entries.value.filter(entry => entry.posting?.status === 'Posted' && !isReversed(entry)));
+const deletableEntries = computed(() => entries.value.filter(entry => ['Posted', 'Reversed'].includes(entry.posting?.status)));
 const allDeletableSelected = computed(() => deletableEntries.value.length > 0 &&
   deletableEntries.value.every(entry => selectedTransactions.value.includes(entry.transaction)));
 function toggleAllDeletable() {
@@ -124,6 +124,7 @@ async function reversePosting(entry) {
         <button type="button" :aria-current="ledgerView === 'movements' ? 'page' : undefined" :disabled="locked" @click="switchView('movements')">收支变动明细</button>
       </div>
       <section v-if="selected" ref="editorPanel" class="ledger-edit-panel">
+        <p v-if="selectedReversed" class="ledger-restore-warning">该账目已冲销。保存后会原子删除原凭证和冲销凭证，并恢复为有效账目；永久删除会同时删除两张凭证。</p>
         <PostedEntryEditor :key="selected" :transaction="selected" :can-write="editorCanWrite" :disabled="busy" :evidence-only="evidenceOnly"
           @busy-change="editorBusy = $event" @saved="completed('saved')" @evidence-saved="evidenceSaved" @deleted="completed('deleted')" @closed="closeEditor" />
       </section>
@@ -136,7 +137,7 @@ async function reversePosting(entry) {
         <article v-for="entry in entries" :key="entry.name" class="ledger-overview-voucher">
           <div class="ledger-voucher-heading">
             <div class="ledger-voucher-select">
-              <input v-if="canWrite && entry.posting?.status === 'Posted' && !isReversed(entry)" v-model="selectedTransactions" :disabled="locked" type="checkbox"
+              <input v-if="canWrite && ['Posted', 'Reversed'].includes(entry.posting?.status)" v-model="selectedTransactions" :disabled="locked" type="checkbox"
                 :value="entry.transaction" :aria-label="`选择永久删除 ${entry.summary}`">
               <div><strong>{{ entry.summary }}</strong><span>{{ entry.date }} · {{ entry.name }}</span></div>
             </div>
@@ -145,8 +146,8 @@ async function reversePosting(entry) {
               <span>{{ entry.posting.reversal_journal_entry }}</span>
             </div>
             <div class="ledger-entry-actions">
-              <button type="button" :disabled="locked" @click="openEditor(entry.transaction)">{{ isReversed(entry) ? '查看备注与附件' : canWrite ? '编辑整笔账目' : '查看整笔账目' }}</button>
-              <button v-if="canWrite && entry.posting?.status === 'Posted' && !isReversed(entry)" type="button" :disabled="locked" @click="openEditor(entry.transaction)">永久删除</button>
+              <button type="button" :disabled="locked" @click="openEditor(entry.transaction)">{{ canWrite ? isReversed(entry) ? '编辑并恢复整笔账目' : '编辑整笔账目' : '查看整笔账目' }}</button>
+              <button v-if="canWrite && ['Posted', 'Reversed'].includes(entry.posting?.status)" type="button" :disabled="locked" @click="openEditor(entry.transaction)">永久删除</button>
               <button v-if="canWrite && entry.posting && entry.posting.status === 'Posted' && !isReversed(entry)" type="button" :disabled="locked"
                 @click="openReversal(entry)">作废并冲销</button>
             </div>
@@ -180,8 +181,8 @@ async function reversePosting(entry) {
             {{ entry.movement.incoming ? '+' : '-' }}{{ amount(entry.movement.amount) }}
           </strong>
           <div class="ledger-entry-actions">
-            <button type="button" :disabled="locked" @click="openEditor(entry.transaction)">{{ isReversed(entry) ? '查看备注与附件' : canWrite ? '编辑整笔账目' : '查看整笔账目' }}</button>
-            <button v-if="canWrite && entry.posting?.status === 'Posted' && !isReversed(entry)" type="button" :disabled="locked" @click="openEditor(entry.transaction)">永久删除</button>
+            <button type="button" :disabled="locked" @click="openEditor(entry.transaction)">{{ canWrite ? isReversed(entry) ? '编辑并恢复整笔账目' : '编辑整笔账目' : '查看整笔账目' }}</button>
+            <button v-if="canWrite && ['Posted', 'Reversed'].includes(entry.posting?.status)" type="button" :disabled="locked" @click="openEditor(entry.transaction)">永久删除</button>
           </div>
         </article>
       </div>
@@ -208,6 +209,7 @@ async function reversePosting(entry) {
 .ledger-entry-actions { display: flex !important; flex-wrap: wrap; align-items: center; gap: 8px; }
 .ledger-delete-toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 14px; border: 1px solid var(--border-color, #d9dee3); border-radius: 10px; background: #fff4ef; }
 .ledger-edit-panel { margin: 12px 0 16px; padding: 14px 16px; border: 2px solid #17658a; border-radius: 10px; background: #f5fbff; scroll-margin-top: 20px; }
+.ledger-restore-warning { margin: 0 0 12px; padding: 10px 12px; border-left: 4px solid #b56a00; background: #fff5df; }
 .ledger-reversal { display: flex; flex-wrap: wrap; align-items: end; gap: 8px; padding: 10px 16px; background: #fff4ef; }
 .ledger-reversal label { display: grid; gap: 4px; flex: 1 1 280px; }
 .ledger-voucher-heading span, .ledger-movement-row span { color: #606b75; }
