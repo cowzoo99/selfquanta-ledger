@@ -66,3 +66,6 @@ Reversed,已冲销
 counterparty,交易对方
 keyword,关键词
 confirmed_history,已确认历史
+"{0} units of {1} needed in {2} to complete this transaction.","库存不足：{2} 中的物料 {1} 还缺 {0}，请先入库或调拨后再提交。"
+"{0} units of {1} needed in {2} on {3} {4} to complete this transaction.","库存不足：截至 {3} {4}，{2} 中的物料 {1} 还缺 {0}，请先入库或调拨后再提交。"
+"{0} units of {1} needed in {2} on {3} {4} for {5} to complete this transaction.","库存不足：{5} 在 {3} {4} 需要的物料 {1} 于 {2} 中还缺 {0}，请先入库或调拨后再提交。"

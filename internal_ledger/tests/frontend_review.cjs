@@ -103,7 +103,20 @@ function postedAggregate(row = item('posted')) {
     evidence: {display_title: '原始标题', note_html: '<p>现有备注</p>'}, version: 'version-' + row.transaction.name};
 }
 async function run(name) {
-  if (name === 'business_dashboard') {
+  if (name === 'module_hub_routes') {
+    const expected = {
+      crm: ['/app/lead', '/app/opportunity', '/app/customer'],
+      sales: ['/app/quotation', '/app/sales-order', '/app/delivery-note', '/app/sales-invoice', '/app/payment-entry'],
+      purchase: ['/app/supplier', '/app/request-for-quotation', '/app/purchase-order', '/app/purchase-receipt', '/app/purchase-invoice', '/app/payment-entry'],
+      stock: ['/app/item', '/app/warehouse', '/app/stock-entry', '/app/query-report/Stock%20Ledger', '/app/query-report/Stock%20Balance', '/app/query-report/Items%20To%20Be%20Requested'],
+    };
+    for (const [moduleKey, routes] of Object.entries(expected)) {
+      const page = mount('pages/ModuleHub.vue', {moduleKey});
+      const hrefs = descendants(page.root).filter(el => el.type === 'a').map(el => el.props.href);
+      for (const route of routes) assert.ok(hrefs.includes(route), `${moduleKey} missing ${route}`);
+      page.app.unmount();
+    }
+  } else if (name === 'business_dashboard') {
     const metric = {label: '销售订单金额', value: 120, unit: 'CNY', severity: 'info',
       target_route: '/app/sales-order', as_of: '2026-10-31', tooltip: '数据来源：Sales Order；更新至 2026-10-31'};
     const data = {partial: true, sections: {sales: {available: true, restricted: false, cards: [metric], message: ''},
