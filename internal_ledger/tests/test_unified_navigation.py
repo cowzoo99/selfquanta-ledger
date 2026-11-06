@@ -201,6 +201,25 @@ def test_accounting_center_supports_posted_metadata_and_safe_reversal():
     assert '@refresh="refresh"' in app
 
 
+def test_accounting_center_has_one_shell_for_month_end_and_tax_materials():
+    root = ROOT / "public/frontend/src"
+    app = (root / "App.vue").read_text(encoding="utf-8")
+    accounting = (root / "pages/AccountingCenter.vue").read_text(encoding="utf-8")
+    for filename in ("MonthEndCenter.vue", "TaxMaterials.vue"):
+        assert (root / "pages" / filename).exists()
+    for route in ("/app/ledger-workbench/accounting", "/app/ledger-workbench/month-end",
+                  "/app/ledger-workbench/tax-materials"):
+        assert route in accounting
+    for component in ("MonthEndCenter", "TaxMaterials"):
+        assert component in app
+    assert "iframe" not in accounting.lower()
+
+
+def test_month_end_and_tax_material_frontend_states():
+    _run_review_component_case("month_end_center")
+    _run_review_component_case("tax_materials_center")
+
+
 def test_accounting_center_uses_one_versioned_full_entry_editor():
     accounting = (ROOT / "public/frontend/src/pages/AccountingCenter.vue").read_text(encoding="utf-8")
     editor = (ROOT / "public/frontend/src/components/PostedEntryEditor.vue").read_text(encoding="utf-8")

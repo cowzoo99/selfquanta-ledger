@@ -107,6 +107,12 @@ async function reversePosting(entry) {
 <template>
   <section aria-labelledby="accounting-center-title">
     <h2 id="accounting-center-title">{{ title }}</h2>
+    <nav class="accounting-tabs" aria-label="会计中心功能" role="tablist">
+      <a href="/app/ledger-workbench/review">智能记账</a>
+      <a href="/app/ledger-workbench/accounting" aria-current="page">凭证与总账</a>
+      <a href="/app/ledger-workbench/month-end">月结检查</a>
+      <a href="/app/ledger-workbench/tax-materials">报税材料</a>
+    </nav>
     <p>从凭证草稿核对借贷分录，管理员确认后生成正式记账凭证，并可继续查看总账。</p>
     <p v-if="error" role="alert">{{ error }}</p><p v-if="notice" role="status">{{ notice }}</p>
     <a class="ledger-primary-action" href="#ledger-overview" :aria-disabled="locked" @click="blockNavigation">

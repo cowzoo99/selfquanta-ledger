@@ -15,6 +15,14 @@ export async function memberCall(method, args = {}) {
   return response.message;
 }
 
+export async function financeCall(domain, method, args = {}) {
+  const reads = ['get_finance_context', 'get_latest_month_end_run', 'get_month_end_run',
+    'get_latest_tax_material_package', 'get_tax_material_package'];
+  const response = await frappe.call({method: `internal_ledger.api.${domain}_api.${method}`, args,
+    type: reads.includes(method) ? 'GET' : 'POST'});
+  return response.message;
+}
+
 export async function setLanguage(language) {
   const response = await frappe.call({method: 'internal_ledger.api.language_api.set_language',
     args: {language}, type: 'POST'});

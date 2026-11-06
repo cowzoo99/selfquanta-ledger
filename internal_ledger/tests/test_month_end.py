@@ -53,7 +53,8 @@ def test_check_codes_are_deterministic_and_identical_source_reuses_run():
 
 
 def test_blocking_check_refuses_close_and_viewer_is_read_only():
-    from internal_ledger.api.close_api import confirm_period_close, get_month_end_run, run_month_end_checks
+    from internal_ledger.api.close_api import (confirm_period_close, get_finance_context,
+        get_latest_month_end_run, get_month_end_run, run_month_end_checks)
 
     draft()
     company = frappe.flags.classification_company
@@ -63,6 +64,8 @@ def test_blocking_check_refuses_close_and_viewer_is_read_only():
 
     viewer = user("账务查看者")
     frappe.set_user(viewer)
+    assert get_finance_context()["company"] == company
+    assert get_latest_month_end_run("2026-10")["name"] == result["name"]
     assert get_month_end_run(result["name"])["name"] == result["name"]
     for operation in (lambda: run_month_end_checks(company, "2026-10"),
                       lambda: confirm_period_close(result["name"])):

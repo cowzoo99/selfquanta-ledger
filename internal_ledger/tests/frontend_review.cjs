@@ -41,8 +41,8 @@ function compile(file, realChildren = false) {
     if (name === 'vue') return Vue;
     if (name.endsWith('labels')) return labels;
     if (name.endsWith('api')) return new Function(fs.readFileSync(path.join(src, 'api.js'), 'utf8').replaceAll('export ', '') +
-      '; return {call, evidenceCall: typeof evidenceCall === "function" ? evidenceCall : undefined, errorMessage};')();
-    if (realChildren && /\/(Dashboard|ReviewCenter|DuplicateReview|AccountingCenter|ModuleHub|DraftLines|TransactionEvidence|PostedEntryEditor)\.vue$/.test(name)) {
+      '; return {call, evidenceCall: typeof evidenceCall === "function" ? evidenceCall : undefined, financeCall: typeof financeCall === "function" ? financeCall : undefined, errorMessage};')();
+    if (realChildren && /\/(Dashboard|ReviewCenter|DuplicateReview|AccountingCenter|MonthEndCenter|TaxMaterials|ModuleHub|DraftLines|TransactionEvidence|PostedEntryEditor)\.vue$/.test(name)) {
       return compile(path.posix.normalize(path.posix.join(path.posix.dirname(file), name)), true);
     }
     if (name.endsWith('moduleCatalog')) return new Function(fs.readFileSync(path.join(src, 'moduleCatalog.js'), 'utf8')
@@ -116,6 +116,45 @@ async function run(name) {
     assert.equal(links.find(el => el.props.href === '/app/ledger-workbench/sales').props['aria-current'], 'page');
     assert.match(text(page.root), /销售订单/);
     page.app.unmount();
+  } else if (name === 'month_end_center') {
+    const clean = {name: 'close-1', company: '测试公司', period_start: '2026-10-01', period_end: '2026-10-31',
+      status: 'Completed', checks: [{code: 'unposted_drafts', severity: 'Blocking', status: 'Pass', count: 0,
+        message: '没有未过账草稿', target_route: '/app/voucher-draft'}]};
+    frappe.call = async args => {calls.push(args);
+      if (args.method.endsWith('get_finance_context')) return {message: {company: '测试公司'}};
+      if (args.method.endsWith('run_month_end_checks')) return {message: clean};
+      if (args.method.endsWith('confirm_period_close')) return {message: {status: 'Closed', accounting_period: '2026-10'}};
+    };
+    global.window = {confirm: message => {assert.match(message, /测试公司.*2026-10/s); return true;}};
+    const page = mount('pages/MonthEndCenter.vue', {canWrite: true, canClose: true}); await settle();
+    assert.match(text(page.root), /智能记账.*凭证与总账.*月结检查.*报税材料/s);
+    assert.match(text(page.root), /运行月结检查.*检查结果/s);
+    await page.state.runChecks(); await settle();
+    assert.match(text(page.root), /没有未过账草稿.*通过/s);
+    await page.state.confirmClose(); await settle();
+    assert.ok(calls.some(row => row.method.endsWith('confirm_period_close') && row.type === 'POST'));
+    assert.match(text(page.root), /期间已关闭/); page.app.unmount();
+    const viewer = mount('pages/MonthEndCenter.vue', {canWrite: false, canClose: false}); await settle();
+    const before = calls.length;
+    await viewer.state.runChecks(); await viewer.state.confirmClose();
+    assert.equal(calls.length, before, 'viewer cannot send close writes');
+    assert.match(text(viewer.root), /只读权限/); viewer.app.unmount();
+  } else if (name === 'tax_materials_center') {
+    frappe.call = async args => {calls.push(args);
+      if (args.method.endsWith('get_finance_context')) return {message: {company: '测试公司'}};
+      return {message: {name: 'tax-1', company: '测试公司', period: '2026-10', package_type: 'monthly_standard',
+        version: 2, source_hash: 'abcdef1234567890', generated_by: 'Administrator', generated_at: '2026-11-06 12:00:00',
+        file: '/private/files/tax.zip', disclaimer: '本材料包仅供申报准备和人工复核，不代表已向税务机关提交。'}};
+    };
+    const page = mount('pages/TaxMaterials.vue', {canWrite: true}); await settle();
+    assert.match(text(page.root), /月度标准材料包.*生成材料包/);
+    await page.state.buildPackage(); await settle();
+    assert.match(text(page.root), /版本 2.*abcdef123456.*不代表已向税务机关提交/s);
+    const download = descendants(page.root).find(el => el.type === 'a' && text(el).includes('下载私有材料包'));
+    assert.equal(download.props.href, '/private/files/tax.zip');
+    const viewer = mount('pages/TaxMaterials.vue', {canWrite: false}); await settle();
+    const before = calls.length; await viewer.state.buildPackage(); assert.equal(calls.length, before);
+    assert.match(text(viewer.root), /只读权限/); viewer.app.unmount(); page.app.unmount();
   } else if (name === 'posted_entry_editor') {
     const aggregate = postedAggregate(), saved = [], deleted = [];
     let deleteStatus = 'deleted', failSave = false;

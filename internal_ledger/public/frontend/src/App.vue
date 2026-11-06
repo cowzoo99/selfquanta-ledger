@@ -7,6 +7,8 @@ import EnterpriseMembers from './pages/EnterpriseMembers.vue';
 import MyAccount from './pages/MyAccount.vue';
 import DuplicateReview from './pages/DuplicateReview.vue';
 import AccountingCenter from './pages/AccountingCenter.vue';
+import MonthEndCenter from './pages/MonthEndCenter.vue';
+import TaxMaterials from './pages/TaxMaterials.vue';
 import ModuleHub from './pages/ModuleHub.vue';
 import WorkflowNavigation from './components/WorkflowNavigation.vue';
 import {MODULES} from './moduleCatalog';
@@ -28,14 +30,17 @@ const financeReadRoles = ['账套管理员', '账务查看者', '企业负责人
 const financeWriteRoles = ['账套管理员', '企业负责人', '财务主管', '会计', '出纳'];
 const canReadLedger = hasAllowedRole(financeReadRoles);
 const canWrite = hasAllowedRole(financeWriteRoles);
+const canClosePeriod = hasAllowedRole(['账套管理员', '财务主管']);
 const canManageMembers = hasAllowedRole(['账套管理员', '企业负责人']);
 const allowedModules = MODULES.filter(module => hasAllowedRole(module.allowedRoles));
 const navigation = [['dashboard', '企业首页'],
   ...(canReadLedger ? [['import', '文件智能导入'], ['review', '待办中心'], ['accounting', '会计中心']] : []),
   ...allowedModules.map(module => [module.key, module.label]),
   ...(canManageMembers ? [['members', '企业成员']] : []), ['account', '我的账号']];
-const page = computed(() => navigation.some(entry => entry[0] === props.view) || ['duplicates', 'classification'].includes(props.view) ? props.view : 'dashboard');
-const taskPage = computed(() => ['duplicates', 'classification'].includes(page.value) ? 'review' : page.value);
+const page = computed(() => navigation.some(entry => entry[0] === props.view) ||
+  ['duplicates', 'classification', 'month-end', 'tax-materials'].includes(props.view) ? props.view : 'dashboard');
+const taskPage = computed(() => ['duplicates', 'classification'].includes(page.value) ? 'review' :
+  ['month-end', 'tax-materials'].includes(page.value) ? 'accounting' : page.value);
 const modulePage = computed(() => allowedModules.find(module => module.key === page.value));
 const reviewFilter = ref(page.value === 'classification' ? '待分类' : (props.filter || '待审核'));
 watch(() => [props.view, props.filter], () => {
@@ -140,6 +145,8 @@ onMounted(() => { if (canReadLedger) refreshPage(); });
       <EnterpriseMembers v-else-if="page === 'members' && canWrite" :active="page === 'members'" />
       <MyAccount v-else-if="page === 'account'" :active="page === 'account'" />
       <AccountingCenter v-else-if="page === 'accounting'" :items="workflowItems" :can-write="canWrite" @refresh="refresh" />
+      <MonthEndCenter v-else-if="page === 'month-end'" :can-write="canWrite" :can-close="canClosePeriod" />
+      <TaxMaterials v-else-if="page === 'tax-materials'" :can-write="canWrite" />
       <ModuleHub v-else-if="modulePage" :module-key="page" />
       <ReviewCenter v-else :list="list" :classification-run="classificationRun" :can-write="canWrite" :initial-filter="reviewFilter" :initial-batch="batch" :initial-transaction="transaction" @refresh="refresh" @filter-change="changeFilter" />
     </main>
@@ -151,6 +158,9 @@ onMounted(() => { if (canReadLedger) refreshPage(); });
 .ledger-app:has(.ledger-step-footer) { padding-bottom: 92px; }
 .ledger-tabs { display: flex; flex-wrap: wrap; gap: 16px; margin-bottom: 12px; }
 .ledger-tabs [aria-current="page"] { font-weight: bold; text-decoration: underline; }
+.accounting-tabs { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 18px; }
+.accounting-tabs a { padding: 9px 12px; border: 1px solid #9fb6c3; border-radius: 7px; color: inherit; text-decoration: none; }
+.accounting-tabs a[aria-current="page"] { color: #fff; background: #155775; border-color: #155775; font-weight: 700; }
 .language-switch { display: inline-flex; gap: 8px; align-items: center; margin-right: 16px; font-size: 13px; }
 .ledger-app main, .ledger-detail { min-width: 0; }
 .ledger-app header, .ledger-app section { padding: 16px; border: 1px solid var(--border-color, #ddd); border-radius: 8px; margin-bottom: 20px; }

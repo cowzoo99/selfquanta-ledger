@@ -11,6 +11,26 @@ def _require_close_manager():
         frappe.throw("需要账套管理员或财务主管权限", frappe.PermissionError)
 
 
+@frappe.whitelist(methods=["GET"])
+def get_finance_context():
+    settings = frappe.get_single("Internal Ledger Settings")
+    settings.check_permission("read")
+    if not settings.company:
+        frappe.throw("请先配置当前账套公司")
+    return {"company": settings.company}
+
+
+@frappe.whitelist(methods=["GET", "POST"])
+def get_latest_month_end_run(period: str):
+    from internal_ledger.accounting.month_end import _period
+    settings = frappe.get_single("Internal Ledger Settings")
+    settings.check_permission("read")
+    start, end = _period(period)
+    rows = frappe.get_list("Month End Run", filters={"company": settings.company,
+        "period_start": start, "period_end": end}, fields=["name"], order_by="executed_at desc", limit=1)
+    return _get_run(rows[0].name) if rows else None
+
+
 @frappe.whitelist(methods=["POST"])
 def run_month_end_checks(company: str, period: str):
     return _run_checks(company, period)

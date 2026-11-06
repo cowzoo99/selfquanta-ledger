@@ -84,12 +84,14 @@ def test_confirmed_duplicate_does_not_change_package_or_counts():
 
 
 def test_viewer_can_read_authorized_package_but_cannot_generate():
-    from internal_ledger.api.tax_api import build_tax_material_package, get_tax_material_package
+    from internal_ledger.api.tax_api import (build_tax_material_package,
+        get_latest_tax_material_package, get_tax_material_package)
 
     company = frappe.flags.classification_company
     result = build_tax_material_package(company, "2026-10", "monthly_standard")
     viewer = user("账务查看者")
     frappe.set_user(viewer)
+    assert get_latest_tax_material_package("2026-10", "monthly_standard")["name"] == result["name"]
     assert get_tax_material_package(result["name"])["name"] == result["name"]
     assert frappe.has_permission("File", "read", frappe.db.get_value("File", {"file_url": result["file"]}))
     with unittest.TestCase().assertRaises(frappe.PermissionError):
