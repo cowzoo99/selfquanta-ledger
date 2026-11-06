@@ -212,6 +212,13 @@ def install_default_rules(company: str) -> None:
         frappe.get_doc(fields).insert()
 
 
+def ensure_erpnext_setup_fixtures() -> None:
+    """Install ERPNext's required country fixtures before creating a Company."""
+    from erpnext.setup.setup_wizard.operations import install_fixtures
+
+    install_fixtures.install("China")
+
+
 def initialize_company(company_name: str, company_abbr: str) -> dict:
     """Create the one company for a newly provisioned Site and install ledger defaults."""
     require_ledger_admin()
@@ -227,6 +234,7 @@ def initialize_company(company_name: str, company_abbr: str) -> dict:
         if company.company_name != company_name or company.abbr != company_abbr:
             frappe.throw("现有公司与开通参数不一致")
     else:
+        ensure_erpnext_setup_fixtures()
         company = frappe.get_doc({
             "doctype": "Company",
             "company_name": company_name,

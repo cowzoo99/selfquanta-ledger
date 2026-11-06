@@ -2,7 +2,13 @@ import unittest
 
 import frappe
 
-from internal_ledger.install import ensure_roles, initialize_company, install_chart, load_chart_fixture
+from internal_ledger.install import (
+    ensure_erpnext_setup_fixtures,
+    ensure_roles,
+    initialize_company,
+    install_chart,
+    load_chart_fixture,
+)
 
 
 def test_install_creates_roles_and_balanced_root_groups():
@@ -135,6 +141,13 @@ def test_initialize_company_rejects_invalid_or_second_company_without_mutation()
     assert frappe.get_all("Company", pluck="name") == before
 
 
+def test_company_setup_restores_required_erpnext_fixtures():
+    frappe.db.delete("Warehouse Type", {"name": "Transit"})
+    assert not frappe.db.exists("Warehouse Type", "Transit")
+    ensure_erpnext_setup_fixtures()
+    assert frappe.db.exists("Warehouse Type", "Transit")
+
+
 def load_tests(loader, tests, pattern):
     def set_up():
         frappe.db.savepoint("internal_ledger_install_test")
@@ -154,5 +167,6 @@ def load_tests(loader, tests, pattern):
             test_install_chart_rejects_existing_conflict_without_overwriting,
             test_settings_is_singleton_with_company_currency_and_year_start,
             test_initialize_company_rejects_invalid_or_second_company_without_mutation,
+            test_company_setup_restores_required_erpnext_fixtures,
         )
     )
