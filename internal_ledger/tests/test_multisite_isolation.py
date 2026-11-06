@@ -81,7 +81,7 @@ def prepare_fixture() -> dict:
         ).insert(ignore_permissions=True).name
 
     file_name = f"{marker}.txt"
-    if not frappe.db.exists("File", {"file_name": file_name, "attached_to_name": customer}):
+    if not frappe.db.exists("File", {"attached_to_doctype": "Customer", "attached_to_name": customer}):
         frappe.get_doc(
             {
                 "doctype": "File",
@@ -115,9 +115,11 @@ def prepare_fixture() -> dict:
 
 
 def _fixture_counts(marker: str) -> dict[str, int]:
+    customer = frappe.db.get_value("Customer", {"customer_name": f"G1-{marker}"}, "name")
     return {
         "Customer": frappe.db.count("Customer", {"customer_name": f"G1-{marker}"}),
-        "File": frappe.db.count("File", {"file_name": f"{marker}.txt"}),
+        "File": frappe.db.count("File", {"attached_to_doctype": "Customer", "attached_to_name": customer})
+        if customer else 0,
         "Journal Entry": frappe.db.count("Journal Entry", {"user_remark": marker}),
     }
 

@@ -107,7 +107,9 @@ services:
         --admin-password "$$(cat /run/secrets/site_admin_password)"
         --install-app erpnext
         --install-app hrms
-        --install-app internal_ledger
+        --install-app internal_ledger;
+        bench --site "$$SITE_NAME" set-config encryption_key
+        "$$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
     environment:
       SITE_NAME: ${SITE_NAME:?set SITE_NAME}
     secrets:

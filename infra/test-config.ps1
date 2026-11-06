@@ -223,6 +223,7 @@ $createSite = Get-ServiceBlock -Yaml $compose -Name 'create-site'
 Assert-True ($configurator -match '(?m)^\s+set -euo pipefail;') 'Configurator shell must enable strict failure propagation'
 Assert-True ($createSite -match '(?m)^\s+set -euo pipefail;') 'Create-site shell must enable strict failure propagation'
 Assert-True ($createSite -notmatch 'bench use') 'Create-site must not rewrite the shared default Site'
+Assert-True ($createSite -match 'set-config encryption_key' -and $createSite -match 'secrets\.token_urlsafe') 'Create-site must generate an independent encryption key'
 $erpnextInstall = $createSite.IndexOf('--install-app erpnext')
 $hrmsInstall = $createSite.IndexOf('--install-app hrms')
 $ledgerInstall = $createSite.IndexOf('--install-app internal_ledger')
