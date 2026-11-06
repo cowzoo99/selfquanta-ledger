@@ -1,10 +1,15 @@
 import base64
+import csv
 from decimal import Decimal
 import hashlib
+import io
+import json
 from pathlib import Path
+import re
 import unittest
 from unittest.mock import Mock, patch
 from uuid import uuid4
+from zipfile import ZipFile
 
 import frappe
 
@@ -13,6 +18,9 @@ from internal_ledger.tests.test_importers import fixture
 from internal_ledger.tests.test_member_api import PasswordSafeFunctionTestCase
 from internal_ledger.tests.test_permissions import user, tear_down
 from internal_ledger.tests.test_review_api import set_up
+
+
+G2_FIXTURES = Path(__file__).parent / "fixtures" / "month_end"
 
 
 def import_duplicate_acceptance_batch():
@@ -556,10 +564,172 @@ def test_import_reconcile_evidence_review_and_post_end_to_end():
           "explicit admin posting; post-posting evidence immutable JE/GL; viewer read/download only")
 
 
+def test_g2_finance_tax_month_end_acceptance():
+    from frappe.desk.query_report import run as run_report
+    from internal_ledger.api import posting_api
+    from internal_ledger.api.close_api import confirm_period_close, run_month_end_checks
+    from internal_ledger.api.duplicate_api import resolve_duplicate
+    from internal_ledger.api.import_api import confirm_import, preview_import
+    from internal_ledger.api.posting_api import approve_and_post
+    from internal_ledger.accounting.tax_materials import MANIFEST, build_tax_material_package
+
+    company = frappe.flags.classification_company
+    payment = account("1001")
+    admin = user("账套管理员")
+    frappe.set_user(admin)
+    for value, direction, transaction_type, debit, credit in (
+        ("虚构软件订阅商户", "expense", "expense", account("560201"), None),
+        ("虚构星河客户", "income", "income", None, account("5001")),
+        ("虚构午餐商户", "expense", "expense", account("560201"), None),
+        ("虚构交通商户", "expense", "expense", account("560202"), None),
+        ("虚构设备供应商", "expense", "expense", account("560201"), None),
+    ):
+        add_rule(value=value, direction=direction, transaction_type=transaction_type,
+                 debit_account=debit, credit_account=credit)
+
+    imported_transactions, draft_names = [], []
+    for source in ("bank", "wechat", "alipay"):
+        content = (G2_FIXTURES / f"{source}.csv").read_bytes()
+        encoded = base64.b64encode(content).decode("ascii")
+        preview = preview_import(source, encoded, payment, f"g2-{source}.csv")
+        assert not preview["errors"]
+        corrections = None
+        if source == "bank":
+            corrections = preview["rows"]
+            corrections[0] = {**corrections[0], "counterparty": "虚构软件订阅商户",
+                              "summary": "经人工修正的软件订阅"}
+        result = confirm_import(source, encoded, payment, preview["file_hash"], f"g2-{source}.csv",
+                                frappe.as_json(corrections) if corrections else None)
+        rows = frappe.get_all("Imported Transaction", filters={"import_batch": result["batch_name"]},
+                              fields=["name", "status", "source_id"], order_by="raw_row")
+        imported_transactions.extend(row.name for row in rows)
+        draft_names.extend(row["draft"] for row in result["processing"] if row.get("draft"))
+
+    ocr_content = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII="
+    )
+    ocr_pages = json.loads((G2_FIXTURES / "ocr_pages.json").read_text(encoding="utf-8"))
+    for line in ocr_pages[0]["lines"]:
+        if line["text"].startswith("付款户名："):
+            line["text"] = f"付款户名：{company}"
+    ocr_encoded = base64.b64encode(ocr_content).decode("ascii")
+    with patch("internal_ledger.importing.ocr_client.extract_pages", return_value=ocr_pages):
+        preview = preview_import("auto", ocr_encoded, payment, "g2-receipt.png")
+        assert preview["detected_source"] == "bank" and not preview["errors"]
+        ocr_result = confirm_import("auto", ocr_encoded, payment, preview["file_hash"], "g2-receipt.png")
+    ocr_transaction = frappe.db.get_value("Imported Transaction",
+        {"import_batch": ocr_result["batch_name"]}, "name")
+    imported_transactions.append(ocr_transaction)
+    draft_names.extend(row["draft"] for row in ocr_result["processing"] if row.get("draft"))
+
+    duplicate = frappe.get_doc("Imported Transaction", {"source_id": "WX-G2-001", "status": "Duplicate"})
+    assert duplicate.duplicate_review_status == "Pending"
+    resolve_duplicate(duplicate.name, "confirm", "G2 验收确认重复，不计入过账")
+    assert len(imported_transactions) == 6 and len(draft_names) == 5
+    assert not frappe.db.exists("Voucher Draft", {"imported_transaction": duplicate.name})
+
+    outcomes = approve_and_post(draft_names)
+    assert len(outcomes) == 5 and all(row["status"] == "created" for row in outcomes)
+    bank_transaction = frappe.db.get_value("Imported Transaction", {"source_id": "BANK-G2-001"}, "name")
+    before_rebuild = posting_api.get_posted_entry(bank_transaction)
+    old_journal = before_rebuild["posting"]["journal_entry"]
+    rebuilt = posting_api.rebuild_posted_entry(bank_transaction, {
+        "occurred_at": "2026-10-05 09:15:00", "posting_date": "2026-10-05",
+        "counterparty": "虚构软件订阅商户", "summary": "复核后调整的软件订阅",
+        "direction": "expense", "transaction_type": "expense", "amount": "125.00",
+        "payment_account": payment,
+        "lines": [
+            {"account": account("560201"), "debit": "125.00", "credit": "0"},
+            {"account": payment, "debit": "0", "credit": "125.00"},
+        ],
+    }, before_rebuild["version"])
+    assert rebuilt["posting"]["journal_entry"] != old_journal
+    assert not frappe.db.exists("Journal Entry", old_journal)
+
+    delete_version = posting_api.get_posted_entry(ocr_transaction)["version"]
+    assert posting_api.permanently_delete_transactions(
+        [ocr_transaction], "G2 验收永久删除虚构误录", {ocr_transaction: delete_version}
+    ) == [{"transaction": ocr_transaction, "status": "deleted"}]
+    assert not frappe.db.exists("Imported Transaction", ocr_transaction)
+
+    gl_rows = frappe.get_all("GL Entry", filters={"company": company,
+        "posting_date": ["between", ["2026-10-01", "2026-10-31"]], "is_cancelled": 0},
+        fields=["posting_date", "account", "debit", "credit", "voucher_no"], order_by="name")
+    total_debit = sum(Decimal(str(row.debit or 0)) for row in gl_rows)
+    total_credit = sum(Decimal(str(row.credit or 0)) for row in gl_rows)
+    assert total_debit == total_credit and len(gl_rows) == 8
+    active_journals = {row.voucher_no for row in gl_rows}
+    report_debit = report_credit = Decimal("0")
+    for ledger_account in {row.account for row in gl_rows}:
+        report = run_report("General Ledger", filters={
+            "company": company, "from_date": "2026-10-01", "to_date": "2026-10-31",
+            "account": [ledger_account], "categorize_by": "Categorize by Voucher (Consolidated)",
+            "include_default_book_entries": 1,
+        })
+        for row in report["result"]:
+            if row.get("voucher_no") in active_journals:
+                report_debit += Decimal(str(row.get("debit") or 0))
+                report_credit += Decimal(str(row.get("credit") or 0))
+    assert (report_debit, report_credit) == (total_debit, total_credit)
+
+    month_end = run_month_end_checks(company, "2026-10")
+    assert all(row["status"] == "Pass" for row in month_end["checks"]), month_end["checks"]
+    closed = confirm_period_close(month_end["name"])
+    assert closed["status"] == "Closed" and closed["accounting_period"]
+
+    package = build_tax_material_package(company, "2026-10", "monthly_standard")
+    package_file = frappe.get_doc("File", {"file_url": package["file"]})
+    package_bytes = Path(package_file.get_full_path()).read_bytes()
+    package_hash = hashlib.sha256(package_bytes).hexdigest()
+    assert package_file.is_private
+    assert package["totals"]["debit"] == f"{total_debit:.2f}"
+    assert package["totals"]["credit"] == f"{total_credit:.2f}"
+    assert package["totals"]["gl_entries"] == len(gl_rows)
+    with ZipFile(io.BytesIO(package_bytes)) as archive:
+        assert archive.namelist() == list(MANIFEST)
+        for name in MANIFEST[:-1]:
+            content = archive.read(name)
+            assert content.startswith(b"\xef\xbb\xbf") and b"\r\n" in content
+        ledger_content = archive.read("总账.csv").decode("utf-8-sig")
+        ledger = list(csv.DictReader(io.StringIO(ledger_content)))
+        assert len(ledger) == len(gl_rows)
+        assert all(re.fullmatch(r"\d{4}-\d{2}-\d{2}", row["过账日期"]) for row in ledger)
+        assert all(re.fullmatch(r"-?\d+\.\d{2}", row[field])
+                   for row in ledger for field in ("借方", "贷方"))
+        assert sum(Decimal(row["借方"]) for row in ledger) == report_debit
+        assert sum(Decimal(row["贷方"]) for row in ledger) == report_credit
+        package_journals = {row["凭证号"] for row in ledger}
+    assert package_journals == active_journals
+    for journal in package_journals:
+        link = frappe.get_doc("Posting Link", {"journal_entry": journal})
+        draft = frappe.get_doc("Voucher Draft", link.voucher_draft)
+        transaction = frappe.get_doc("Imported Transaction", draft.imported_transaction)
+        batch = frappe.get_doc("Import Batch", transaction.import_batch)
+        source = frappe.get_doc("Internal Ledger Source File", batch.raw_file)
+        assert source.import_batch == batch.name and source.raw_file
+
+    assert frappe.db.count("Imported Transaction", {"name": ["in", imported_transactions]}) == 5
+    assert frappe.db.count("Internal Ledger Audit Event", {"action": "rebuild_posted_entry"}) >= 1
+    assert frappe.db.count("Internal Ledger Audit Event", {"action": "permanently_delete_transaction"}) >= 1
+    print(f"G2 ACCEPTANCE: imported=6 duplicate_excluded=1 posted=5 rebuilt=1 deleted=1 "
+          f"active_journals=4 gl=8 debit={total_debit:.2f} credit={total_credit:.2f} "
+          f"manifest={len(MANIFEST)} package_sha256={package_hash}")
+
+
 def load_tests(loader, tests, pattern):
     def test_site_set_up():
         assert frappe.local.site == "test.localhost", "Synthetic accounting acceptance requires the isolated test site"
         set_up()
+        frappe.flags.g2_package_files_before = set(frappe.get_all(
+            "File", filters={"attached_to_doctype": "Tax Material Package"}, pluck="name"))
 
-    return unittest.TestSuite(PasswordSafeFunctionTestCase(test, setUp=test_site_set_up, tearDown=tear_down)
+    def test_site_tear_down():
+        frappe.set_user("Administrator")
+        before = frappe.flags.g2_package_files_before or set()
+        for name in set(frappe.get_all(
+                "File", filters={"attached_to_doctype": "Tax Material Package"}, pluck="name")) - before:
+            Path(frappe.get_doc("File", name).get_full_path()).unlink(missing_ok=True)
+        tear_down()
+
+    return unittest.TestSuite(PasswordSafeFunctionTestCase(test, setUp=test_site_set_up, tearDown=test_site_tear_down)
                               for name, test in sorted(globals().items()) if name.startswith("test_"))
