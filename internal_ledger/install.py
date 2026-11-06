@@ -248,6 +248,8 @@ def initialize_company(company_name: str, company_abbr: str) -> dict:
     settings = frappe.get_single("Internal Ledger Settings")
     settings.company = company.name
     settings.base_currency = "CNY"
+    if not settings.fiscal_year_start:
+        settings.fiscal_year_start = f"{frappe.utils.today()[:4]}-01-01"
     settings.save()
     install_default_rules(company.name)
     return {"company": company.name, "abbr": company.abbr}
