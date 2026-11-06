@@ -1,0 +1,18 @@
+{
+ "doctype": "DocType",
+ "name": "Month End Check",
+ "module": "Internal Ledger",
+ "istable": 1,
+ "editable_grid": 0,
+ "engine": "InnoDB",
+ "field_order": ["code", "severity", "status", "count", "message", "target_route"],
+ "fields": [
+  {"fieldname": "code", "label": "Code", "fieldtype": "Data", "reqd": 1, "read_only": 1},
+  {"fieldname": "severity", "label": "Severity", "fieldtype": "Select", "options": "Blocking\nWarning", "reqd": 1, "read_only": 1},
+  {"fieldname": "status", "label": "Status", "fieldtype": "Select", "options": "Pass\nFail", "reqd": 1, "read_only": 1},
+  {"fieldname": "count", "label": "Count", "fieldtype": "Int", "read_only": 1},
+  {"fieldname": "message", "label": "Message", "fieldtype": "Small Text", "reqd": 1, "read_only": 1},
+  {"fieldname": "target_route", "label": "Target Route", "fieldtype": "Data", "read_only": 1}
+ ],
+ "permissions": []
+}

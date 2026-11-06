@@ -8,7 +8,7 @@ from frappe.utils import now_datetime
 
 LEDGER_DOCTYPES = ("Import Batch", "Imported Transaction", "Classification Rule", "Voucher Draft",
                   "Posting Link", "Internal Ledger Settings", "Internal Ledger Audit Event",
-                  "Internal Ledger Source File", "Ledger Evidence")
+                  "Internal Ledger Source File", "Ledger Evidence", "Month End Run")
 _AUDIT_INSERT = object()
 _SOURCE_INSERT = object()
 _SOURCE_DELETE = object()

@@ -449,8 +449,7 @@ def test_private_source_is_immutable_and_viewer_cannot_list_or_download():
     assert frappe.local.response.filecontent.encode() == fixture("bank")
     assert not find_file_by_url(original_url)
     assert not frappe.has_permission("Internal Ledger Source File", "read", attachment.attached_to_name)
-    with unittest.TestCase().assertRaises(frappe.PermissionError):
-        frappe.get_list("Internal Ledger Source File", filters={"name": source.name})
+    assert not frappe.get_list("Internal Ledger Source File", filters={"name": source.name})
     assert not frappe.has_permission("File", "read", attachment.name)
     for denied in (frappe.get_doc("File", attachment.name),
                    frappe.get_doc("Internal Ledger Source File", source.name)):

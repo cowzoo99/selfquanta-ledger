@@ -1,0 +1,27 @@
+{
+ "doctype": "DocType",
+ "name": "Month End Run",
+ "module": "Internal Ledger",
+ "autoname": "hash",
+ "engine": "InnoDB",
+ "field_order": ["company", "period_start", "period_end", "status", "executed_by", "executed_at", "source_hash", "accounting_period", "checks"],
+ "fields": [
+  {"fieldname": "company", "label": "Company", "fieldtype": "Link", "options": "Company", "reqd": 1},
+  {"fieldname": "period_start", "label": "Period Start", "fieldtype": "Date", "reqd": 1},
+  {"fieldname": "period_end", "label": "Period End", "fieldtype": "Date", "reqd": 1},
+  {"fieldname": "status", "label": "Status", "fieldtype": "Select", "options": "Completed\nClosed", "reqd": 1, "read_only": 1},
+  {"fieldname": "executed_by", "label": "Executed By", "fieldtype": "Link", "options": "User", "reqd": 1, "read_only": 1},
+  {"fieldname": "executed_at", "label": "Executed At", "fieldtype": "Datetime", "reqd": 1, "read_only": 1},
+  {"fieldname": "source_hash", "label": "Source Hash", "fieldtype": "Data", "reqd": 1, "read_only": 1},
+  {"fieldname": "accounting_period", "label": "Accounting Period", "fieldtype": "Link", "options": "Accounting Period", "read_only": 1},
+  {"fieldname": "checks", "label": "Checks", "fieldtype": "Table", "options": "Month End Check", "reqd": 1, "read_only": 1}
+ ],
+ "permissions": [
+  {"role": "账套管理员", "read": 1, "write": 1, "create": 1, "report": 1},
+  {"role": "企业负责人", "read": 1, "write": 1, "create": 1, "report": 1},
+  {"role": "财务主管", "read": 1, "write": 1, "create": 1, "report": 1},
+  {"role": "会计", "read": 1, "create": 1, "report": 1},
+  {"role": "账务查看者", "read": 1, "report": 1},
+  {"role": "只读审计", "read": 1, "report": 1}
+ ]
+}
