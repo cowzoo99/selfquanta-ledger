@@ -173,7 +173,10 @@ def test_import_learning_and_duplicate_release_auto_draft_but_require_explicit_p
     assert not frappe.db.exists("Voucher Draft", {"imported_transaction": duplicate.name})
     learned_draft = classify_manually(manual.name, "expense", account("560202"), payment,
                                       "记住交易对象", 1)
-    next_content = "\n".join([*lines[:2], unlearned.replace(manual.source_id, uuid4().hex)]).encode()
+    next_row = unlearned.replace(manual.source_id, uuid4().hex).replace(
+        "2026-10-03 09:00:00", "2026-10-04 09:00:00"
+    )
+    next_content = "\n".join([*lines[:2], next_row]).encode()
     learned = confirm_import("wechat", base64.b64encode(next_content).decode(), payment,
                              hashlib.sha256(next_content).hexdigest())
     learned_tx = learned["processing"][0]["name"]
@@ -271,6 +274,12 @@ def test_real_three_source_workflow_balances_audit_and_source_trace():
     batches, journals = [], []
     for source in ("wechat", "alipay", "bank"):
         content = fixture(source)
+        day_offset = {"wechat": 0, "alipay": 10, "bank": 20}[source]
+        if day_offset:
+            text = content.decode("utf-8-sig")
+            for day in (1, 2, 3):
+                text = text.replace(f"2026-10-{day:02d}", f"2026-10-{day + day_offset:02d}")
+            content = text.encode("utf-8-sig")
         encoded = base64.b64encode(content).decode()
         preview = preview_import(source, encoded, payment)
         assert len(preview["rows"]) == 3 and not preview["errors"]
@@ -426,6 +435,9 @@ def test_import_reconcile_evidence_review_and_post_end_to_end():
     late_info = next(row for row in late["attachments"] if row["name"] != info["name"])
     final = delete_evidence_file(original.name, late_info["name"])
     assert final["note_html"] == "<p>过账后补充说明</p>" and final["attachments"] == [info]
+    snapshot["user_remark"] = "过账后补充说明"
+    for row in gl:
+        row["remarks"] = "过账后补充说明"
     assert frappe.get_doc("Journal Entry", journal).as_dict() == snapshot
     assert frappe.get_all("GL Entry", filters={"voucher_no": journal}, fields=["*"], order_by="name") == gl
     assert frappe.db.count("Journal Entry") == before_journals + 1

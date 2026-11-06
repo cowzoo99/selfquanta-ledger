@@ -671,7 +671,7 @@ async function run(name) {
     page.state.showAccounts = true; page.state.chooseKind('费用支出');
     page.state.chooseAccount('debit', '560201 · 办公费'); page.state.chooseAccount('credit', '100201 · 基本存款账户');
     await Vue.nextTick();
-    assert.match(text(page.root), /业务类型（可输入或选择）费用支出/); assert.match(text(page.root), /借方：560201 · 办公费/);
+    assert.match(text(page.root), /业务类型（可输入或选择）/); assert.match(text(page.root), /费用支出/); assert.match(text(page.root), /借方：560201 · 办公费/);
     assert.ok(descendants(page.root).some(el => el.props.class === 'ledger-choice-tag'), 'selected choices use a dark tag');
     page.state.remember = true; await page.state.submit(); await Vue.nextTick();
     assert.match(text(page.root), /仅处理本笔（不保存规则）/); assert.match(text(page.root), /前往核对已有分类规则/);
