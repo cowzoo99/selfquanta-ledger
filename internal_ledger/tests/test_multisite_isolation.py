@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import unittest
 from pathlib import Path
 
 import frappe
@@ -165,3 +166,13 @@ def test_site_config_and_storage_evidence_contains_hashes_only():
     serialized = repr(evidence)
     assert str(frappe.conf.db_name) not in serialized
     assert str(frappe.conf.encryption_key) not in serialized
+
+
+def load_tests(loader, tests, pattern):
+    return unittest.TestSuite(
+        unittest.FunctionTestCase(test)
+        for test in (
+            test_site_data_files_and_documents_are_isolated,
+            test_site_config_and_storage_evidence_contains_hashes_only,
+        )
+    )
