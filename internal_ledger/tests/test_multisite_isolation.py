@@ -13,6 +13,7 @@ from pathlib import Path
 
 import frappe
 from frappe.utils import getdate, nowdate
+from internal_ledger.permissions import _JOURNAL_WRITE
 
 
 SITE_A_ENV = "SELFLEDGER_TEST_SITE_A"
@@ -94,7 +95,7 @@ def prepare_fixture() -> dict:
 
     if not frappe.db.exists("Journal Entry", {"user_remark": marker}):
         debit, credit = _accounts(company)
-        frappe.get_doc(
+        journal = frappe.get_doc(
             {
                 "doctype": "Journal Entry",
                 "voucher_type": "Journal Entry",
@@ -106,7 +107,9 @@ def prepare_fixture() -> dict:
                     {"account": credit, "credit_in_account_currency": 1},
                 ],
             }
-        ).insert(ignore_permissions=True)
+        )
+        journal.flags.ledger_journal_write = _JOURNAL_WRITE
+        journal.insert(ignore_permissions=True)
     frappe.db.commit()
     return isolation_evidence()
 
