@@ -106,6 +106,7 @@ services:
         --db-root-password "$$(cat /run/secrets/db_root_password)"
         --admin-password "$$(cat /run/secrets/site_admin_password)"
         --install-app erpnext
+        --install-app hrms
         --install-app internal_ledger;
         bench use "$$SITE_NAME"
     environment:

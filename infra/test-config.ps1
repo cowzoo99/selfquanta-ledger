@@ -193,6 +193,7 @@ $repositoryRoot = (Resolve-Path (Join-Path $InfraRoot '..')).Path
 $versions = Get-Content -Raw -LiteralPath (Join-Path $InfraRoot 'versions.env')
 Assert-True ($versions -match '(?m)^ERPNEXT_VERSION=v16\.52\.1\r?$') 'ERPNext version is not pinned to v16.52.1'
 Assert-True ($versions -match '(?m)^FRAPPE_REF=v16\.52\.0\r?$') 'Frappe ref is not pinned to v16.52.0'
+Assert-True ($versions -match '(?m)^HRMS_VERSION=v16\.52\.0\r?$') 'HRMS version is not pinned to v16.52.0'
 Assert-True ($versions -match '(?m)^DB_IMAGE=mariadb:11\.8\r?$') 'MariaDB image is not pinned to 11.8'
 Assert-True ($versions -match '(?m)^REDIS_IMAGE=redis:8\.2-alpine\r?$') 'Redis image is not pinned to 8.2-alpine'
 Assert-True ($versions -notmatch '(?im):latest\s*$') 'Mutable latest tag is forbidden'
@@ -216,6 +217,10 @@ $configurator = Get-ServiceBlock -Yaml $compose -Name 'configurator'
 $createSite = Get-ServiceBlock -Yaml $compose -Name 'create-site'
 Assert-True ($configurator -match '(?m)^\s+set -euo pipefail;') 'Configurator shell must enable strict failure propagation'
 Assert-True ($createSite -match '(?m)^\s+set -euo pipefail;') 'Create-site shell must enable strict failure propagation'
+$erpnextInstall = $createSite.IndexOf('--install-app erpnext')
+$hrmsInstall = $createSite.IndexOf('--install-app hrms')
+$ledgerInstall = $createSite.IndexOf('--install-app internal_ledger')
+Assert-True ($erpnextInstall -ge 0 -and $hrmsInstall -gt $erpnextInstall -and $ledgerInstall -gt $hrmsInstall) 'Create-site must install ERPNext, HRMS, then Internal Ledger'
 $gateway = Get-ServiceBlock -Yaml $compose -Name 'gateway'
 Assert-True ($gateway -match '(?m)^\s{4}ports:\s*$') 'Gateway must publish HTTP/HTTPS ports'
 Assert-True ($gateway -match 'HTTP_PORT:-80}:8080') 'HTTP port 80 must map to the gateway'
@@ -244,6 +249,12 @@ Assert-True ($build -match '--secret=id=apps_json,src=') 'Build must pass apps.j
 Assert-True ($build -match 'images/layered/Containerfile') 'Build must use the official layered Containerfile'
 Assert-True ($build -notmatch 'APPS_JSON_BASE64') 'apps.json must not be passed as a build argument'
 Assert-True ($build -match "origin -notmatch '\^https://'") 'Build must reject unsupported SSH origins before Docker'
+$hrmsBuildMatches = [regex]::Matches($build, "url = 'https://github\.com/frappe/hrms'")
+Assert-True ($hrmsBuildMatches.Count -eq 1 -and $build -match 'branch = \$versions\.HRMS_VERSION') 'apps.json must include pinned HRMS exactly once'
+$erpnextBuild = $build.IndexOf("url = 'https://github.com/frappe/erpnext'")
+$hrmsBuild = $build.IndexOf("url = 'https://github.com/frappe/hrms'")
+$ledgerBuild = $build.IndexOf('url = $origin')
+Assert-True ($erpnextBuild -ge 0 -and $hrmsBuild -gt $erpnextBuild -and $ledgerBuild -gt $hrmsBuild) 'apps.json order must be ERPNext, HRMS, then Internal Ledger'
 
 $appLayer = Get-Content -Raw -LiteralPath (Join-Path $InfraRoot 'Dockerfile.app-layer')
 Assert-True ($appLayer -notmatch 'frappe:frappe' -and $appLayer -match 'frappe:root') 'App layer must use the runtime frappe group'

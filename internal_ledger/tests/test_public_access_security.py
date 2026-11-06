@@ -281,5 +281,20 @@ class PublicAccessSecurityTests(unittest.TestCase):
                 exec(policy, {})
 
 
+class ReproducibleImageTests(unittest.TestCase):
+    def test_hrms_is_pinned_and_installed_in_deterministic_order(self):
+        versions = (ROOT / "infra/versions.env").read_text()
+        build = (ROOT / "infra/build_image.ps1").read_text()
+        compose = (ROOT / "infra/compose.yaml").read_text()
+        self.assertIn("HRMS_VERSION=v16.52.0", versions)
+        self.assertEqual(build.count("url = 'https://github.com/frappe/hrms'"), 1)
+        self.assertLess(build.index("url = 'https://github.com/frappe/erpnext'"),
+                        build.index("url = 'https://github.com/frappe/hrms'"))
+        self.assertLess(build.index("url = 'https://github.com/frappe/hrms'"),
+                        build.index("url = $origin"))
+        self.assertLess(compose.index("--install-app erpnext"), compose.index("--install-app hrms"))
+        self.assertLess(compose.index("--install-app hrms"), compose.index("--install-app internal_ledger"))
+
+
 if __name__ == "__main__":
     unittest.main()

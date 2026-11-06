@@ -110,6 +110,7 @@ try {
     [void](New-Item -ItemType Directory -Path $scratch -Force)
     @(
         [ordered]@{ url = 'https://github.com/frappe/erpnext'; branch = $versions.ERPNEXT_VERSION },
+        [ordered]@{ url = 'https://github.com/frappe/hrms'; branch = $versions.HRMS_VERSION },
         [ordered]@{ url = $origin; branch = $AppRef }
     ) | ConvertTo-Json | Set-Content -LiteralPath $appsPath -Encoding utf8NoBOM
 
