@@ -131,10 +131,13 @@ def has_ledger_permission(doc, ptype, user=None, **kwargs):
 
 
 def company_query(user=None, doctype=None):
-    if (user or frappe.session.user) == "Administrator":
+    user = user or frappe.session.user
+    if user == "Administrator":
         return ""
+    if doctype == "Internal Ledger Source File" and not set(frappe.get_roles(user)) & LEDGER_MANAGER_ROLES:
+        return "1=0"
     if doctype in ("Journal Entry", "Account", "GL Entry") and not set(
-            frappe.get_roles(user or frappe.session.user)) & LEDGER_READ_ROLES:
+            frappe.get_roles(user)) & LEDGER_READ_ROLES:
         return ""
     company = frappe.db.escape(frappe.db.get_single_value("Internal Ledger Settings", "company") or "")
     table = f"`tab{doctype}`"

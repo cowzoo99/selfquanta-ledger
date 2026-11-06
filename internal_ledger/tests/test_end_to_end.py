@@ -196,6 +196,77 @@ def test_import_learning_and_duplicate_release_auto_draft_but_require_explicit_p
     assert frappe.db.count("Journal Entry") == frappe.flags.classification_journals + 4
 
 
+def test_golden_statement_preserves_duplicate_classification_posting_and_source_contract():
+    import json
+
+    from frappe.core.doctype.file.utils import find_file_by_url
+    from internal_ledger.api.duplicate_api import resolve_duplicate
+    from internal_ledger.api.import_api import confirm_import, preview_import
+    from internal_ledger.api.posting_api import approve_and_post
+
+    add_rule(value="测试商户甲", debit_account=account("560201"))
+    payment = account("1001")
+    lines = fixture("wechat").decode("utf-8-sig").splitlines()
+    normal_id, suspicious_id, unmatched_id = (uuid4().hex for _ in range(3))
+    normal = lines[2].replace("WX-001", normal_id)
+    suspicious = normal.replace(normal_id, suspicious_id).replace("办公用品", "办公用品改名")
+    unmatched = lines[4].replace("WX-003", unmatched_id).replace("测试商户丙", "无规则验收商户")
+    valid_content = "\n".join([*lines[:2], normal, normal, suspicious, unmatched]).encode()
+    malformed_content = valid_content + b"\n2026-10-04 09:00:00,merchant,broken,item,expense,NaN"
+
+    malformed = preview_import("wechat", base64.b64encode(malformed_content).decode(), payment)
+    assert malformed["errors"] and malformed["errors"][0]["raw_row"] == 7
+    with unittest.TestCase().assertRaises(frappe.ValidationError):
+        confirm_import("wechat", base64.b64encode(malformed_content).decode(), payment,
+                       malformed["file_hash"], "golden-malformed.csv")
+
+    encoded = base64.b64encode(valid_content).decode()
+    preview = preview_import("wechat", encoded, payment)
+    corrections = preview["rows"]
+    corrections[-1] = {**corrections[-1], "summary": "人工修正后的交通费"}
+    imported = confirm_import("wechat", encoded, payment, preview["file_hash"],
+                              "golden-statement.csv", json.dumps(corrections, ensure_ascii=False))
+    assert imported["summary"] == {"total": 4, "created": 1, "duplicate": 2,
+                                   "manual": 1, "conflict": 0, "failed": 0}
+
+    batch = frappe.get_doc("Import Batch", imported["batch_name"])
+    source = frappe.get_doc("Internal Ledger Source File", batch.raw_file)
+    source_file = find_file_by_url(source.raw_file)
+    assert source_file.is_private and Path(source_file.get_full_path()).read_bytes() == valid_content
+    rows = frappe.get_all("Imported Transaction", filters={"import_batch": batch.name},
+                          fields=["*"], order_by="raw_row")
+    normal_tx, exact, suspicious, unmatched_tx = rows
+    assert normal_tx.raw_row == 3 and unmatched_tx.raw_row == 6
+    assert unmatched_tx.summary == "人工修正后的交通费"
+    assert exact.duplicate_match_reason == "来源流水号相同"
+    assert suspicious.duplicate_match_reason == "同日、同方向、同资金账户、同交易对象且同金额（标题或备注可不同）"
+    assert not frappe.db.exists("Voucher Draft", {"imported_transaction": exact.name})
+    assert not frappe.db.exists("Voucher Draft", {"imported_transaction": suspicious.name})
+
+    confirmed = resolve_duplicate(exact.name, "confirm", "黄金账单确认重复")
+    assert confirmed["processing"]["status"] == "duplicate"
+    released = resolve_duplicate(suspicious.name, "release", "黄金账单确认独立")
+    assert released["processing"]["status"] == "created"
+    released_draft = released["processing"]["draft"]
+    assert frappe.db.count("Voucher Draft", {"imported_transaction": suspicious.name}) == 1
+    assert frappe.db.count("Voucher Draft", {"imported_transaction": exact.name}) == 0
+
+    normal_draft = next(row["draft"] for row in imported["processing"] if row["name"] == normal_tx.name)
+    outcomes = approve_and_post([normal_draft, released_draft])
+    assert [row["status"] for row in outcomes] == ["created", "created"]
+    for transaction, draft_name, outcome in zip((normal_tx, suspicious),
+                                                (normal_draft, released_draft), outcomes):
+        draft = frappe.get_doc("Voucher Draft", draft_name)
+        link = frappe.get_doc("Posting Link", outcome["posting_link"])
+        assert draft.imported_transaction == transaction.name and draft.classification_reason
+        assert link.voucher_draft == draft.name and link.journal_entry == outcome["journal_entry"]
+        assert frappe.get_doc("Journal Entry", link.journal_entry).docstatus == 1
+    assert frappe.db.count("Internal Ledger Audit Event", {
+        "reference_name": exact.name, "action": "duplicate_confirm", "result": "success"}) == 1
+    assert frappe.db.count("Internal Ledger Audit Event", {
+        "reference_name": suspicious.name, "action": "duplicate_release", "result": "success"}) == 1
+
+
 def test_viewer_reads_duplicate_workbench_and_voucher_but_all_accounting_writes_are_denied():
     from internal_ledger.api.classification_api import classify_manually
     from internal_ledger.api.duplicate_api import list_duplicates, resolve_duplicate
@@ -460,15 +531,19 @@ def test_import_reconcile_evidence_review_and_post_end_to_end():
                 assert response.get_data() == png
             finally:
                 response.close()
-        for operation in (lambda: save_evidence(original.name, "越权"),
-                          lambda: upload_evidence(original.name, "禁止.txt", encoded, "text/plain"),
-                          lambda: delete_evidence_file(original.name, info["name"]),
-                          auto_classify_pending, lambda: approve_and_post([draft.name]),
-                          lambda: frappe.get_list("Internal Ledger Source File"),
-                          lambda: source.check_permission("read"),
-                          lambda: download_file(source.raw_file)):
-            with unittest.TestCase().assertRaises(frappe.PermissionError):
+        denied_operations = {
+            "save evidence": lambda: save_evidence(original.name, "越权"),
+            "upload evidence": lambda: upload_evidence(original.name, "禁止.txt", encoded, "text/plain"),
+            "delete evidence": lambda: delete_evidence_file(original.name, info["name"]),
+            "auto classify": auto_classify_pending,
+            "post draft": lambda: approve_and_post([draft.name]),
+            "read source carrier": lambda: source.check_permission("read"),
+            "download source file": lambda: download_file(source.raw_file),
+        }
+        for label, operation in denied_operations.items():
+            with unittest.TestCase().assertRaises(frappe.PermissionError, msg=label):
                 operation()
+        assert not frappe.get_list("Internal Ledger Source File")
         with unittest.TestCase().assertRaises(Forbidden):
             download_private_file(source.raw_file)
         assert get_evidence(original.name) == final
