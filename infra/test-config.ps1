@@ -191,6 +191,10 @@ foreach ($secretSetting in @(
 Assert-True ($runtime -notmatch '(?im)(secret|password|token)=.+') 'Runtime example must not contain secret values'
 
 $repositoryRoot = (Resolve-Path (Join-Path $InfraRoot '..')).Path
+$multiSiteTestPath = Join-Path $repositoryRoot 'internal_ledger/tests/test_multisite_isolation.py'
+Assert-True (Test-Path -LiteralPath $multiSiteTestPath -PathType Leaf) 'Missing multi-Site isolation test'
+$multiSiteTest = Get-Content -Raw -LiteralPath $multiSiteTestPath
+Assert-True ($multiSiteTest -match 'SELFLEDGER_TEST_SITE_A' -and $multiSiteTest -match 'SELFLEDGER_TEST_SITE_B') 'Multi-Site test must require both acceptance Site names'
 $versions = Get-Content -Raw -LiteralPath (Join-Path $InfraRoot 'versions.env')
 Assert-True ($versions -match '(?m)^ERPNEXT_VERSION=v16\.52\.1\r?$') 'ERPNext version is not pinned to v16.52.1'
 Assert-True ($versions -match '(?m)^FRAPPE_REF=v16\.52\.0\r?$') 'Frappe ref is not pinned to v16.52.0'
@@ -223,6 +227,9 @@ $erpnextInstall = $createSite.IndexOf('--install-app erpnext')
 $hrmsInstall = $createSite.IndexOf('--install-app hrms')
 $ledgerInstall = $createSite.IndexOf('--install-app internal_ledger')
 Assert-True ($erpnextInstall -ge 0 -and $hrmsInstall -gt $erpnextInstall -and $ledgerInstall -gt $hrmsInstall) 'Create-site must install ERPNext, HRMS, then Internal Ledger'
+$frontend = Get-ServiceBlock -Yaml $compose -Name 'frontend'
+Assert-True ($frontend -match 'FRAPPE_SITE_NAME_HEADER:\s+\$\$host') 'Frontend must route each request by Host instead of forcing one customer Site'
+Assert-True ($frontend -notmatch 'FRAPPE_SITE_NAME_HEADER:\s+\$\{SITE_NAME') 'Frontend must not fall back every Host to one customer Site'
 $gateway = Get-ServiceBlock -Yaml $compose -Name 'gateway'
 Assert-True ($gateway -match '(?m)^\s{4}ports:\s*$') 'Gateway must publish HTTP/HTTPS ports'
 Assert-True ($gateway -match 'HTTP_PORT:-80}:8080') 'HTTP port 80 must map to the gateway'
