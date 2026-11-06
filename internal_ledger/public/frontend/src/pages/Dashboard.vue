@@ -1,21 +1,15 @@
 <script setup>
 import {computed} from 'vue';
-const props = defineProps({items: Array, counts: Object, month: String, canWrite: Boolean, loading: Boolean});
+const props = defineProps({items: Array, counts: Object, business: Object, month: String, canWrite: Boolean, loading: Boolean});
 const monthly = computed(() => props.items?.filter(item => String(item.transaction.occurred_at).startsWith(props.month)));
 const pendingDuplicates = computed(() => monthly.value?.filter(item => item.transaction.status === 'Duplicate' && item.transaction.duplicate_review_status === 'Pending').length ?? '—');
 const pendingPosting = computed(() => monthly.value?.filter(item => item.transaction.status === 'Imported' && !['Pending', 'Confirmed'].includes(item.transaction.duplicate_review_status) && item.draft?.status === 'Approved').length ?? '—');
 const todayTodo = computed(() => (Number(props.counts?.pending_classification || 0)
   + Number(props.counts?.pending_review || 0) + Number(pendingDuplicates.value === '—' ? 0 : pendingDuplicates.value)
   + Number(pendingPosting.value === '—' ? 0 : pendingPosting.value)));
-const operatingCards = computed(() => [
-  ['/app/ledger-workbench/review', '今日待办', `${todayTodo.value} 项`, '处理重复、分类、审核和过账'],
-  ['/app/ledger-workbench/accounting', '资金', props.counts ? `收入 ${props.counts.income} · 支出 ${props.counts.expense}` : '待载入', '查看账簿和资金变化'],
-  ['/app/ledger-workbench/sales', '销售', `${props.counts?.sales_pending ?? 0} 项`, '客户、订单和销售发票'],
-  ['/app/ledger-workbench/purchase', '采购', `${props.counts?.purchase_pending ?? 0} 项`, '供应商、订单和采购发票'],
-  ['/app/ledger-workbench/stock', '库存预警', `${props.counts?.stock_warning ?? 0} 项`, '商品、仓库和库存余额'],
-  ['/app/ledger-workbench/projects', '项目', `${props.counts?.project_pending ?? 0} 项`, '项目、任务和工时'],
-  ['/app/ledger-workbench/hr', '人事工资', `${props.counts?.hr_pending ?? 0} 项`, '员工、考勤、请假和工资'],
-]);
+const businessCards = computed(() => Object.values(props.business?.data?.sections || {}).flatMap(section => section.cards || []));
+const unavailableSections = computed(() => Object.entries(props.business?.data?.sections || {})
+  .filter(([, section]) => !section.available && !section.restricted));
 const cards = computed(() => [
   ['review/疑似重复', '疑似重复', pendingDuplicates.value, '核对是否为同一笔交易'],
   ['review/待分类', '待分类', props.counts?.pending_classification ?? '—', '补充科目，可记住交易对象'],
@@ -51,6 +45,22 @@ const cards = computed(() => [
     <p v-else-if="counts">尚无导入记录，请先导入账单。</p>
     <p v-else>本月摘要尚未载入。</p>
     <h3>企业经营总览</h3>
-    <div class="ledger-cards"><a v-for="entry in operatingCards" :key="entry[0]" class="ledger-card ledger-module-card" :href="entry[0]"><strong>{{ entry[1] }} · {{ entry[2] }}</strong><span>{{ entry[3] }}</span></a></div>
+    <p v-if="business?.status === 'loading'" role="status">正在读取经营数据…</p>
+    <p v-else-if="business?.status === 'error'" role="alert">经营数据读取失败：{{ business.error }}</p>
+    <template v-else-if="business?.status === 'success'">
+      <p v-if="business.data?.partial" role="status">部分经营数据暂时无法读取，其他区块仍可使用。</p>
+      <div v-if="businessCards.length" class="ledger-cards">
+        <a v-for="entry in businessCards" :key="`${entry.label}-${entry.target_route}`" class="ledger-card ledger-module-card"
+          :data-severity="entry.severity" :href="entry.target_route" :title="entry.tooltip">
+          <strong>{{ entry.label }} · {{ entry.value }} {{ entry.unit }}</strong>
+          <span>{{ entry.tooltip }}</span>
+        </a>
+      </div>
+      <p v-else>当前期间暂无可展示的经营指标。</p>
+      <details v-if="unavailableSections.length"><summary>尚未启用的模块</summary>
+        <ul><li v-for="entry in unavailableSections" :key="entry[0]">{{ entry[0] }}：{{ entry[1].message }}</li></ul>
+      </details>
+    </template>
+    <p v-else>经营数据尚未载入。</p>
   </section>
 </template>

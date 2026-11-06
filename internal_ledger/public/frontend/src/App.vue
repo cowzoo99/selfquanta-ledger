@@ -12,17 +12,18 @@ import TaxMaterials from './pages/TaxMaterials.vue';
 import ModuleHub from './pages/ModuleHub.vue';
 import WorkflowNavigation from './components/WorkflowNavigation.vue';
 import {MODULES} from './moduleCatalog';
-import {call, errorMessage, setLanguage} from './api';
+import {call, businessCall, errorMessage, setLanguage} from './api';
 const props = defineProps({view: {type: String, default: 'dashboard'}, filter: {type: String, default: ''}, batch: {type: String, default: ''}, transaction: {type: String, default: ''}});
 const month = ref(frappe.datetime.get_today().slice(0, 7));
 const counts = reactive({status: 'idle', data: null, error: ''});
 const list = reactive({status: 'idle', data: null, error: ''});
 const classificationRun = reactive({status: 'idle', summary: null, error: ''});
-const loading = computed(() => classificationRun.status === 'loading' || counts.status === 'loading' || list.status === 'loading');
+const business = reactive({status: 'idle', data: null, error: ''});
+const loading = computed(() => classificationRun.status === 'loading' || counts.status === 'loading' || list.status === 'loading' || business.status === 'loading');
 const currentCounts = computed(() => counts.status === 'success' && counts.data?.month === month.value ? counts.data : null);
 const language = ref((frappe.boot?.lang || '').startsWith('zh') ? 'zh' : 'en');
 const savingLanguage = ref(false), languageError = ref('');
-const error = computed(() => languageError.value || counts.error || list.error);
+const error = computed(() => languageError.value || counts.error || list.error || business.error);
 const userRoles = new Set(frappe.user_roles || []);
 const isAdministrator = frappe.session.user === 'Administrator';
 const hasAllowedRole = roles => isAdministrator || roles.some(role => userRoles.has(role));
@@ -81,10 +82,17 @@ async function load(resource, request, generation) {
 function refresh() {
   const generation = ++refreshGeneration;
   languageError.value = '';
-  return Promise.all([
+  const [year, selectedMonth] = month.value.split('-').map(Number);
+  const end = new Date(Date.UTC(year, selectedMonth, 0)).toISOString().slice(0, 10);
+  const company = frappe.boot?.sysdefaults?.company || frappe.defaults?.get_default?.('company') || '';
+  const requests = [load(business, businessCall('get_business_dashboard', {
+    company, from_date: `${month.value}-01`, to_date: end,
+  }), generation)];
+  if (canReadLedger) requests.push(
     load(counts, call('get_dashboard_counts', {month: month.value}), generation),
     load(list, call('list_review_items'), generation),
-  ]);
+  );
+  return Promise.all(requests);
 }
 async function refreshPage() {
   if (workflowStage.value === 3) {
@@ -118,7 +126,7 @@ async function changeLanguage() {
     savingLanguage.value = false;
   }
 }
-onMounted(() => { if (canReadLedger) refreshPage(); });
+onMounted(refreshPage);
 </script>
 
 <template>
@@ -139,7 +147,7 @@ onMounted(() => { if (canReadLedger) refreshPage(); });
       </header>
       <p v-if="error" role="alert">{{ error }}</p>
       <WorkflowNavigation v-if="workflowStage" :current-stage="workflowStage" :batch="batch" :counts="workflowCounts" />
-      <Dashboard v-if="page === 'dashboard'" :items="list.data" :counts="currentCounts" :month="month" :can-write="canWrite" :loading="counts.status === 'loading'" />
+      <Dashboard v-if="page === 'dashboard'" :items="list.data" :counts="currentCounts" :business="business" :month="month" :can-write="canWrite" :loading="counts.status === 'loading'" />
       <ImportPreview v-else-if="page === 'import'" :can-write="canWrite" @imported="refresh" />
       <DuplicateReview v-else-if="page === 'duplicates'" :can-write="canWrite" :batch="batch" :transaction="transaction" @refresh="refresh" />
       <EnterpriseMembers v-else-if="page === 'members' && canWrite" :active="page === 'members'" />

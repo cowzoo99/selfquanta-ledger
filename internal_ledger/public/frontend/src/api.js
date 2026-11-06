@@ -23,6 +23,11 @@ export async function financeCall(domain, method, args = {}) {
   return response.message;
 }
 
+export async function businessCall(method, args = {}) {
+  const response = await frappe.call({method: `internal_ledger.api.business_api.${method}`, args, type: 'GET'});
+  return response.message;
+}
+
 export async function setLanguage(language) {
   const response = await frappe.call({method: 'internal_ledger.api.language_api.set_language',
     args: {language}, type: 'POST'});

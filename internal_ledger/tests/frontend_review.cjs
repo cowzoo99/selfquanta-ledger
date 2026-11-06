@@ -41,7 +41,7 @@ function compile(file, realChildren = false) {
     if (name === 'vue') return Vue;
     if (name.endsWith('labels')) return labels;
     if (name.endsWith('api')) return new Function(fs.readFileSync(path.join(src, 'api.js'), 'utf8').replaceAll('export ', '') +
-      '; return {call, evidenceCall: typeof evidenceCall === "function" ? evidenceCall : undefined, financeCall: typeof financeCall === "function" ? financeCall : undefined, errorMessage};')();
+      '; return {call, evidenceCall: typeof evidenceCall === "function" ? evidenceCall : undefined, financeCall: typeof financeCall === "function" ? financeCall : undefined, businessCall: typeof businessCall === "function" ? businessCall : undefined, errorMessage};')();
     if (realChildren && /\/(Dashboard|ReviewCenter|DuplicateReview|AccountingCenter|MonthEndCenter|TaxMaterials|ModuleHub|DraftLines|TransactionEvidence|PostedEntryEditor)\.vue$/.test(name)) {
       return compile(path.posix.normalize(path.posix.join(path.posix.dirname(file), name)), true);
     }
@@ -103,7 +103,21 @@ function postedAggregate(row = item('posted')) {
     evidence: {display_title: '原始标题', note_html: '<p>现有备注</p>'}, version: 'version-' + row.transaction.name};
 }
 async function run(name) {
-  if (!name || name === 'unified_shell') {
+  if (name === 'business_dashboard') {
+    const metric = {label: '销售订单金额', value: 120, unit: 'CNY', severity: 'info',
+      target_route: '/app/sales-order', as_of: '2026-10-31', tooltip: '数据来源：Sales Order；更新至 2026-10-31'};
+    const data = {partial: true, sections: {sales: {available: true, restricted: false, cards: [metric], message: ''},
+      hr: {available: false, restricted: false, cards: [], message: '该模块尚未安装'}}};
+    const page = mount('pages/Dashboard.vue', {items: [], counts: null, business: {status: 'success', data},
+      month: '2026-10', canWrite: false, loading: false});
+    assert.match(text(page.root), /销售订单金额 · 120 CNY/);
+    assert.match(text(page.root), /部分经营数据暂时无法读取/);
+    assert.match(text(page.root), /尚未启用的模块.*hr：该模块尚未安装/s);
+    const link = descendants(page.root).find(el => el.type === 'a' && text(el).includes('销售订单金额'));
+    assert.equal(link.props.href, '/app/sales-order'); assert.equal(link.props.title, metric.tooltip);
+    page.props.business = {status: 'error', error: '合成错误'}; await Vue.nextTick();
+    assert.match(text(page.root), /经营数据读取失败：合成错误/); page.app.unmount();
+  } else if (!name || name === 'unified_shell') {
     frappe.session.user = 'sales@example.invalid'; frappe.user_roles = ['销售'];
     const page = mount('App.vue', {view: 'sales'}, true); await settle();
     const links = descendants(page.root).filter(el => el.type === 'a');
