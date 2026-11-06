@@ -6,7 +6,7 @@ from frappe.utils import getdate
 
 ALLOWED_ROUTES = {
     "/app/sales-order", "/app/sales-invoice", "/app/purchase-order", "/app/purchase-invoice",
-    "/app/account", "/app/stock-balance", "/app/expense-claim", "/app/project",
+    "/app/account", "/app/stock-balance", "/app/expense-claim", "/app/project", "/app/task",
     "/app/leave-application", "/app/ledger-workbench/month-end",
 }
 EXECUTIVE_ROLES = {"账套管理员", "企业负责人"}
@@ -128,29 +128,47 @@ def _low_stock(company, start, end, roles=None):
 
 
 def _expenses(company, start, end, roles=None):
-    row = _aggregate("Expense Claim", company, "posting_date", start, end, "total_claimed_amount")
-    return None if row is None else [_card("费用报销", row.total, "CNY", "info",
-                                            "/app/expense-claim", end, "费用报销单")]
+    if not _installed("Expense Claim"):
+        return None
+    row = frappe.db.sql("""
+        select coalesce(sum(case when docstatus = 1 then total_claimed_amount else 0 end), 0) as total,
+               coalesce(sum(case when docstatus = 0 and approval_status = 'Draft' then 1 else 0 end), 0) as pending
+        from `tabExpense Claim` where company = %s and posting_date between %s and %s
+    """, (company, start, end), as_dict=True)[0]
+    return [_card("费用报销", row.total, "CNY", "info", "/app/expense-claim", end, "费用报销单"),
+            _card("待审批报销", row.pending, "项", "warning" if row.pending else "normal",
+                  "/app/expense-claim", end, "费用报销单")]
 
 
 def _projects(company, start, end, roles=None):
-    count = frappe.db.sql(
-        "select count(name) from `tabProject` where company = %s and status = 'Open'", company
-    )[0][0]
-    return [_card("进行中项目", count, "个", "info", "/app/project", end, "项目")]
+    row = frappe.db.sql("""
+        select count(name) as open_count, coalesce(avg(percent_complete), 0) as progress,
+               (select count(name) from `tabTask`
+                where company = %s and exp_end_date < %s
+                  and status not in ('Completed', 'Cancelled', 'Template')) as overdue
+        from `tabProject` where company = %s and status = 'Open'
+    """, (company, end, company), as_dict=True)[0]
+    return [_card("进行中项目", row.open_count, "个", "info", "/app/project", end, "项目"),
+            _card("项目平均进度", row.progress, "%", "info", "/app/project", end, "项目"),
+            _card("逾期任务", row.overdue, "项", "warning" if row.overdue else "normal",
+                  "/app/task", end, "项目任务")]
 
 
 def _hr(company, start, end, roles=None):
     if not _installed("Leave Application"):
         return None
-    filters = {"company": company, "from_date": ["<=", end], "to_date": [">=", start], "status": "Open"}
     privileged = frappe.session.user == "Administrator" or bool(
         (roles or set()) & (EXECUTIVE_ROLES | FINANCE_ROLES | {"人事工资", "HR User", "HR Manager"})
     )
+    employee = None
     if not privileged:
         employee = frappe.db.get_value("Employee", {"user_id": frappe.session.user, "company": company}, "name")
-        filters["employee"] = employee or "__none__"
-    pending = frappe.db.count("Leave Application", filters)
+    pending = frappe.db.sql("""
+        select count(name) from `tabLeave Application`
+        where company = %s and from_date <= %s and to_date >= %s and status = 'Open'
+          and (%s is null or employee = %s)
+    """, (company, end, start, None if privileged else employee or "__none__",
+            None if privileged else employee or "__none__"))[0][0]
     cards = [_card("待处理请假", pending, "项", "warning" if pending else "normal",
                    "/app/leave-application", end, "请假申请")]
     if privileged and _installed("Salary Slip"):

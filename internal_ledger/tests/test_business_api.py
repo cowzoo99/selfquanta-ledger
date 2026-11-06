@@ -21,6 +21,13 @@ def raw_order(doctype, company, date, total):
     return name
 
 
+def raw_metric_doc(doctype, **values):
+    name = "BUSINESS-" + uuid4().hex[:12]
+    frappe.get_doc({"doctype": doctype, "name": name, **values}).db_insert()
+    CREATED.append((doctype, name))
+    return name
+
+
 def card(result, section, label):
     return next(row for row in result["sections"][section]["cards"] if row["label"] == label)
 
@@ -66,6 +73,23 @@ def test_one_failed_section_returns_a_partial_dashboard():
     assert result["sections"]["sales"] == {"available": False, "restricted": False, "cards": [],
                                              "message": "该模块暂时无法读取"}
     assert result["sections"]["purchases"]["available"] is True
+
+
+def test_dashboard_exposes_expense_approval_and_project_delivery_metrics():
+    from internal_ledger.api.business_api import get_business_dashboard
+
+    company = frappe.flags.classification_company
+    raw_metric_doc("Expense Claim", company=company, posting_date="2026-10-10", docstatus=0,
+                   approval_status="Draft", total_claimed_amount=80)
+    project = raw_metric_doc("Project", company=company, project_name="验收项目", status="Open",
+                             percent_complete=40)
+    raw_metric_doc("Task", company=company, project=project, subject="逾期任务", status="Open",
+                   exp_end_date="2026-10-15")
+    result = get_business_dashboard(company, "2026-10-01", "2026-10-31")
+    assert card(result, "expenses", "待审批报销")["value"] == 1
+    assert card(result, "projects", "项目平均进度")["value"] == 40
+    assert card(result, "projects", "逾期任务")["value"] == 1
+    assert card(result, "projects", "逾期任务")["target_route"] == "/app/task"
 
 
 def test_dashboard_has_a_bounded_query_count():

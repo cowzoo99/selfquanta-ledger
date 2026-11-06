@@ -109,6 +109,8 @@ async function run(name) {
       sales: ['/app/quotation', '/app/sales-order', '/app/delivery-note', '/app/sales-invoice', '/app/payment-entry'],
       purchase: ['/app/supplier', '/app/request-for-quotation', '/app/purchase-order', '/app/purchase-receipt', '/app/purchase-invoice', '/app/payment-entry'],
       stock: ['/app/item', '/app/warehouse', '/app/stock-entry', '/app/query-report/Stock%20Ledger', '/app/query-report/Stock%20Balance', '/app/query-report/Items%20To%20Be%20Requested'],
+      expense: ['/app/expense-claim', '/app/employee-advance', '/app/purchase-invoice'],
+      projects: ['/app/project', '/app/task', '/app/timesheet', '/app/query-report/Profitability%20Analysis'],
     };
     for (const [moduleKey, routes] of Object.entries(expected)) {
       const page = mount('pages/ModuleHub.vue', {moduleKey});

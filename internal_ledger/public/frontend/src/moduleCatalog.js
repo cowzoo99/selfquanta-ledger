@@ -33,6 +33,7 @@ export const MODULES = [
     route: '/app/expense-claim', allowedRoles: ALL_PRODUCT_ROLES, tasks: [
       {label: '费用报销单', description: '查看和处理费用报销', route: '/app/expense-claim'},
       {label: '员工预支', description: '查看和处理员工预支', route: '/app/employee-advance'},
+      {label: '采购发票', description: '登记可报销或应付的供应商费用', route: '/app/purchase-invoice'},
     ]},
   {key: 'crm', label: '客户关系', description: '管理线索、商机和客户跟进', icon: '🤝',
     route: '/app/crm', allowedRoles: ['账套管理员', '企业负责人', '销售'], tasks: [
@@ -45,6 +46,7 @@ export const MODULES = [
       {label: '项目', description: '查看项目进度和成本', route: '/app/project'},
       {label: '任务', description: '分配和跟进项目任务', route: '/app/task'},
       {label: '工时单', description: '登记项目工作时间', route: '/app/timesheet'},
+      {label: '项目利润分析', description: '核对项目收入、成本和利润', route: '/app/query-report/Profitability%20Analysis'},
     ]},
   {key: 'hr', label: '人事工资', description: '管理员工、考勤、请假和工资', icon: '👥',
     route: '/app/hr', allowedRoles: ['账套管理员', '企业负责人', '人事工资'], tasks: [
