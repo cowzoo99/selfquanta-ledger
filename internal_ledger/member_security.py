@@ -4,6 +4,8 @@ import frappe
 from frappe.core.doctype.user.user import test_password_strength
 from werkzeug.routing import RequestRedirect
 
+from internal_ledger.install import ROLE_PRESETS
+
 
 ALLOWED_RESET_COMMANDS = {
     "login",
@@ -16,7 +18,7 @@ ALLOWED_RESET_COMMANDS = {
 ALLOWED_RESET_PATHS = {"/update-password"}
 TEMPORARY_PASSWORD_REDIRECTS = "internal_ledger_temporary_password_redirect"
 LEDGER_HOME = "/app/ledger-workbench/dashboard"
-LEDGER_ROLES = {"账套管理员", "账务查看者"}
+LEDGER_ROLES = set(ROLE_PRESETS) | {"账套管理员", "账务查看者"}
 
 
 def _same_origin_reset_url(url: str) -> str:

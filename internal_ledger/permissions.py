@@ -21,6 +21,10 @@ _EVIDENCE_FILE_WRITE = object()
 _NATIVE_FILE_DEDUP = object()
 _ZIP_READ_BYTES = object()
 _PROTECTED_FILES = ("Ledger Evidence", "Internal Ledger Source File")
+LEDGER_MANAGER_ROLES = {"账套管理员", "企业负责人", "财务主管"}
+LEDGER_WRITE_ROLES = LEDGER_MANAGER_ROLES | {"会计", "出纳"}
+LEDGER_READ_ROLES = LEDGER_WRITE_ROLES | {"账务查看者", "只读审计"}
+MEMBER_MANAGER_ROLES = {"账套管理员", "企业负责人"}
 
 
 def _physical_file_path(url, is_private=1, deletion=False):
@@ -70,9 +74,10 @@ def _matching_protected_files(url, is_private=1, current=False):
 
 
 def _can_read_protected(row, user, roles, company):
-    if not company or (user != "Administrator" and not roles & {"账套管理员", "账务查看者"}):
+    if not company or (user != "Administrator" and not roles & LEDGER_READ_ROLES):
         return False
-    if row.attached_to_doctype == "Internal Ledger Source File" and user != "Administrator" and "账套管理员" not in roles:
+    if (row.attached_to_doctype == "Internal Ledger Source File" and user != "Administrator"
+            and not roles & LEDGER_MANAGER_ROLES):
         return False
     try:
         return document_company(frappe.get_doc(row.attached_to_doctype, row.attached_to_name)) == company
@@ -81,8 +86,13 @@ def _can_read_protected(row, user, roles, company):
 
 
 def require_ledger_admin() -> None:
-    if frappe.session.user != "Administrator" and "账套管理员" not in frappe.get_roles():
-        frappe.throw("需要账套管理员权限", frappe.PermissionError)
+    if frappe.session.user != "Administrator" and not set(frappe.get_roles()) & LEDGER_WRITE_ROLES:
+        frappe.throw("需要账务处理权限", frappe.PermissionError)
+
+
+def require_member_manager() -> None:
+    if frappe.session.user != "Administrator" and not set(frappe.get_roles()) & MEMBER_MANAGER_ROLES:
+        frappe.throw("需要企业成员管理权限", frappe.PermissionError)
 
 
 def document_company(doc):
@@ -105,15 +115,17 @@ def has_ledger_permission(doc, ptype, user=None, **kwargs):
     if user == "Administrator":
         return True
     roles = frappe.get_roles(user)
-    admin = "账套管理员" in roles
-    if not admin and ("账务查看者" not in roles or ptype not in ("read", "report", "select")):
+    writer = bool(set(roles) & LEDGER_WRITE_ROLES)
+    reader = bool(set(roles) & LEDGER_READ_ROLES)
+    if not writer and (not reader or ptype not in ("read", "report", "select")):
         return False
-    if doc.doctype == "Internal Ledger Source File" and not admin:
+    manager = bool(set(roles) & LEDGER_MANAGER_ROLES)
+    if doc.doctype == "Internal Ledger Source File" and not manager:
         return False
     if doc.doctype == "Internal Ledger Audit Event" and ptype not in ("read", "report", "select"):
         return False
     if doc.doctype == "Internal Ledger Settings":
-        return admin or ptype in ("read", "report", "select")
+        return manager or ptype in ("read", "report", "select")
     company = frappe.db.get_single_value("Internal Ledger Settings", "company")
     return bool(company and document_company(doc) == company)
 
@@ -122,7 +134,7 @@ def company_query(user=None, doctype=None):
     if (user or frappe.session.user) == "Administrator":
         return ""
     if doctype in ("Journal Entry", "Account", "GL Entry") and not set(
-            frappe.get_roles(user or frappe.session.user)) & {"账套管理员", "账务查看者"}:
+            frappe.get_roles(user or frappe.session.user)) & LEDGER_READ_ROLES:
         return ""
     company = frappe.db.escape(frappe.db.get_single_value("Internal Ledger Settings", "company") or "")
     table = f"`tab{doctype}`"
@@ -174,10 +186,10 @@ def file_permission(doc, ptype, user=None, **kwargs):
 
 def has_reporting_permission(doc, ptype, user=None, **kwargs):
     roles = set(frappe.get_roles(user or frappe.session.user))
-    if not roles & {"账套管理员", "账务查看者"}:
+    if not roles & LEDGER_READ_ROLES:
         return True
     allowed = {"read", "report", "select"}
-    if doc.doctype == "Journal Entry" and "账套管理员" in roles:
+    if doc.doctype == "Journal Entry" and roles & LEDGER_WRITE_ROLES:
         allowed |= {"write", "create", "submit"}
         # Frappe's native reverse mapper checks an empty target before mapping company.
         # The actual insert checks this hook again with the populated company.

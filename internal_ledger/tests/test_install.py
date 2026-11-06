@@ -18,6 +18,27 @@ def test_install_creates_roles_and_balanced_root_groups():
     assert frappe.db.count("Role", {"role_name": ["in", ["账套管理员", "账务查看者"]]}) == 2
 
 
+def test_product_role_presets_use_the_exact_least_privilege_matrix():
+    from internal_ledger.install import ROLE_PRESETS
+
+    assert ROLE_PRESETS == {
+        "企业负责人": ("企业负责人", "Accounts Manager", "Sales Manager", "Purchase Manager",
+                   "Stock Manager", "Projects Manager", "HR Manager"),
+        "财务主管": ("财务主管", "Accounts Manager"),
+        "会计": ("会计", "Accounts User"),
+        "出纳": ("出纳", "Accounts User"),
+        "销售": ("销售", "Sales User"),
+        "采购": ("采购", "Purchase User"),
+        "库存": ("库存", "Stock User"),
+        "项目": ("项目", "Projects User"),
+        "人事工资": ("人事工资", "HR User"),
+        "只读审计": ("只读审计", "账务查看者"),
+    }
+    ensure_roles()
+    assert all(frappe.db.exists("Role", role) for role in ROLE_PRESETS)
+    assert all("System Manager" not in roles for roles in ROLE_PRESETS.values())
+
+
 def test_install_enables_account_and_mobile_login():
     frappe.db.set_single_value("System Settings", "allow_login_using_user_name", 0)
     frappe.db.set_single_value("System Settings", "allow_login_using_mobile_number", 0)
@@ -126,6 +147,7 @@ def load_tests(loader, tests, pattern):
         unittest.FunctionTestCase(test, setUp=set_up, tearDown=tear_down)
         for test in (
             test_install_creates_roles_and_balanced_root_groups,
+            test_product_role_presets_use_the_exact_least_privilege_matrix,
             test_install_enables_account_and_mobile_login,
             test_chart_has_unique_codes_and_valid_account_types,
             test_install_chart_creates_accounts_and_is_idempotent,

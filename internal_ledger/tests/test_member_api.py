@@ -287,6 +287,14 @@ def test_forgot_password_validation_does_not_clear_flag():
 MEMBER_PASSWORD = "Temp-Only-938!x"
 
 
+def ensure_member_roles():
+    from internal_ledger.install import ROLE_PRESETS
+
+    for role in {role for roles in ROLE_PRESETS.values() for role in roles}:
+        if not frappe.db.exists("Role", role):
+            frappe.get_doc({"doctype": "Role", "role_name": role}).insert(ignore_permissions=True)
+
+
 def create_member(email=None, first_name="只读成员"):
     from internal_ledger.api.member_api import create_enterprise_member
 
@@ -346,10 +354,11 @@ def test_member_creation_is_normalized_read_only_and_secret_free():
     created = create_enterprise_member("  只读成员  ", " Member.One@Example.Invalid ",
                                        MEMBER_PASSWORD, MEMBER_PASSWORD)
     assert created == {"email": "member.one@example.invalid", "full_name": "只读成员",
-                       "enabled": 1, "must_change_password": 1}
+                       "enabled": 1, "must_change_password": 1, "role_preset": "只读审计"}
     email = created["email"]
     assert frappe.db.exists("Has Role", {"parenttype": "User", "parent": email, "role": "账务查看者"})
-    assert frappe.db.count("Has Role", {"parent": email}) == 1
+    assert frappe.db.exists("Has Role", {"parenttype": "User", "parent": email, "role": "只读审计"})
+    assert frappe.db.count("Has Role", {"parent": email}) == 2
     assert frappe.db.exists("User Permission", {"user": email, "allow": "Company",
                                                 "for_value": frappe.flags.classification_company})
     doc = frappe.get_doc("User", email)
@@ -365,6 +374,27 @@ def test_member_creation_is_normalized_read_only_and_secret_free():
     assert MEMBER_PASSWORD not in frappe.as_json({"response": created, "audit": events})
 
 
+def test_member_creation_accepts_only_fixed_role_presets_and_company_scope():
+    from internal_ledger.api.member_api import create_enterprise_member
+
+    for preset, expected in (("销售", {"销售", "Sales User"}),
+                             ("只读审计", {"只读审计", "账务查看者"})):
+        email = f"preset-{uuid4().hex}@example.invalid"
+        created = create_enterprise_member("预设成员", email, MEMBER_PASSWORD, MEMBER_PASSWORD,
+                                           role_preset=preset)
+        roles = set(frappe.get_all("Has Role", filters={"parenttype": "User", "parent": email},
+                                   pluck="role"))
+        assert roles == expected
+        assert created["role_preset"] == preset
+        assert frappe.db.exists("User Permission", {"user": email, "allow": "Company",
+                                                    "for_value": frappe.flags.classification_company})
+        assert "System Manager" not in roles
+    for preset in ("System Manager", "未知角色", ""):
+        with unittest.TestCase().assertRaises(frappe.ValidationError):
+            create_enterprise_member("越权成员", f"invalid-{uuid4().hex}@example.invalid",
+                                     MEMBER_PASSWORD, MEMBER_PASSWORD, role_preset=preset)
+
+
 def test_member_creation_accepts_login_account_without_real_email():
     from frappe.utils.password import check_password
 
@@ -377,6 +407,7 @@ def test_member_creation_accepts_login_account_without_real_email():
         "full_name": "查看成员",
         "enabled": 1,
         "must_change_password": 1,
+        "role_preset": "只读审计",
     }
     doc = frappe.get_doc("User", created["email"])
     assert doc.username == "viewer_001"
@@ -478,7 +509,7 @@ def test_member_listing_intersects_exact_company_and_viewer_role():
     assert [row["email"] for row in result["members"]] == [row["email"] for row in expected]
     for row in result["members"]:
         assert set(row) == {"user", "email", "login_account", "contact_email", "mobile_no",
-                            "full_name", "enabled", "creation", "last_login"}
+                            "full_name", "role_preset", "enabled", "creation", "last_login"}
         assert isinstance(row["enabled"], int) and row["creation"]
     assert _managed_member(disabled["email"], company, for_update=True).name == disabled["email"]
     for target in (role_only, company_only, foreign, "Administrator", "Guest", "missing@example.invalid"):
@@ -593,6 +624,7 @@ def test_member_concurrent_duplicate_uses_independent_database_connections():
     # Discard the chart fixture before committing an isolated Company link for both workers.
     frappe.db.rollback()
     frappe.clear_cache()
+    ensure_member_roles()
     original_company = frappe.db.get_single_value("Internal Ledger Settings", "company")
     company = member_company_reference()
     frappe.db.set_single_value("Internal Ledger Settings", "company", company)
@@ -625,7 +657,7 @@ def test_member_concurrent_duplicate_uses_independent_database_connections():
         assert next(row[2] for row in results if row[1] == "conflict") == "该登录邮箱已存在"
         assert frappe.db.count("User", {"name": email}) == 1
         assert frappe.db.count("User Permission", {"user": email}) == 1
-        assert frappe.db.count("Has Role", {"parenttype": "User", "parent": email}) == 1
+        assert frappe.db.count("Has Role", {"parenttype": "User", "parent": email}) == 2
         assert frappe.db.count("Internal Ledger Audit Event", {"reference_doctype": "User",
                                                               "reference_name": email}) == 1
     finally:
@@ -1101,6 +1133,7 @@ def load_tests(loader, tests, pattern):
         if test.__name__.startswith("test_member_"):
             from internal_ledger.tests.test_classifier import set_up as company_set_up
 
+            ensure_member_roles()
             company_set_up()
 
     def tear_down():

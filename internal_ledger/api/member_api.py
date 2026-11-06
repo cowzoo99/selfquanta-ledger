@@ -6,10 +6,12 @@ from frappe.model.document import Document
 from frappe.utils import validate_email_address
 
 from internal_ledger.member_security import revoke_sessions, validate_temporary_password
-from internal_ledger.permissions import record_member_audit, require_ledger_admin
+from internal_ledger.install import ROLE_PRESETS
+from internal_ledger.permissions import record_member_audit, require_member_manager
 
 
-MANAGEMENT_ROLES = ("账套管理员", "System Manager")
+MANAGEMENT_ROLES = ("账套管理员", "企业负责人", "System Manager")
+MEMBER_ROLES = set(ROLE_PRESETS) | {"账务查看者"}
 SELFLEDGER_WORKSPACE = "SelfLedger 企业经营与智能内账"
 MEMBER_EMAIL_SUFFIX = "@members.selfledger.invalid"
 LOGIN_ACCOUNT_PATTERN = re.compile(r"^[a-z][a-z0-9_]{2,31}$")
@@ -26,11 +28,12 @@ def _company(for_update=False):
 
 
 def _managed_member(user: str, company: str, for_update: bool = False) -> Document:
-    require_ledger_admin()
+    require_member_manager()
     if user == frappe.session.user:
         frappe.throw("不能操作当前账户", frappe.PermissionError)
     if (user in ("Administrator", "Guest") or not frappe.db.exists("User", user)
-            or not frappe.db.exists("Has Role", {"parenttype": "User", "parent": user, "role": "账务查看者"})
+            or not frappe.db.exists("Has Role", {"parenttype": "User", "parent": user,
+                                                  "role": ["in", list(MEMBER_ROLES)]})
             or frappe.db.exists("Has Role", {"parenttype": "User", "parent": user,
                                               "role": ["in", MANAGEMENT_ROLES]})
             or not frappe.db.exists("User Permission", {"user": user, "allow": "Company", "for_value": company})):
@@ -40,19 +43,24 @@ def _managed_member(user: str, company: str, for_update: bool = False) -> Docume
 
 @frappe.whitelist(methods=["GET"])
 def list_enterprise_members() -> dict:
-    require_ledger_admin()
+    require_member_manager()
     company = _company()
     permitted = frappe.get_all("User Permission", filters={"allow": "Company", "for_value": company}, pluck="user")
-    viewers = set(frappe.get_all("Has Role", filters={"parenttype": "User", "role": "账务查看者"}, pluck="parent"))
+    members_by_role = frappe.get_all("Has Role", filters={"parenttype": "User",
+        "role": ["in", list(MEMBER_ROLES)]}, fields=["parent", "role"])
+    viewers = {row.parent for row in members_by_role}
     managers = set(frappe.get_all("Has Role", filters={"parenttype": "User",
         "role": ["in", MANAGEMENT_ROLES]}, pluck="parent"))
     users = sorted(set(permitted) & viewers - managers - {"Administrator", "Guest"})
     rows = frappe.get_all("User", filters={"name": ["in", users]},
                           fields=["name", "full_name", "username", "mobile_no", "enabled", "creation", "last_login"],
                           order_by="enabled desc, full_name asc, name asc") if users else []
+    role_by_user = {user: next((role for role in ROLE_PRESETS if any(
+        row.parent == user and row.role == role for row in members_by_role)), "账务查看者") for user in users}
     members = [{"user": row.name, "email": row.name, "login_account": row.username or "",
                 "contact_email": "" if row.name.endswith(MEMBER_EMAIL_SUFFIX) else row.name,
                 "mobile_no": row.mobile_no or "", "full_name": row.full_name,
+                "role_preset": role_by_user[row.name],
                 "enabled": int(row.enabled), "creation": row.creation,
                 "last_login": row.last_login} for row in rows]
     return {"company": company, "enabled_count": sum(row["enabled"] for row in members),
@@ -61,13 +69,14 @@ def list_enterprise_members() -> dict:
 
 @frappe.whitelist(methods=["POST"])
 def create_enterprise_member(first_name: str, email: str | None = None, temporary_password: str = "",
-                             confirm_password: str = "", login_account: str | None = None) -> dict:
-    require_ledger_admin()
+                             confirm_password: str = "", login_account: str | None = None,
+                             role_preset: str = "只读审计") -> dict:
+    require_member_manager()
     # Only this request boundary may restart its transaction after a database deadlock.
     for attempt in range(3):
         try:
             return _create_enterprise_member(first_name, email, temporary_password, confirm_password,
-                                             login_account)
+                                             login_account, role_preset)
         except frappe.QueryDeadlockError:
             frappe.db.rollback()
             if attempt == 2:
@@ -75,12 +84,21 @@ def create_enterprise_member(first_name: str, email: str | None = None, temporar
 
 
 def _create_enterprise_member(first_name: str, email: str | None, temporary_password: str,
-                              confirm_password: str, login_account: str | None = None) -> dict:
-    require_ledger_admin()
+                              confirm_password: str, login_account: str | None = None,
+                              role_preset: str = "只读审计") -> dict:
+    require_member_manager()
     company = _company(for_update=True)
     first_name = first_name.strip()
     email = (email or "").strip().lower()
     login_account = (login_account or "").strip().lower()
+    role_preset = (role_preset or "").strip()
+    if role_preset not in ROLE_PRESETS:
+        frappe.throw("请选择有效的成员角色")
+    if role_preset == "企业负责人" and frappe.session.user != "Administrator" and "账套管理员" not in frappe.get_roles():
+        frappe.throw("只有系统开通管理员可以新增企业负责人", frappe.PermissionError)
+    missing_roles = [role for role in ROLE_PRESETS[role_preset] if not frappe.db.exists("Role", role)]
+    if missing_roles:
+        frappe.throw("成员角色尚未安装完整，请联系系统管理员")
     if not first_name:
         frappe.throw("请输入成员姓名")
     if login_account:
@@ -102,7 +120,7 @@ def _create_enterprise_member(first_name: str, email: str | None, temporary_pass
         user = frappe.get_doc({"doctype": "User", "email": email, "first_name": first_name,
             "enabled": 1, "send_welcome_email": 0, "user_type": "System User", "language": "zh",
             "default_workspace": SELFLEDGER_WORKSPACE,
-            "roles": [{"role": "账务查看者"}], "new_password": temporary_password,
+            "roles": [{"role": role} for role in ROLE_PRESETS[role_preset]], "new_password": temporary_password,
             "internal_ledger_must_change_password": 1})
         if login_account:
             user.username = login_account
@@ -120,14 +138,15 @@ def _create_enterprise_member(first_name: str, email: str | None, temporary_pass
         frappe.db.rollback(save_point=savepoint)
         raise
     return {"email": user.name, "full_name": user.full_name, "enabled": int(user.enabled),
-            "must_change_password": int(user.internal_ledger_must_change_password)}
+            "must_change_password": int(user.internal_ledger_must_change_password),
+            "role_preset": role_preset}
 
 
 def _current_ledger_user() -> Document:
     user = frappe.session.user
     if user in (None, "", "Guest") or not frappe.db.exists("User", user):
         frappe.throw("请先登录", frappe.AuthenticationError)
-    if user != "Administrator" and not set(frappe.get_roles(user)) & {"账套管理员", "账务查看者"}:
+    if user != "Administrator" and not set(frappe.get_roles(user)) & (MEMBER_ROLES | {"账套管理员"}):
         frappe.throw("当前账号不是企业成员", frappe.PermissionError)
     return frappe.get_doc("User", user)
 
@@ -190,7 +209,7 @@ def update_my_account(email: str = "", mobile_no: str = "", current_password: st
 
 @frappe.whitelist(methods=["POST"])
 def set_enterprise_member_enabled(user: str, enabled: int) -> dict:
-    require_ledger_admin()
+    require_member_manager()
     company = _company(for_update=True)
     if not isinstance(enabled, (int, bool)) or enabled not in (0, 1):
         frappe.throw("成员启用状态必须为 0 或 1")
@@ -212,7 +231,7 @@ def set_enterprise_member_enabled(user: str, enabled: int) -> dict:
 
 @frappe.whitelist(methods=["POST"])
 def reset_enterprise_member_password(user: str, temporary_password: str, confirm_password: str) -> dict:
-    require_ledger_admin()
+    require_member_manager()
     company = _company(for_update=True)
     member = _managed_member(user, company, for_update=True)
     validate_temporary_password(temporary_password, confirm_password,

@@ -9,6 +9,25 @@ from internal_ledger.permissions import require_ledger_admin, audit_install_chan
 ROLE_PERMISSIONS = {
     "账套管理员": {"read", "write", "create", "submit", "report"},
     "账务查看者": {"read", "report"},
+    "企业负责人": {"read", "write", "create", "submit", "report"},
+    "财务主管": {"read", "write", "create", "submit", "report"},
+    "会计": {"read", "write", "create", "submit", "report"},
+    "出纳": {"read", "write", "create", "report"},
+    "只读审计": {"read", "report"},
+}
+
+ROLE_PRESETS = {
+    "企业负责人": ("企业负责人", "Accounts Manager", "Sales Manager", "Purchase Manager",
+               "Stock Manager", "Projects Manager", "HR Manager"),
+    "财务主管": ("财务主管", "Accounts Manager"),
+    "会计": ("会计", "Accounts User"),
+    "出纳": ("出纳", "Accounts User"),
+    "销售": ("销售", "Sales User"),
+    "采购": ("采购", "Purchase User"),
+    "库存": ("库存", "Stock User"),
+    "项目": ("项目", "Projects User"),
+    "人事工资": ("人事工资", "HR User"),
+    "只读审计": ("只读审计", "账务查看者"),
 }
 
 LEDGER_REPORTS = ("General Ledger", "Trial Balance", "Balance Sheet", "Profit and Loss Statement")
@@ -29,7 +48,7 @@ def ensure_roles() -> None:
         "read_only": 1,
         "default": "0",
     }]}, update=True)
-    for role in ROLE_PERMISSIONS:
+    for role in set(ROLE_PERMISSIONS) | set(ROLE_PRESETS):
         if not frappe.db.exists("Role", role):
             frappe.get_doc({"doctype": "Role", "role_name": role}).insert()
     ensure_workspace()
@@ -108,7 +127,8 @@ def _permission_state():
     login_settings = frappe.db.get_value("System Settings", "System Settings", [
         "allow_login_using_user_name", "allow_login_using_mobile_number",
     ])
-    return (tuple(bool(frappe.db.exists("Role", role)) for role in ROLE_PERMISSIONS),
+    roles = sorted(set(ROLE_PERMISSIONS) | set(ROLE_PRESETS))
+    return (tuple(bool(frappe.db.exists("Role", role)) for role in roles),
             permissions, report_roles, password_field, login_settings)
 
 

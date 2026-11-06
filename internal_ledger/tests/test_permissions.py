@@ -256,6 +256,21 @@ def test_roles_and_custom_permissions_are_idempotent_and_viewer_read_only():
         assert frappe.get_doc("Report", report_name).is_permitted()
 
 
+def test_product_roles_keep_finance_and_member_permissions_separated():
+    from internal_ledger.install import ensure_roles
+
+    ensure_roles()
+    owner = user("企业负责人")
+    accountant = user("会计")
+    sales = user("销售")
+    auditor = user("只读审计")
+    assert frappe.has_permission("Journal Entry", "read", user=owner)
+    assert frappe.has_permission("Journal Entry", "write", user=accountant)
+    assert not frappe.has_permission("Journal Entry", "read", user=sales)
+    assert frappe.has_permission("Journal Entry", "read", user=auditor)
+    assert not frappe.has_permission("Journal Entry", "write", user=auditor)
+
+
 def test_viewer_reads_filtered_company_and_sensitive_fields():
     from internal_ledger.api.review_api import get_review_item, list_review_items, get_dashboard_counts
 
