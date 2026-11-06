@@ -3,7 +3,9 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const {createRequire} = require('node:module');
-const benchRequire = createRequire(process.env.FRONTEND_TEST_PACKAGE || path.resolve(__dirname, '../../../frappe/package.json'));
+const installedFrappe = '/opt/internal-ledger-bench/apps/frappe/package.json';
+const benchRequire = createRequire(process.env.FRONTEND_TEST_PACKAGE
+  || (fs.existsSync(installedFrappe) ? installedFrappe : path.resolve(__dirname, '../../../frappe/package.json')));
 const Vue = benchRequire('vue');
 global.Document = class { activeElement = null; };
 global.document = new Document();
@@ -40,9 +42,11 @@ function compile(file, realChildren = false) {
     if (name.endsWith('labels')) return labels;
     if (name.endsWith('api')) return new Function(fs.readFileSync(path.join(src, 'api.js'), 'utf8').replaceAll('export ', '') +
       '; return {call, evidenceCall: typeof evidenceCall === "function" ? evidenceCall : undefined, errorMessage};')();
-    if (realChildren && /\/(Dashboard|ReviewCenter|DuplicateReview|AccountingCenter|DraftLines|TransactionEvidence|PostedEntryEditor)\.vue$/.test(name)) {
+    if (realChildren && /\/(Dashboard|ReviewCenter|DuplicateReview|AccountingCenter|ModuleHub|DraftLines|TransactionEvidence|PostedEntryEditor)\.vue$/.test(name)) {
       return compile(path.posix.normalize(path.posix.join(path.posix.dirname(file), name)), true);
     }
+    if (name.endsWith('moduleCatalog')) return new Function(fs.readFileSync(path.join(src, 'moduleCatalog.js'), 'utf8')
+      .replaceAll('export const ', 'const ') + '; return {MODULES};')();
     return {name, render() {return Vue.h('test-child', {'data-component': name});}};
   });
   const template = compileTemplate({source: descriptor.template.content, filename: file, id: file,
@@ -99,7 +103,20 @@ function postedAggregate(row = item('posted')) {
     evidence: {display_title: '原始标题', note_html: '<p>现有备注</p>'}, version: 'version-' + row.transaction.name};
 }
 async function run(name) {
-  if (name === 'posted_entry_editor') {
+  if (!name || name === 'unified_shell') {
+    frappe.session.user = 'sales@example.invalid'; frappe.user_roles = ['销售'];
+    const page = mount('App.vue', {view: 'sales'}, true); await settle();
+    const links = descendants(page.root).filter(el => el.type === 'a');
+    const hrefs = label => links.filter(el => text(el).includes(label)).map(el => el.props.href);
+    assert.ok(hrefs('客户与销售').includes('/app/ledger-workbench/sales'));
+    assert.ok(hrefs('客户关系').includes('/app/ledger-workbench/crm'));
+    assert.deepEqual(hrefs('采购与供应商'), []);
+    assert.deepEqual(hrefs('会计中心'), []);
+    assert.deepEqual(hrefs('企业成员'), []);
+    assert.equal(links.find(el => el.props.href === '/app/ledger-workbench/sales').props['aria-current'], 'page');
+    assert.match(text(page.root), /销售订单/);
+    page.app.unmount();
+  } else if (name === 'posted_entry_editor') {
     const aggregate = postedAggregate(), saved = [], deleted = [];
     let deleteStatus = 'deleted', failSave = false;
     frappe.call = async args => {

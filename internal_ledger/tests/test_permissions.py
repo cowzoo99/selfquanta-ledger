@@ -266,9 +266,13 @@ def test_product_roles_keep_finance_and_member_permissions_separated():
     auditor = user("只读审计")
     assert frappe.has_permission("Journal Entry", "read", user=owner)
     assert frappe.has_permission("Journal Entry", "write", user=accountant)
+    assert frappe.has_permission("Voucher Draft", "write", user=accountant)
     assert not frappe.has_permission("Journal Entry", "read", user=sales)
+    assert not frappe.has_permission("Voucher Draft", "read", user=sales)
     assert frappe.has_permission("Journal Entry", "read", user=auditor)
+    assert frappe.has_permission("Voucher Draft", "read", user=auditor)
     assert not frappe.has_permission("Journal Entry", "write", user=auditor)
+    assert not frappe.has_permission("Voucher Draft", "write", user=auditor)
 
 
 def test_viewer_reads_filtered_company_and_sensitive_fields():

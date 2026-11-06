@@ -7,7 +7,9 @@ import EnterpriseMembers from './pages/EnterpriseMembers.vue';
 import MyAccount from './pages/MyAccount.vue';
 import DuplicateReview from './pages/DuplicateReview.vue';
 import AccountingCenter from './pages/AccountingCenter.vue';
+import ModuleHub from './pages/ModuleHub.vue';
 import WorkflowNavigation from './components/WorkflowNavigation.vue';
+import {MODULES} from './moduleCatalog';
 import {call, errorMessage, setLanguage} from './api';
 const props = defineProps({view: {type: String, default: 'dashboard'}, filter: {type: String, default: ''}, batch: {type: String, default: ''}, transaction: {type: String, default: ''}});
 const month = ref(frappe.datetime.get_today().slice(0, 7));
@@ -19,10 +21,22 @@ const currentCounts = computed(() => counts.status === 'success' && counts.data?
 const language = ref((frappe.boot?.lang || '').startsWith('zh') ? 'zh' : 'en');
 const savingLanguage = ref(false), languageError = ref('');
 const error = computed(() => languageError.value || counts.error || list.error);
-const canWrite = frappe.session.user === 'Administrator' || frappe.user_roles.includes('账套管理员');
-const navigation = [['dashboard', '业务总览'], ['import', '文件智能导入'], ['review', '待办中心'], ['accounting', '会计中心'], ...(canWrite ? [['members', '企业成员']] : []), ['account', '我的账号']];
+const userRoles = new Set(frappe.user_roles || []);
+const isAdministrator = frappe.session.user === 'Administrator';
+const hasAllowedRole = roles => isAdministrator || roles.some(role => userRoles.has(role));
+const financeReadRoles = ['账套管理员', '账务查看者', '企业负责人', '财务主管', '会计', '出纳', '只读审计'];
+const financeWriteRoles = ['账套管理员', '企业负责人', '财务主管', '会计', '出纳'];
+const canReadLedger = hasAllowedRole(financeReadRoles);
+const canWrite = hasAllowedRole(financeWriteRoles);
+const canManageMembers = hasAllowedRole(['账套管理员', '企业负责人']);
+const allowedModules = MODULES.filter(module => hasAllowedRole(module.allowedRoles));
+const navigation = [['dashboard', '企业首页'],
+  ...(canReadLedger ? [['import', '文件智能导入'], ['review', '待办中心'], ['accounting', '会计中心']] : []),
+  ...allowedModules.map(module => [module.key, module.label]),
+  ...(canManageMembers ? [['members', '企业成员']] : []), ['account', '我的账号']];
 const page = computed(() => navigation.some(entry => entry[0] === props.view) || ['duplicates', 'classification'].includes(props.view) ? props.view : 'dashboard');
 const taskPage = computed(() => ['duplicates', 'classification'].includes(page.value) ? 'review' : page.value);
+const modulePage = computed(() => allowedModules.find(module => module.key === page.value));
 const reviewFilter = ref(page.value === 'classification' ? '待分类' : (props.filter || '待审核'));
 watch(() => [props.view, props.filter], () => {
   reviewFilter.value = page.value === 'classification' ? '待分类' : (props.filter || '待审核');
@@ -99,7 +113,7 @@ async function changeLanguage() {
     savingLanguage.value = false;
   }
 }
-onMounted(refreshPage);
+onMounted(() => { if (canReadLedger) refreshPage(); });
 </script>
 
 <template>
@@ -116,7 +130,7 @@ onMounted(refreshPage);
         </select>
       </label>
       <a v-if="canWrite" href="/app/classification-rule">维护分类规则</a>
-      <label for="ledger-month">月度摘要</label><input id="ledger-month" v-model="month" type="month" @change="refresh"><button :disabled="loading" @click="refreshPage">刷新</button>
+      <template v-if="canReadLedger"><label for="ledger-month">月度摘要</label><input id="ledger-month" v-model="month" type="month" @change="refresh"><button :disabled="loading" @click="refreshPage">刷新</button></template>
       </header>
       <p v-if="error" role="alert">{{ error }}</p>
       <WorkflowNavigation v-if="workflowStage" :current-stage="workflowStage" :batch="batch" :counts="workflowCounts" />
@@ -126,6 +140,7 @@ onMounted(refreshPage);
       <EnterpriseMembers v-else-if="page === 'members' && canWrite" :active="page === 'members'" />
       <MyAccount v-else-if="page === 'account'" :active="page === 'account'" />
       <AccountingCenter v-else-if="page === 'accounting'" :items="workflowItems" :can-write="canWrite" @refresh="refresh" />
+      <ModuleHub v-else-if="modulePage" :module-key="page" />
       <ReviewCenter v-else :list="list" :classification-run="classificationRun" :can-write="canWrite" :initial-filter="reviewFilter" :initial-batch="batch" :initial-transaction="transaction" @refresh="refresh" @filter-change="changeFilter" />
     </main>
   </div>
@@ -164,6 +179,7 @@ onMounted(refreshPage);
 .ledger-cards, .duplicate-evidence { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); gap: 16px; }
 .ledger-card { display: block; padding: 16px; border: 1px solid var(--border-color, #ddd); border-radius: 8px; }
 .ledger-module-card { border-top: 4px solid #7a6c9d; }
+.ledger-module-icon { font-size: 40px; margin: 0 0 8px; }
 .ledger-card strong, .ledger-card span { display: block; margin-bottom: 8px; }
 .ledger-review { display: grid; grid-template-columns: minmax(180px, 1fr) minmax(0, 2fr); gap: 20px; }
 .ledger-items { list-style: none; padding: 0; max-height: 650px; overflow-y: auto; }

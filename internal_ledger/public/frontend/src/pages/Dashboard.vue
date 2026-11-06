@@ -4,7 +4,18 @@ const props = defineProps({items: Array, counts: Object, month: String, canWrite
 const monthly = computed(() => props.items?.filter(item => String(item.transaction.occurred_at).startsWith(props.month)));
 const pendingDuplicates = computed(() => monthly.value?.filter(item => item.transaction.status === 'Duplicate' && item.transaction.duplicate_review_status === 'Pending').length ?? '—');
 const pendingPosting = computed(() => monthly.value?.filter(item => item.transaction.status === 'Imported' && !['Pending', 'Confirmed'].includes(item.transaction.duplicate_review_status) && item.draft?.status === 'Approved').length ?? '—');
-const erpLinks = [['selling', '销售'], ['buying', '采购'], ['stock', '库存'], ['manufacturing', '制造']];
+const todayTodo = computed(() => (Number(props.counts?.pending_classification || 0)
+  + Number(props.counts?.pending_review || 0) + Number(pendingDuplicates.value === '—' ? 0 : pendingDuplicates.value)
+  + Number(pendingPosting.value === '—' ? 0 : pendingPosting.value)));
+const operatingCards = computed(() => [
+  ['/app/ledger-workbench/review', '今日待办', `${todayTodo.value} 项`, '处理重复、分类、审核和过账'],
+  ['/app/ledger-workbench/accounting', '资金', props.counts ? `收入 ${props.counts.income} · 支出 ${props.counts.expense}` : '待载入', '查看账簿和资金变化'],
+  ['/app/ledger-workbench/sales', '销售', `${props.counts?.sales_pending ?? 0} 项`, '客户、订单和销售发票'],
+  ['/app/ledger-workbench/purchase', '采购', `${props.counts?.purchase_pending ?? 0} 项`, '供应商、订单和采购发票'],
+  ['/app/ledger-workbench/stock', '库存预警', `${props.counts?.stock_warning ?? 0} 项`, '商品、仓库和库存余额'],
+  ['/app/ledger-workbench/projects', '项目', `${props.counts?.project_pending ?? 0} 项`, '项目、任务和工时'],
+  ['/app/ledger-workbench/hr', '人事工资', `${props.counts?.hr_pending ?? 0} 项`, '员工、考勤、请假和工资'],
+]);
 const cards = computed(() => [
   ['review/疑似重复', '疑似重复', pendingDuplicates.value, '核对是否为同一笔交易'],
   ['review/待分类', '待分类', props.counts?.pending_classification ?? '—', '补充科目，可记住交易对象'],
@@ -39,7 +50,7 @@ const cards = computed(() => [
     </div>
     <p v-else-if="counts">尚无导入记录，请先导入账单。</p>
     <p v-else>本月摘要尚未载入。</p>
-    <h3>企业经营管理</h3>
-    <div class="ledger-cards"><a v-for="entry in erpLinks" :key="entry[0]" class="ledger-card ledger-module-card" :href="`/app/${entry[0]}`"><strong>{{ entry[1] }}</strong><span>进入{{ entry[1] }}模块</span></a></div>
+    <h3>企业经营总览</h3>
+    <div class="ledger-cards"><a v-for="entry in operatingCards" :key="entry[0]" class="ledger-card ledger-module-card" :href="entry[0]"><strong>{{ entry[1] }} · {{ entry[2] }}</strong><span>{{ entry[3] }}</span></a></div>
   </section>
 </template>

@@ -23,13 +23,43 @@
    "role": "账务查看者"
   },
   {
+   "role": "企业负责人"
+  },
+  {
+   "role": "财务主管"
+  },
+  {
+   "role": "会计"
+  },
+  {
+   "role": "出纳"
+  },
+  {
+   "role": "销售"
+  },
+  {
+   "role": "采购"
+  },
+  {
+   "role": "库存"
+  },
+  {
+   "role": "项目"
+  },
+  {
+   "role": "人事工资"
+  },
+  {
+   "role": "只读审计"
+  },
+  {
    "role": "System Manager"
   }
  ],
  "shortcuts": [
   {
    "type": "URL",
-   "label": "业务总览",
+   "label": "企业首页",
    "url": "/app/ledger-workbench/dashboard"
   },
   {
@@ -44,8 +74,43 @@
   },
   {
    "type": "URL",
-   "label": "账簿与报表",
-   "url": "/app/query-report/General%20Ledger"
+   "label": "会计中心",
+   "url": "/app/ledger-workbench/accounting"
+  },
+  {
+   "type": "URL",
+   "label": "客户与销售",
+   "url": "/app/ledger-workbench/sales"
+  },
+  {
+   "type": "URL",
+   "label": "采购与供应商",
+   "url": "/app/ledger-workbench/purchase"
+  },
+  {
+   "type": "URL",
+   "label": "商品与库存",
+   "url": "/app/ledger-workbench/stock"
+  },
+  {
+   "type": "URL",
+   "label": "费用报销",
+   "url": "/app/ledger-workbench/expense"
+  },
+  {
+   "type": "URL",
+   "label": "客户关系",
+   "url": "/app/ledger-workbench/crm"
+  },
+  {
+   "type": "URL",
+   "label": "项目协作",
+   "url": "/app/ledger-workbench/projects"
+  },
+  {
+   "type": "URL",
+   "label": "人事工资",
+   "url": "/app/ledger-workbench/hr"
   },
   {
    "type": "URL",
@@ -54,26 +119,11 @@
   },
   {
    "type": "URL",
-   "label": "销售",
-   "url": "/app/selling"
-  },
-  {
-   "type": "URL",
-   "label": "采购",
-   "url": "/app/buying"
-  },
-  {
-   "type": "URL",
-   "label": "库存",
-   "url": "/app/stock"
-  },
-  {
-   "type": "URL",
-   "label": "制造",
-   "url": "/app/manufacturing"
+   "label": "我的账号",
+   "url": "/app/ledger-workbench/account"
   }
  ],
- "content": "[{\"id\":\"selfledger0\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"业务总览\",\"col\":4}},{\"id\":\"selfledger1\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"文件智能导入\",\"col\":4}},{\"id\":\"selfledger2\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"待办中心\",\"col\":4}},{\"id\":\"selfledger3\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"账簿与报表\",\"col\":4}},{\"id\":\"selfledger4\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"企业成员\",\"col\":4}},{\"id\":\"selfledger5\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"销售\",\"col\":4}},{\"id\":\"selfledger6\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"采购\",\"col\":4}},{\"id\":\"selfledger7\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"库存\",\"col\":4}},{\"id\":\"selfledger8\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"制造\",\"col\":4}}]",
+ "content": "[{\"id\":\"selfledger0\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"企业首页\",\"col\":4}},{\"id\":\"selfledger1\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"文件智能导入\",\"col\":4}},{\"id\":\"selfledger2\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"待办中心\",\"col\":4}},{\"id\":\"selfledger3\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"会计中心\",\"col\":4}},{\"id\":\"selfledger4\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"客户与销售\",\"col\":4}},{\"id\":\"selfledger5\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"采购与供应商\",\"col\":4}},{\"id\":\"selfledger6\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"商品与库存\",\"col\":4}},{\"id\":\"selfledger7\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"费用报销\",\"col\":4}},{\"id\":\"selfledger8\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"客户关系\",\"col\":4}},{\"id\":\"selfledger9\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"项目协作\",\"col\":4}},{\"id\":\"selfledger10\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"人事工资\",\"col\":4}},{\"id\":\"selfledger11\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"企业成员\",\"col\":4}},{\"id\":\"selfledger12\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"我的账号\",\"col\":4}}]",
  "links": [],
  "charts": [],
  "number_cards": [],

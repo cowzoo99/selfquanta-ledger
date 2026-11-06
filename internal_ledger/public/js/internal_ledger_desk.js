@@ -1,4 +1,5 @@
-const ledgerRoles = new Set(["账套管理员", "账务查看者"]);
+const ledgerRoles = new Set(["账套管理员", "账务查看者", "企业负责人", "财务主管", "会计", "出纳",
+  "销售", "采购", "库存", "项目", "人事工资", "只读审计"]);
 
 function redirectSetupHomeToLedger() {
   const route = frappe.get_route();

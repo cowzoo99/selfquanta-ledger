@@ -10,13 +10,17 @@ from internal_ledger.tests.test_classifier import set_up, tear_down
 
 TITLE = "SelfLedger 企业经营与智能内账"
 ROOT = Path(__file__).resolve().parents[1]
-LABELS = ["业务总览", "文件智能导入", "待办中心", "账簿与报表", "企业成员", "销售", "采购", "库存", "制造"]
+LABELS = ["企业首页", "文件智能导入", "待办中心", "会计中心", "客户与销售", "采购与供应商", "商品与库存",
+          "费用报销", "客户关系", "项目协作", "人事工资", "企业成员", "我的账号"]
 ROUTES = ["/app/ledger-workbench/" + view for view in
-          ("dashboard", "import", "review")] + ["/app/query-report/General%20Ledger", "/app/ledger-workbench/members"] + [
-              "/app/selling", "/app/buying", "/app/stock", "/app/manufacturing"]
+          ("dashboard", "import", "review", "accounting", "sales", "purchase", "stock", "expense",
+           "crm", "projects", "hr", "members", "account")]
 
 
 def test_installed_workspace_shortcuts_and_content():
+    from internal_ledger.install import ensure_workspace
+
+    ensure_workspace()
     assert frappe.db.exists("Workspace", TITLE), "Unified Workspace must be installed"
     workspace = frappe.get_doc("Workspace", TITLE)
     assert workspace.title == TITLE
@@ -29,18 +33,23 @@ def test_installed_workspace_shortcuts_and_content():
     assert [row["data"]["shortcut_name"] for row in blocks if row["type"] == "shortcut"] == LABELS
 
 
-def test_workspace_visible_to_both_ledger_roles_without_extra_business_rights():
+def test_workspace_visible_to_product_roles_without_extra_business_rights():
+    from internal_ledger.install import ensure_roles
     from internal_ledger.tests.test_permissions import user
     from frappe.desk.desktop import get_workspaces
 
-    for role in ("账套管理员", "账务查看者"):
+    ensure_roles()
+    finance_read = {"账套管理员", "账务查看者", "企业负责人", "财务主管", "会计", "出纳", "只读审计"}
+    finance_write = {"账套管理员", "企业负责人", "财务主管", "会计", "出纳"}
+    for role in ("账套管理员", "账务查看者", "企业负责人", "财务主管", "会计", "出纳", "销售", "采购",
+                 "库存", "项目", "人事工资", "只读审计"):
         actor = user(role)
         try:
             frappe.set_user(actor)
             visible = get_workspaces.__wrapped__()
             assert TITLE in {row.name for row in visible["pages"]}
-            assert frappe.has_permission("Imported Transaction", ptype="read")
-            assert bool(frappe.has_permission("Voucher Draft", ptype="write")) == (role == "账套管理员")
+            assert bool(frappe.has_permission("Imported Transaction", ptype="read")) == (role in finance_read)
+            assert bool(frappe.has_permission("Voucher Draft", ptype="write")) == (role in finance_write)
         finally:
             frappe.set_user("Administrator")
 
@@ -84,7 +93,10 @@ def test_workspace_reconciles_stale_app_document_and_preserves_site_customizatio
     test_installed_workspace_shortcuts_and_content()
     repaired = frappe.get_doc("Workspace", TITLE).as_dict()
     assert repaired["sequence_id"] == 0.1
-    assert [row["role"] for row in repaired["roles"]] == ["账套管理员", "账务查看者", "System Manager"]
+    assert [row["role"] for row in repaired["roles"]] == [
+        "账套管理员", "账务查看者", "企业负责人", "财务主管", "会计", "出纳", "销售", "采购", "库存",
+        "项目", "人事工资", "只读审计", "System Manager"
+    ]
     ensure_workspace()
     assert frappe.get_doc("Workspace", TITLE).as_dict() == repaired
     assert [frappe.get_doc(doc.doctype, doc.name).as_dict() for doc in (personal, custom, frappe.get_doc("User", actor))] == preserved
@@ -118,15 +130,43 @@ def test_unified_home_makes_import_primary_and_keeps_erp_modules_in_one_site():
     dashboard = (ROOT / "public/frontend/src/pages/Dashboard.vue").read_text()
     assert "开始导入并自动识别" in dashboard
     assert 'class="ledger-primary-action"' in dashboard
-    for route in ("/app/ledger-workbench/import", "selling", "buying", "stock", "manufacturing"):
+    for route in ("/app/ledger-workbench/import", "/app/ledger-workbench/sales",
+                  "/app/ledger-workbench/purchase", "/app/ledger-workbench/stock"):
         assert route in dashboard
 
 
-def test_workspace_fixture_has_only_the_nine_unified_entries():
+def test_workspace_fixture_has_only_the_unified_entries():
     workspace = json.loads((ROOT / "internal_ledger/workspace/selfledger/selfledger.json").read_text(encoding="utf-8"))
     assert [row["label"] for row in workspace["shortcuts"]] == LABELS
     assert [row["url"] for row in workspace["shortcuts"]] == ROUTES
     assert [row["data"]["shortcut_name"] for row in json.loads(workspace["content"])] == LABELS
+
+
+def test_module_catalog_is_fixed_chinese_role_filtered_and_uses_standard_routes():
+    catalog = (ROOT / "public/frontend/src/moduleCatalog.js").read_text(encoding="utf-8")
+    hub = (ROOT / "public/frontend/src/pages/ModuleHub.vue").read_text(encoding="utf-8")
+    app = (ROOT / "public/frontend/src/App.vue").read_text(encoding="utf-8")
+    desk = (ROOT / "public/js/internal_ledger_desk.js").read_text(encoding="utf-8")
+    for key, label in (("sales", "客户与销售"), ("purchase", "采购与供应商"),
+                       ("stock", "商品与库存"), ("expense", "费用报销"), ("crm", "客户关系"),
+                       ("projects", "项目协作"), ("hr", "人事工资")):
+        assert f"key: '{key}'" in catalog and f"label: '{label}'" in catalog
+    for text in ("description:", "icon:", "route:", "allowedRoles:", "/app/sales-order",
+                 "/app/purchase-order", "/app/stock-entry", "/app/expense-claim", "/app/lead",
+                 "/app/project", "/app/employee"):
+        assert text in catalog
+    assert "MODULES" in app and "ModuleHub" in app and "allowedRoles" in app
+    assert ":aria-current" in app and "flex-wrap: wrap" in app
+    assert "MODULES" in hub and "module.tasks" in hub
+    for role in ("企业负责人", "财务主管", "会计", "出纳", "销售", "采购", "库存", "项目", "人事工资", "只读审计"):
+        assert role in desk
+
+
+def test_dashboard_has_seven_plain_language_operating_cards():
+    source = (ROOT / "public/frontend/src/pages/Dashboard.vue").read_text(encoding="utf-8")
+    for text in ("今日待办", "资金", "销售", "采购", "库存预警", "项目", "人事工资"):
+        assert text in source
+    assert "erpLinks" not in source
 
 
 def test_dashboard_orders_import_totals_four_tasks_latest_batch_and_erp():
@@ -134,7 +174,7 @@ def test_dashboard_orders_import_totals_four_tasks_latest_batch_and_erp():
     template = source.split("<template>", 1)[1]
     positions = [template.index(text) for text in (
         'class="ledger-primary-action"', 'class="ledger-counts"', 'v-for="card in cards"',
-        '最近处理', 'v-for="entry in erpLinks"')]
+        '最近处理', 'v-for="entry in operatingCards"')]
     assert positions == sorted(positions)
     for field in ("batch_name", "total", "created", "duplicate", "manual"):
         assert "counts.latest_batch." + field in template
