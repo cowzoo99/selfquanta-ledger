@@ -13,7 +13,7 @@ extend_doctype_class = {"File": ["internal_ledger.permissions.ProtectedLedgerFil
 
 _ledger_doctypes = ("Import Batch", "Imported Transaction", "Classification Rule", "Voucher Draft",
                     "Posting Link", "Internal Ledger Settings", "Internal Ledger Audit Event",
-                    "Internal Ledger Source File", "Ledger Evidence", "Month End Run")
+                    "Internal Ledger Source File", "Ledger Evidence", "Month End Run", "Tax Material Package")
 has_permission = {doctype: "internal_ledger.permissions.has_ledger_permission" for doctype in _ledger_doctypes}
 has_permission["File"] = "internal_ledger.permissions.file_permission"
 permission_query_conditions = {doctype: "internal_ledger.permissions.company_query"

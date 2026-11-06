@@ -8,7 +8,7 @@ from frappe.utils import now_datetime
 
 LEDGER_DOCTYPES = ("Import Batch", "Imported Transaction", "Classification Rule", "Voucher Draft",
                   "Posting Link", "Internal Ledger Settings", "Internal Ledger Audit Event",
-                  "Internal Ledger Source File", "Ledger Evidence", "Month End Run")
+                  "Internal Ledger Source File", "Ledger Evidence", "Month End Run", "Tax Material Package")
 _AUDIT_INSERT = object()
 _SOURCE_INSERT = object()
 _SOURCE_DELETE = object()
@@ -20,7 +20,7 @@ _EVIDENCE_WRITE = object()
 _EVIDENCE_FILE_WRITE = object()
 _NATIVE_FILE_DEDUP = object()
 _ZIP_READ_BYTES = object()
-_PROTECTED_FILES = ("Ledger Evidence", "Internal Ledger Source File")
+_PROTECTED_FILES = ("Ledger Evidence", "Internal Ledger Source File", "Tax Material Package")
 LEDGER_MANAGER_ROLES = {"账套管理员", "企业负责人", "财务主管"}
 LEDGER_WRITE_ROLES = LEDGER_MANAGER_ROLES | {"会计", "出纳"}
 LEDGER_READ_ROLES = LEDGER_WRITE_ROLES | {"账务查看者", "只读审计"}
@@ -233,6 +233,14 @@ def protect_source_file(doc, method=None):
     frappe.db.sql("SELECT value FROM `tabSingles` WHERE doctype = %s AND field = %s FOR UPDATE",
                   ("Internal Ledger Settings", "company"))
     old = doc.get_doc_before_save()
+    package = doc.attached_to_doctype == "Tax Material Package" or (
+        old and old.attached_to_doctype == "Tax Material Package")
+    if package:
+        require_ledger_admin()
+        if method == "on_trash" or old:
+            frappe.throw("已生成的税务材料包文件不可修改或删除", frappe.PermissionError)
+        if doc.is_private != 1:
+            frappe.throw("税务材料包文件必须私有", frappe.PermissionError)
     protected = doc.attached_to_doctype == "Internal Ledger Source File" or (
         old and old.attached_to_doctype == "Internal Ledger Source File")
     if protected:
@@ -252,7 +260,7 @@ def protect_source_file(doc, method=None):
             frappe.throw("流水备注与附件只能由佐证服务写入", frappe.PermissionError)
         if doc.is_private != 1:
             frappe.throw("流水附件必须私有", frappe.PermissionError)
-    if not protected and not evidence:
+    if not package and not protected and not evidence:
         fields = ("file_url", "thumbnail_url")
         paths = [doc.get(field) for field in fields
                  if (method == "on_trash" or not old or doc.get(field) != old.get(field))
@@ -260,7 +268,7 @@ def protect_source_file(doc, method=None):
                           and doc.flags.ledger_native_dedup is _NATIVE_FILE_DEDUP)]
         if paths:
             protected_files = frappe.db.get_values("File", filters={"name": ["!=", doc.name],
-                "attached_to_doctype": ["in", ["Ledger Evidence", "Internal Ledger Source File"]]},
+                "attached_to_doctype": ["in", list(_PROTECTED_FILES)]},
                 fieldname=["file_url", "thumbnail_url", "content_hash", "is_private"], as_dict=True, for_update=True)
             if (method == "on_trash" and doc.file_url and doc.content_hash and doc._ledger_read_allowed(current=True)
                     and any(_physical_file_path(row.file_url, row.is_private) == _physical_file_path(doc.file_url, doc.is_private)
@@ -286,7 +294,7 @@ class ProtectedLedgerFile:
     def _ledger_read_allowed(self, user=None, current=False):
         user = user or frappe.session.user
         references = _matching_protected_files(self.file_url, self.is_private, current=current)
-        if self.attached_to_doctype in ("Ledger Evidence", "Internal Ledger Source File"):
+        if self.attached_to_doctype in _PROTECTED_FILES:
             references.append(self)
         roles = set(frappe.get_roles(user))
         company = frappe.db.get_single_value("Internal Ledger Settings", "company")
@@ -352,7 +360,7 @@ class ProtectedLedgerFile:
     def _delete_file_on_disk(self):
         controlled_hash = self.content_hash and frappe.db.get_values("File", filters={
             "name": ["!=", self.name], "content_hash": self.content_hash,
-            "attached_to_doctype": ["in", ["Ledger Evidence", "Internal Ledger Source File"]]},
+            "attached_to_doctype": ["in", list(_PROTECTED_FILES)]},
             fieldname="name", for_update=True)
         if not self.file_url or not (self._is_controlled_attachment() or controlled_hash):
             return super()._delete_file_on_disk()
