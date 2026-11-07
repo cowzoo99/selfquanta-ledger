@@ -1,0 +1,32 @@
+{
+ "doctype": "DocType",
+ "name": "AI Provider Settings",
+ "module": "Internal Ledger",
+ "issingle": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "enabled",
+  "base_url",
+  "model",
+  "api_key",
+  "timeout_seconds",
+  "monthly_request_limit",
+  "allowed_features",
+  "request_month",
+  "request_count"
+ ],
+ "fields": [
+  {"fieldname": "enabled", "label": "启用 AI", "fieldtype": "Check", "default": "0"},
+  {"fieldname": "base_url", "label": "模型服务地址", "fieldtype": "Data"},
+  {"fieldname": "model", "label": "模型", "fieldtype": "Data"},
+  {"fieldname": "api_key", "label": "API 密钥", "fieldtype": "Password"},
+  {"fieldname": "timeout_seconds", "label": "超时秒数", "fieldtype": "Int", "default": "30"},
+  {"fieldname": "monthly_request_limit", "label": "每月请求上限", "fieldtype": "Int", "default": "1000"},
+  {"fieldname": "allowed_features", "label": "允许的功能", "fieldtype": "Small Text", "default": "explain_report\nsuggest_classification\ndraft_summary\nanswer_help"},
+  {"fieldname": "request_month", "label": "计数月份", "fieldtype": "Data", "read_only": 1, "hidden": 1},
+  {"fieldname": "request_count", "label": "当月请求数", "fieldtype": "Int", "read_only": 1, "hidden": 1, "default": "0"}
+ ],
+ "permissions": [
+  {"role": "账套管理员", "read": 1, "write": 1, "create": 1, "report": 1}
+ ]
+}
