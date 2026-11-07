@@ -41,8 +41,8 @@ function compile(file, realChildren = false) {
     if (name === 'vue') return Vue;
     if (name.endsWith('labels')) return labels;
     if (name.endsWith('api')) return new Function(fs.readFileSync(path.join(src, 'api.js'), 'utf8').replaceAll('export ', '') +
-      '; return {call, evidenceCall: typeof evidenceCall === "function" ? evidenceCall : undefined, financeCall: typeof financeCall === "function" ? financeCall : undefined, businessCall: typeof businessCall === "function" ? businessCall : undefined, aiCall: typeof aiCall === "function" ? aiCall : undefined, errorMessage};')();
-    if (realChildren && /\/(Dashboard|AIAssistant|ReviewCenter|DuplicateReview|AccountingCenter|MonthEndCenter|TaxMaterials|ModuleHub|DraftLines|TransactionEvidence|PostedEntryEditor)\.vue$/.test(name)) {
+      '; return {call, evidenceCall: typeof evidenceCall === "function" ? evidenceCall : undefined, financeCall: typeof financeCall === "function" ? financeCall : undefined, businessCall: typeof businessCall === "function" ? businessCall : undefined, aiCall: typeof aiCall === "function" ? aiCall : undefined, exportCall: typeof exportCall === "function" ? exportCall : undefined, errorMessage};')();
+    if (realChildren && /\/(Dashboard|AIAssistant|ReviewCenter|DuplicateReview|AccountingCenter|MonthEndCenter|TaxMaterials|CustomerExitExport|ModuleHub|DraftLines|TransactionEvidence|PostedEntryEditor)\.vue$/.test(name)) {
       return compile(path.posix.normalize(path.posix.join(path.posix.dirname(file), name)), true);
     }
     if (name.endsWith('moduleCatalog')) return new Function(fs.readFileSync(path.join(src, 'moduleCatalog.js'), 'utf8')
@@ -103,7 +103,47 @@ function postedAggregate(row = item('posted')) {
     evidence: {display_title: '原始标题', note_html: '<p>现有备注</p>'}, version: 'version-' + row.transaction.name};
 }
 async function run(name) {
-  if (name === 'module_hub_routes') {
+  if (name === 'customer_exit_export') {
+    const ready = {name: 'EXIT-0001', status: 'Ready', requested_by: 'owner@example.invalid',
+      requested_at: '2026-11-07 09:00:00', completed_at: '2026-11-07 09:02:00', downloaded_at: '',
+      row_count: 238, attachment_count: 7, package_size: 184320,
+      package_sha256: 'a92e76be918a28a937916e64df91cfe6d66fbe33d64441a955fc97646001be2a', failure_code: ''};
+    let exports = [];
+    frappe.session.user = 'owner@example.invalid'; frappe.user_roles = ['企业负责人'];
+    global.window = {confirm: () => true};
+    frappe.call = async args => {calls.push(args);
+      if (args.method.endsWith('list_customer_exit_exports')) return {message: exports};
+      if (args.method.endsWith('request_customer_exit_export')) {exports = [ready]; return {message: {...ready, status: 'Generating'}};}
+      if (args.method.endsWith('delete_customer_exit_export')) {exports = [{...ready, status: 'Deleted'}]; return {message: exports[0]};}
+      if (args.method.endsWith('get_business_dashboard')) return {message: {partial: false, sections: {}}};
+      if (args.method.endsWith('get_assistant_status')) return {message: {available: false}};
+      if (args.method.endsWith('get_dashboard_counts')) return {message: {month: '2026-10'}};
+      if (args.method.endsWith('list_review_items')) return {message: []};
+      return {message: []};
+    };
+    const page = mount('App.vue', {view: 'data-management'}, true); await settle();
+    const links = descendants(page.root).filter(el => el.type === 'a');
+    assert.ok(links.find(el => el.props.href === '/app/ledger-workbench/data-management'));
+    assert.match(text(page.root), /数据管理.*企业数据退出包.*尚未生成过退出包/s);
+    const exit = child(page.root._vnode, 'CustomerExitExport').setupState;
+    await exit.requestExport(); await settle();
+    assert.match(text(page.root), /准备完成.*业务数据.*238 条.*附件.*7 个.*文件大小.*180 KB/s);
+    assert.match(text(page.root), /SHA-256.*a92e76be918a28a/s);
+    const download = descendants(page.root).find(el => el.type === 'a' && text(el).includes('下载退出包'));
+    assert.equal(download.props.href,
+      '/api/method/internal_ledger.api.export_api.download_customer_exit_export?name=EXIT-0001');
+    await exit.deleteExport('EXIT-0001'); await settle();
+    assert.ok(calls.some(row => row.method.endsWith('delete_customer_exit_export') && row.type === 'POST'));
+    page.app.unmount();
+
+    frappe.session.user = 'viewer@example.invalid'; frappe.user_roles = ['账务查看者'];
+    const viewer = mount('App.vue', {view: 'data-management'}, true); await settle();
+    const viewerLinks = descendants(viewer.root).filter(el => el.type === 'a');
+    assert.equal(viewerLinks.find(el => el.props.href === '/app/ledger-workbench/data-management'), undefined);
+    assert.doesNotMatch(text(viewer.root), /企业数据退出包/);
+    assert.match(text(viewer.root), /企业首页/);
+    viewer.app.unmount();
+  } else if (name === 'module_hub_routes') {
     const expected = {
       crm: ['/app/lead', '/app/opportunity', '/app/customer'],
       sales: ['/app/quotation', '/app/sales-order', '/app/delivery-note', '/app/sales-invoice', '/app/payment-entry'],

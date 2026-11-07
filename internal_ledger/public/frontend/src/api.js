@@ -34,6 +34,12 @@ export async function aiCall(method, args = {}) {
   return response.message;
 }
 
+export async function exportCall(method, args = {}) {
+  const response = await frappe.call({method: `internal_ledger.api.export_api.${method}`, args,
+    type: method === 'list_customer_exit_exports' ? 'GET' : 'POST'});
+  return response.message;
+}
+
 export async function setLanguage(language) {
   const response = await frappe.call({method: 'internal_ledger.api.language_api.set_language',
     args: {language}, type: 'POST'});

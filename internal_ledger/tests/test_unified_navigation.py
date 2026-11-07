@@ -220,6 +220,10 @@ def test_month_end_and_tax_material_frontend_states():
     _run_review_component_case("tax_materials_center")
 
 
+def test_enterprise_owner_customer_exit_frontend():
+    _run_review_component_case("customer_exit_export")
+
+
 def test_accounting_center_uses_one_versioned_full_entry_editor():
     accounting = (ROOT / "public/frontend/src/pages/AccountingCenter.vue").read_text(encoding="utf-8")
     editor = (ROOT / "public/frontend/src/components/PostedEntryEditor.vue").read_text(encoding="utf-8")

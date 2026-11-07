@@ -11,6 +11,7 @@ import MonthEndCenter from './pages/MonthEndCenter.vue';
 import TaxMaterials from './pages/TaxMaterials.vue';
 import ModuleHub from './pages/ModuleHub.vue';
 import AIAssistant from './pages/AIAssistant.vue';
+import CustomerExitExport from './pages/CustomerExitExport.vue';
 import WorkflowNavigation from './components/WorkflowNavigation.vue';
 import {MODULES} from './moduleCatalog';
 import {call, businessCall, aiCall, errorMessage, setLanguage} from './api';
@@ -35,11 +36,13 @@ const canReadLedger = hasAllowedRole(financeReadRoles);
 const canWrite = hasAllowedRole(financeWriteRoles);
 const canClosePeriod = hasAllowedRole(['账套管理员', '财务主管']);
 const canManageMembers = hasAllowedRole(['账套管理员', '企业负责人']);
+const isEnterpriseOwner = userRoles.has('企业负责人');
 const allowedModules = MODULES.filter(module => hasAllowedRole(module.allowedRoles));
 const navigation = computed(() => [['dashboard', '企业首页'],
   ...(canReadLedger ? [['import', '文件智能导入'], ['review', '待办中心'], ['accounting', '会计中心']] : []),
   ...allowedModules.map(module => [module.key, module.label]),
   ...(aiStatus.status === 'success' && aiStatus.data?.available ? [['assistant', 'AI 助手']] : []),
+  ...(isEnterpriseOwner ? [['data-management', '数据管理']] : []),
   ...(canManageMembers ? [['members', '企业成员']] : []), ['account', '我的账号']]);
 const page = computed(() => navigation.value.some(entry => entry[0] === props.view) ||
   ['assistant', 'duplicates', 'classification', 'month-end', 'tax-materials'].includes(props.view) ? props.view : 'dashboard');
@@ -160,6 +163,7 @@ onMounted(refreshPage);
       <MonthEndCenter v-else-if="page === 'month-end'" :can-write="canWrite" :can-close="canClosePeriod" />
       <TaxMaterials v-else-if="page === 'tax-materials'" :can-write="canWrite" />
       <AIAssistant v-else-if="page === 'assistant'" :status="aiStatus" />
+      <CustomerExitExport v-else-if="page === 'data-management' && isEnterpriseOwner" />
       <ModuleHub v-else-if="modulePage" :module-key="page" />
       <ReviewCenter v-else :list="list" :classification-run="classificationRun" :can-write="canWrite" :initial-filter="reviewFilter" :initial-batch="batch" :initial-transaction="transaction" @refresh="refresh" @filter-change="changeFilter" />
     </main>
