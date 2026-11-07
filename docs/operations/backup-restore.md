@@ -126,3 +126,7 @@ sudo pwsh -NoProfile -File /srv/selfquanta/ledger/infra/health-check.ps1 -SitesF
 ```
 
 schema 2 清单比较 Company、User、File、Item、Journal Entry、GL Entry、Employee 和 Salary Slip；恢复脚本仍兼容只含 Company、Journal Entry、File 的 schema 1 历史包。候选发布版中每一种实际存在的 schema 都要选一包完成隔离恢复。RPO 为 24 小时，试运营 RTO 为 4 小时；真实备份和恢复结果必须以生成的清单及 PASS 报告为准。
+
+## 综合发布证据
+
+每个候选版本都必须在 [公网 ERP 综合验收清单](../acceptance/2026-11-06-public-erp-integrated-checklist.md) 中记录实际恢复结果。只有同时具备候选 SHA 对应的不可变 App/OCR 镜像、加密归档、匹配清单、独立密钥、全新 `ledger-restore-*` 项目和 `status: PASS` 报告，恢复门禁才可标记为通过。`-ValidateOnly`、备份文件存在、对象存储列表或合成配置检查均不能替代真实恢复证据。

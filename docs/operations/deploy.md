@@ -246,6 +246,12 @@ Real accounting acceptance remains an administrator decision: the administrator 
 
 Never log passwords, repository credentials, full bank numbers, or statement content. Preserve the upstream Frappe/ERPNext and application license/source notices when distributing the service or image.
 
+## Integrated acceptance promotion gate
+
+Use dedicated `acceptance-*.localhost` Sites and the [integrated acceptance checklist](../acceptance/2026-11-06-public-erp-integrated-checklist.md). Synthetic end-to-end tests remain restricted to `test.localhost` unless `SELFLEDGER_ACCEPTANCE_SITE` explicitly names an `acceptance-*.localhost` Site. Never set that variable to a production hostname.
+
+Promotion requires every checklist row to be `PASS`: two-Site isolation, customer exit export, encrypted restore, immutable image rollback, rendered Nginx validation, read-only public smoke and named customer approval. A passing application test suite alone is not a production release decision. Record the previous SHA, selected backup manifest, restore report, target Site, operator and rollback result before admitting traffic.
+
 ## Current acceptance boundary
 
 No live production deployment, public cutover, or production backup/restore is verified by this readiness task. Record live image, restart, backup/restore and administrator real-file acceptance separately from local automated evidence; public cutover remains Task 7.
