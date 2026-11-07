@@ -18,6 +18,17 @@ def user(role):
     return name
 
 
+def test_customer_exit_file_read_requires_explicit_enterprise_owner():
+    from internal_ledger.permissions import _can_read_protected
+
+    owner = user("企业负责人")
+    manager = user("账套管理员")
+    row = frappe._dict(attached_to_doctype="Customer Exit Export", attached_to_name="EXIT-1")
+    assert _can_read_protected(row, owner, set(frappe.get_roles(owner)), None)
+    assert not _can_read_protected(row, manager, set(frappe.get_roles(manager)), None)
+    assert not _can_read_protected(row, "Administrator", set(frappe.get_roles("Administrator")), None)
+
+
 def test_non_ledger_system_manager_cannot_call_import_service():
     from internal_ledger.importing.models import save_batch
     from internal_ledger.importing.registry import parse_statement

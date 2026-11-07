@@ -82,7 +82,7 @@ def test_archive_contains_business_rows_attachment_audit_and_valid_hashes():
             assert "attachments/index.csv" in names
             assert marker in archive.read("master-data/customer.csv").decode("utf-8-sig")
             index = archive.read("attachments/index.csv").decode("utf-8-sig")
-            assert attached.name in index and "退出凭据.txt" in index
+            assert attached.name in index and attached.file_name in index
             file_name = next(name for name in names if name.startswith("attachments/files/"))
             assert archive.read(file_name) == marker.encode("utf-8")
             stored = json.loads(archive.read("manifest.json"))
@@ -111,6 +111,82 @@ def test_attachment_name_cannot_escape_archive():
     assert path.startswith("attachments/files/")
     assert ".." not in path
     assert "server.key" not in path
+
+
+def test_owner_request_completes_private_package_and_records_audit():
+    from internal_ledger.api.export_api import list_customer_exit_exports, request_customer_exit_export
+
+    frappe.set_user(owner())
+    result = request_customer_exit_export()
+    assert result["status"] == "Ready"
+    assert result["requested_by"] == frappe.session.user
+    assert result["file"].startswith("/private/files/")
+    assert len(result["package_sha256"]) == 64
+    assert list_customer_exit_exports()[0]["name"] == result["name"]
+    actions = frappe.get_all("Internal Ledger Audit Event", filters={
+        "reference_doctype": "Customer Exit Export", "reference_name": result["name"],
+    }, pluck="action")
+    assert "request_customer_exit_export" in actions
+    assert "complete_customer_exit_export" in actions
+
+
+def test_nonowners_cannot_request_list_download_or_delete():
+    from internal_ledger.api import export_api
+
+    actors = (user("账套管理员"), user("账务查看者"), "Administrator", "Guest")
+    frappe.set_user(owner())
+    result = export_api.request_customer_exit_export()
+    for actor in actors:
+        frappe.set_user(actor)
+        for operation in (
+            export_api.request_customer_exit_export,
+            export_api.list_customer_exit_exports,
+            lambda: export_api.download_customer_exit_export(result["name"]),
+            lambda: export_api.delete_customer_exit_export(result["name"]),
+        ):
+            with unittest.TestCase().assertRaises(frappe.PermissionError):
+                operation()
+
+
+def test_missing_attachment_fails_without_downloadable_partial_package():
+    from internal_ledger.api.export_api import request_customer_exit_export
+
+    customer = frappe.get_doc({
+        "doctype": "Customer",
+        "customer_name": "EXIT-MISSING-FILE",
+        "customer_type": "Company",
+    }).insert(ignore_permissions=True)
+    missing = frappe.get_doc({
+        "doctype": "File",
+        "file_name": "missing.txt",
+        "content": b"removed after insert",
+        "is_private": 1,
+        "attached_to_doctype": "Customer",
+        "attached_to_name": customer.name,
+    }).insert(ignore_permissions=True)
+    Path(missing.get_full_path()).unlink()
+    frappe.set_user(owner())
+    result = request_customer_exit_export()
+    assert result["status"] == "Failed"
+    assert result["failure_code"] == "ATTACHMENT_READ_FAILED"
+    assert not result["file"]
+    assert not frappe.get_all("File", filters={
+        "attached_to_doctype": "Customer Exit Export", "attached_to_name": result["name"],
+    })
+
+
+def test_owner_delete_removes_package_and_is_idempotent():
+    from internal_ledger.api.export_api import delete_customer_exit_export, request_customer_exit_export
+
+    frappe.set_user(owner())
+    result = request_customer_exit_export()
+    package = frappe.db.get_value("File", {
+        "attached_to_doctype": "Customer Exit Export", "attached_to_name": result["name"],
+    }, "name")
+    deleted = delete_customer_exit_export(result["name"])
+    assert deleted["status"] == "Deleted" and not deleted["file"]
+    assert not frappe.db.exists("File", package)
+    assert delete_customer_exit_export(result["name"]) == deleted
 
 
 def load_tests(loader, tests, pattern):

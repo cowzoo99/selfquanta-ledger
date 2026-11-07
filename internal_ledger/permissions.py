@@ -21,7 +21,11 @@ _EVIDENCE_FILE_WRITE = object()
 _NATIVE_FILE_DEDUP = object()
 _ZIP_READ_BYTES = object()
 _CUSTOMER_EXIT_WRITE = object()
-_PROTECTED_FILES = ("Ledger Evidence", "Internal Ledger Source File", "Tax Material Package")
+_CUSTOMER_EXIT_FILE_WRITE = object()
+_CUSTOMER_EXIT_FILE_DELETE = object()
+_PROTECTED_FILES = (
+    "Ledger Evidence", "Internal Ledger Source File", "Tax Material Package", "Customer Exit Export",
+)
 LEDGER_MANAGER_ROLES = {"账套管理员", "企业负责人", "财务主管"}
 LEDGER_WRITE_ROLES = LEDGER_MANAGER_ROLES | {"会计", "出纳"}
 LEDGER_READ_ROLES = LEDGER_WRITE_ROLES | {"账务查看者", "只读审计"}
@@ -75,6 +79,8 @@ def _matching_protected_files(url, is_private=1, current=False):
 
 
 def _can_read_protected(row, user, roles, company):
+    if row.attached_to_doctype == "Customer Exit Export":
+        return _has_explicit_role(user, "企业负责人")
     if not company or (user != "Administrator" and not roles & LEDGER_READ_ROLES):
         return False
     if (row.attached_to_doctype == "Internal Ledger Source File" and user != "Administrator"
@@ -286,6 +292,17 @@ def protect_source_file(doc, method=None):
     frappe.db.sql("SELECT value FROM `tabSingles` WHERE doctype = %s AND field = %s FOR UPDATE",
                   ("Internal Ledger Settings", "company"))
     old = doc.get_doc_before_save()
+    customer_exit = doc.attached_to_doctype == "Customer Exit Export" or (
+        old and old.attached_to_doctype == "Customer Exit Export")
+    if customer_exit:
+        require_enterprise_owner()
+        if method == "on_trash":
+            if doc.flags.customer_exit_file_delete is not _CUSTOMER_EXIT_FILE_DELETE:
+                frappe.throw("企业数据导出文件只能通过数据管理删除", frappe.PermissionError)
+        elif not doc.is_new() or doc.flags.customer_exit_file_write is not _CUSTOMER_EXIT_FILE_WRITE:
+            frappe.throw("企业数据导出文件只能由导出服务创建", frappe.PermissionError)
+        if doc.is_private != 1:
+            frappe.throw("企业数据导出文件必须私有", frappe.PermissionError)
     package = doc.attached_to_doctype == "Tax Material Package" or (
         old and old.attached_to_doctype == "Tax Material Package")
     if package:
@@ -313,7 +330,7 @@ def protect_source_file(doc, method=None):
             frappe.throw("流水备注与附件只能由佐证服务写入", frappe.PermissionError)
         if doc.is_private != 1:
             frappe.throw("流水附件必须私有", frappe.PermissionError)
-    if not package and not protected and not evidence:
+    if not customer_exit and not package and not protected and not evidence:
         fields = ("file_url", "thumbnail_url")
         paths = [doc.get(field) for field in fields
                  if (method == "on_trash" or not old or doc.get(field) != old.get(field))
@@ -372,7 +389,10 @@ class ProtectedLedgerFile:
         return ((self.attached_to_doctype == "Ledger Evidence"
                  and self.flags.evidence_file_write is _EVIDENCE_FILE_WRITE)
                 or (self.attached_to_doctype == "Internal Ledger Source File"
-                    and (self.flags.source_insert is _SOURCE_INSERT or self.flags.source_delete is _SOURCE_DELETE)))
+                    and (self.flags.source_insert is _SOURCE_INSERT or self.flags.source_delete is _SOURCE_DELETE))
+                or (self.attached_to_doctype == "Customer Exit Export"
+                    and (self.flags.customer_exit_file_write is _CUSTOMER_EXIT_FILE_WRITE
+                         or self.flags.customer_exit_file_delete is _CUSTOMER_EXIT_FILE_DELETE)))
 
     def save_file(self, *args, **kwargs):
         protect_source_file(self, "save_file")
@@ -381,7 +401,8 @@ class ProtectedLedgerFile:
             kwargs["ignore_existing_file_check"] = True
             self.flags.ignore_duplicate_entry_error = True
             # URL authorization uses a case-insensitive collation. Reserve distinct storage names.
-            domain = "evidence" if self.attached_to_doctype == "Ledger Evidence" else "source"
+            domain = {"Ledger Evidence": "evidence", "Internal Ledger Source File": "source",
+                      "Customer Exit Export": "exit"}[self.attached_to_doctype]
             prefix = f"{domain}-{uuid4().hex}-"
             display_name = self.file_name
             suffix_bytes = 255 - len(prefix)
