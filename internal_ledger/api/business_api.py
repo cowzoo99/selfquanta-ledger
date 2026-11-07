@@ -7,7 +7,8 @@ from frappe.utils import getdate
 ALLOWED_ROUTES = {
     "/app/sales-order", "/app/sales-invoice", "/app/purchase-order", "/app/purchase-invoice",
     "/app/account", "/app/stock-balance", "/app/expense-claim", "/app/project", "/app/task",
-    "/app/leave-application", "/app/ledger-workbench/month-end",
+    "/app/leave-application", "/app/payroll-entry", "/app/salary-slip",
+    "/app/ledger-workbench/month-end",
 }
 EXECUTIVE_ROLES = {"账套管理员", "企业负责人"}
 FINANCE_ROLES = {"财务主管", "会计", "出纳", "账务查看者", "只读审计",
@@ -171,9 +172,17 @@ def _hr(company, start, end, roles=None):
             None if privileged else employee or "__none__"))[0][0]
     cards = [_card("待处理请假", pending, "项", "warning" if pending else "normal",
                    "/app/leave-application", end, "请假申请")]
-    if privileged and _installed("Salary Slip"):
-        row = _aggregate("Salary Slip", company, "posting_date", start, end, "gross_pay")
-        cards.append(_card("工资金额", row.total, "CNY", "info", "/app/leave-application", end, "工资单"))
+    if privileged and _installed("Salary Slip") and _installed("Payroll Entry"):
+        row = frappe.db.sql("""
+            select
+              (select count(name) from `tabPayroll Entry`
+               where company = %s and start_date <= %s and end_date >= %s and docstatus = 0) as drafts,
+              (select coalesce(sum(gross_pay), 0) from `tabSalary Slip`
+               where company = %s and posting_date between %s and %s and docstatus = 1) as total
+        """, (company, end, start, company, start, end), as_dict=True)[0]
+        cards.append(_card("工资草稿", row.drafts, "项", "warning" if row.drafts else "normal",
+                           "/app/payroll-entry", end, "工资处理"))
+        cards.append(_card("工资金额", row.total, "CNY", "info", "/app/salary-slip", end, "工资单"))
     return cards
 
 

@@ -222,10 +222,24 @@ def protect_journal_write(doc, method=None):
     company = frappe.db.get_single_value("Internal Ledger Settings", "company")
     old = doc.get_doc_before_save()
     if company and (doc.company == company or (old and old.company == company)):
+        if _is_standard_payroll_journal_write(doc, company):
+            return
         require_ledger_admin()
         service_delete = method == "on_trash" and frappe.flags.get("ledger_journal_delete") is _JOURNAL_DELETE
         if doc.flags.ledger_journal_write is not _JOURNAL_WRITE and not service_delete:
             frappe.throw("当前账套凭证只能由过账或冲销服务写入", frappe.PermissionError)
+
+
+def _is_standard_payroll_journal_write(doc, company):
+    if not frappe.flags.get("via_payroll_entry"):
+        return False
+    references = {(row.reference_type, row.reference_name) for row in doc.get("accounts")
+                  if row.reference_type or row.reference_name}
+    if not references or any(reference_type != "Payroll Entry" or not reference_name
+                             for reference_type, reference_name in references):
+        return False
+    return all(frappe.db.get_value("Payroll Entry", reference_name, "company") == company
+               for _, reference_name in references)
 
 
 def protect_source_file(doc, method=None):

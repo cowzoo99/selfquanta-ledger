@@ -49,10 +49,15 @@ export const MODULES = [
       {label: '项目利润分析', description: '核对项目收入、成本和利润', route: '/app/query-report/Profitability%20Analysis'},
     ]},
   {key: 'hr', label: '人事工资', description: '管理员工、考勤、请假和工资', icon: '👥',
-    route: '/app/hr', allowedRoles: ['账套管理员', '企业负责人', '人事工资'], tasks: [
+    route: '/app/hr', allowedRoles: ['账套管理员', '企业负责人', '人事工资'],
+    warning: '工资导出前必须由会计或人事复核；系统不会自动申报个税或社保。', tasks: [
       {label: '员工', description: '查看和维护员工档案', route: '/app/employee'},
+      {label: '部门', description: '维护企业部门层级', route: '/app/department'},
+      {label: '岗位', description: '维护员工岗位名称', route: '/app/designation'},
       {label: '考勤', description: '查看和登记员工考勤', route: '/app/attendance'},
       {label: '请假', description: '提交和审批请假申请', route: '/app/leave-application'},
-      {label: '工资处理', description: '运行和查询工资单', route: '/app/payroll-entry'},
+      {label: '工资结构', description: '设置员工工资项目和金额', route: '/app/salary-structure'},
+      {label: '工资处理', description: '生成、复核并提交工资草稿', route: '/app/payroll-entry'},
+      {label: '工资单', description: '查询已生成的员工工资单', route: '/app/salary-slip'},
     ]},
 ];

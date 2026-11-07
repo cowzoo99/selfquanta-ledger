@@ -111,11 +111,17 @@ async function run(name) {
       stock: ['/app/item', '/app/warehouse', '/app/stock-entry', '/app/query-report/Stock%20Ledger', '/app/query-report/Stock%20Balance', '/app/query-report/Items%20To%20Be%20Requested'],
       expense: ['/app/expense-claim', '/app/employee-advance', '/app/purchase-invoice'],
       projects: ['/app/project', '/app/task', '/app/timesheet', '/app/query-report/Profitability%20Analysis'],
+      hr: ['/app/employee', '/app/department', '/app/designation', '/app/attendance',
+        '/app/leave-application', '/app/salary-structure', '/app/payroll-entry', '/app/salary-slip'],
     };
     for (const [moduleKey, routes] of Object.entries(expected)) {
       const page = mount('pages/ModuleHub.vue', {moduleKey});
       const hrefs = descendants(page.root).filter(el => el.type === 'a').map(el => el.props.href);
       for (const route of routes) assert.ok(hrefs.includes(route), `${moduleKey} missing ${route}`);
+      if (moduleKey === 'hr') {
+        assert.match(text(page.root), /工资导出前必须由会计或人事复核/);
+        assert.match(text(page.root), /不会自动申报个税或社保/);
+      }
       page.app.unmount();
     }
   } else if (name === 'business_dashboard') {

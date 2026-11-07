@@ -37,7 +37,7 @@ def test_product_role_presets_use_the_exact_least_privilege_matrix():
         "采购": ("采购", "Purchase User"),
         "库存": ("库存", "Stock User"),
         "项目": ("项目", "Projects User"),
-        "人事工资": ("人事工资", "HR User"),
+        "人事工资": ("人事工资", "HR User", "HR Manager"),
         "只读审计": ("只读审计", "账务查看者"),
     }
     ensure_roles()

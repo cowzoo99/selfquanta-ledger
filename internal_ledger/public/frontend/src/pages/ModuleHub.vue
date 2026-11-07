@@ -13,6 +13,7 @@ const module = computed(() => MODULES.find(entry => entry.key === props.moduleKe
         <p class="ledger-module-icon" aria-hidden="true">{{ module.icon }}</p>
         <h2 :id="`module-${module.key}`">{{ module.label }}</h2>
         <p>{{ module.description }}</p>
+        <p v-if="module.warning"><strong>提醒：</strong>{{ module.warning }}</p>
       </div>
       <a class="ledger-primary-action" :href="module.route">
         <strong>进入{{ module.label }}工作区</strong>

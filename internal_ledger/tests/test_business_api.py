@@ -59,6 +59,30 @@ def test_dashboard_suppresses_payroll_for_non_hr_non_finance_roles():
     frappe.set_user("Administrator")
 
 
+def test_hr_dashboard_counts_only_current_company_period_payroll_drafts_and_submitted_salary():
+    from internal_ledger.api.business_api import get_business_dashboard
+
+    company = frappe.flags.classification_company
+    raw_metric_doc("Payroll Entry", company=company, start_date="2026-10-01", end_date="2026-10-31",
+                   posting_date="2026-10-31", docstatus=0)
+    raw_metric_doc("Payroll Entry", company=company, start_date="2026-09-01", end_date="2026-09-30",
+                   posting_date="2026-09-30", docstatus=0)
+    raw_metric_doc("Payroll Entry", company="Other Company", start_date="2026-10-01",
+                   end_date="2026-10-31", posting_date="2026-10-31", docstatus=0)
+    raw_metric_doc("Salary Slip", company=company, employee="TEST-EMPLOYEE", employee_name="测试员工",
+                   posting_date="2026-10-31", start_date="2026-10-01", end_date="2026-10-31",
+                   gross_pay=5000, net_pay=5000, docstatus=1)
+    raw_metric_doc("Salary Slip", company="Other Company", employee="OTHER-EMPLOYEE",
+                   employee_name="其他员工", posting_date="2026-10-31", start_date="2026-10-01",
+                   end_date="2026-10-31", gross_pay=9000, net_pay=9000, docstatus=1)
+
+    result = get_business_dashboard(company, "2026-10-01", "2026-10-31")
+    assert card(result, "hr", "工资草稿")["value"] == 1
+    assert card(result, "hr", "工资草稿")["target_route"] == "/app/payroll-entry"
+    assert card(result, "hr", "工资金额")["value"] == 5000
+    assert card(result, "hr", "工资金额")["target_route"] == "/app/salary-slip"
+
+
 def test_one_failed_section_returns_a_partial_dashboard():
     import internal_ledger.api.business_api as business_api
 
