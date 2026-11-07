@@ -4,6 +4,7 @@ from decimal import Decimal
 import hashlib
 import io
 import json
+import os
 from pathlib import Path
 import re
 import unittest
@@ -1064,7 +1065,12 @@ def test_g3_service_projects_expenses_payroll_reports_and_reversals():
 
 def load_tests(loader, tests, pattern):
     def test_site_set_up():
-        assert frappe.local.site == "test.localhost", "Synthetic accounting acceptance requires the isolated test site"
+        acceptance_site = os.environ.get("SELFLEDGER_ACCEPTANCE_SITE")
+        if acceptance_site:
+            assert re.fullmatch(r"acceptance-[a-z0-9-]+\.localhost", acceptance_site)
+        else:
+            acceptance_site = "test.localhost"
+        assert frappe.local.site == acceptance_site, "Synthetic accounting acceptance requires the isolated test site"
         frappe.flags.g3_previous_ledger_settings = {
             field: frappe.db.get_single_value("Internal Ledger Settings", field)
             for field in ("company", "base_currency", "fiscal_year_start")
