@@ -46,6 +46,8 @@ if ((private == 0)); then
     cert_public=$(openssl x509 -in "$TLS_CERTIFICATE_FILE" -pubkey -noout | openssl pkey -pubin -outform DER | openssl dgst -sha256)
     key_public=$(openssl pkey -in "$TLS_PRIVATE_KEY_FILE" -passin pass: -pubout -outform DER 2>/dev/null | openssl dgst -sha256) || fail 'Cannot read TLS private key.'
     [[ $cert_public == "$key_public" ]] || fail 'TLS certificate/key do not match.'
+    [[ ${SITE_NAME:-} == "$hostname" ]] || fail 'The validated public hostname must equal SITE_NAME.'
+    dc exec -T backend test -d "sites/$hostname" || fail 'The validated public hostname has no existing Frappe Site.'
     # Read-only checks use the pinned Frappe v16 mechanisms. Never read OTP secrets:
     # get_otpsecret_for_ creates one when absent and is not an enrollment proof.
     if ! dc exec -T backend python - "$SITE_NAME" <<'PY'

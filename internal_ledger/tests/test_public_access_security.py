@@ -12,6 +12,33 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "infra/host/configure-public-access.sh"
+NGINX = ROOT / "infra/nginx.conf"
+COMPOSE = ROOT / "infra/compose.yaml"
+DEPLOY = ROOT / "docs/operations/deploy.md"
+
+
+class PublicGatewayContractTests(unittest.TestCase):
+    def test_gateway_rejects_unknown_hosts_and_preserves_validated_host(self):
+        nginx = NGINX.read_text(encoding="utf-8")
+        self.assertIn("map $host $recognized_host", nginx)
+        self.assertRegex(nginx, r"default\s+0;")
+        self.assertRegex(nginx, r"if \(\$recognized_host = 0\) \{\s*return 421;")
+        self.assertEqual(nginx.count("proxy_set_header Host $host;"), 2)
+        compose = COMPOSE.read_text(encoding="utf-8")
+        self.assertIn("FRAPPE_SITE_NAME_HEADER: $$host", compose)
+        self.assertNotIn("FRAPPE_SITE_NAME_HEADER: ${SITE_NAME}", compose)
+
+    def test_cutover_requires_existing_site_before_any_access_mutation(self):
+        source = SCRIPT.read_text(encoding="utf-8")
+        site_check = 'test -d "sites/$hostname"'
+        self.assertIn(site_check, source)
+        self.assertLess(source.index(site_check), source.index("backup=$(mktemp"))
+
+    def test_deployment_is_site_serial_and_records_each_result(self):
+        source = DEPLOY.read_text(encoding="utf-8")
+        for phrase in ("one Site at a time", "maintenance mode", "read-only smoke", "release record",
+                       "previous SHA image", "scheduler"):
+            self.assertIn(phrase, source)
 
 
 @unittest.skipUnless(shutil.which("bash") and shutil.which("openssl"), "Linux Bash/OpenSSL required")
