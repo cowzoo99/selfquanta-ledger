@@ -23,6 +23,48 @@ from internal_ledger.tests.test_review_api import set_up
 G2_FIXTURES = Path(__file__).parent / "fixtures" / "month_end"
 
 
+def business_user(label, roles, company):
+    from frappe.permissions import add_user_permission
+
+    email = f"g3-{uuid4().hex}@example.com"
+    actor = frappe.session.user
+    try:
+        frappe.set_user("Administrator")
+        frappe.get_doc({
+            "doctype": "User", "email": email, "first_name": label,
+            "send_welcome_email": 0, "roles": [{"role": role} for role in roles],
+        }).insert(ignore_permissions=True)
+        add_user_permission("Company", company, email)
+    finally:
+        frappe.set_user(actor)
+    return email
+
+
+def company_bank_account(company, account_name):
+    suffix = uuid4().hex[:8]
+    bank = frappe.get_doc({"doctype": "Bank", "bank_name": "虚构验收银行-" + suffix}).insert()
+    return frappe.get_doc({
+        "doctype": "Bank Account", "account_name": "虚构验收账户-" + suffix,
+        "bank": bank.name, "account": account_name, "company": company,
+        "is_company_account": 1,
+    }).insert().name
+
+
+def clean_committed_test_company(company="_Test Internal Ledger Chart"):
+    frappe.set_user("Administrator")
+    if frappe.db.exists("Company", company):
+        from erpnext.setup.doctype.transaction_deletion_record.test_transaction_deletion_record import (
+            create_and_submit_transaction_deletion_doc,
+        )
+        create_and_submit_transaction_deletion_doc(company)
+        frappe.delete_doc("Company", company, force=True, ignore_permissions=True)
+    frappe.db.delete("Expense Claim Account", {"company": company})
+    if frappe.db.get_single_value("Internal Ledger Settings", "company") == company:
+        frappe.db.set_single_value("Internal Ledger Settings", "company", None)
+    frappe.db.commit()
+    frappe.clear_cache()
+
+
 def import_duplicate_acceptance_batch():
     from internal_ledger.api.import_api import preview_import, confirm_import
 
@@ -716,20 +758,337 @@ def test_g2_finance_tax_month_end_acceptance():
           f"manifest={len(MANIFEST)} package_sha256={package_hash}")
 
 
+def test_g3_trade_business_documents_reports_bank_reconciliation_and_reversals():
+    from frappe.utils import add_days, nowdate
+    from erpnext.accounts.doctype.bank_reconciliation_tool.bank_reconciliation_tool import reconcile_vouchers
+    from erpnext.accounts.doctype.payment_entry.payment_entry import get_payment_entry
+    from erpnext.accounts.report.accounts_payable.accounts_payable import execute as payable_report
+    from erpnext.accounts.report.accounts_receivable.accounts_receivable import execute as receivable_report
+    from erpnext.accounts.report.general_ledger.general_ledger import execute as general_ledger_report
+    from erpnext.buying.doctype.purchase_order.purchase_order import make_purchase_receipt
+    from erpnext.selling.doctype.sales_order.sales_order import make_delivery_note
+    from erpnext.selling.doctype.sales_order.test_sales_order import make_sales_order
+    from erpnext.stock.doctype.delivery_note.delivery_note import make_sales_invoice
+    from erpnext.stock.doctype.purchase_receipt.purchase_receipt import make_purchase_invoice
+    from erpnext.stock.report.stock_ledger.stock_ledger import execute as stock_ledger_report
+    from internal_ledger.api.import_api import confirm_import, preview_import
+    from internal_ledger.tests.test_business_workflows import trade_fixture
+
+    fixture = trade_fixture()
+    opening_qty = frappe.db.get_value(
+        "Bin", {"item_code": fixture.stock_item, "warehouse": fixture.warehouse}, "actual_qty"
+    )
+    bank_account = company_bank_account(fixture.company, fixture.accounts["100201"])
+    operator = business_user("trade-manager", (
+        "销售", "Sales User", "Sales Manager", "采购", "Purchase User", "Purchase Manager",
+        "库存", "Stock User", "Stock Manager", "会计", "Accounts User", "Accounts Manager",
+    ), fixture.company)
+    ledger_admin = business_user("ledger-admin", ("账套管理员",), fixture.company)
+
+    frappe.set_user(operator)
+    sales_order = make_sales_order(
+        company=fixture.company, customer=fixture.customer, item=fixture.stock_item,
+        warehouse=fixture.warehouse, qty=2, rate=100, currency="CNY",
+        selling_price_list="标准销售价",
+    )
+    delivery = make_delivery_note(sales_order.name)
+    delivery.insert().submit()
+    sales_invoice = make_sales_invoice(delivery.name)
+    sales_invoice.insert().submit()
+    sales_payment = get_payment_entry(
+        "Sales Invoice", sales_invoice.name, bank_account=fixture.accounts["100201"]
+    )
+    sales_payment.reference_no = "G3-SALE-" + uuid4().hex[:8]
+    sales_payment.reference_date = nowdate()
+    sales_payment.insert().submit()
+
+    purchase_order = frappe.get_doc({
+        "doctype": "Purchase Order", "company": fixture.company,
+        "supplier": fixture.supplier, "currency": "CNY", "conversion_rate": 1,
+        "schedule_date": add_days(nowdate(), 7), "items": [{
+            "item_code": fixture.stock_item, "warehouse": fixture.warehouse,
+            "qty": 3, "rate": 50, "schedule_date": add_days(nowdate(), 7),
+        }],
+    }).insert()
+    purchase_order.submit()
+    receipt = make_purchase_receipt(purchase_order.name)
+    receipt.insert().submit()
+    purchase_invoice = make_purchase_invoice(receipt.name)
+    purchase_invoice.insert().submit()
+    purchase_payment = get_payment_entry(
+        "Purchase Invoice", purchase_invoice.name, bank_account=fixture.accounts["100201"]
+    )
+    purchase_payment.reference_no = "G3-BUY-" + uuid4().hex[:8]
+    purchase_payment.reference_date = nowdate()
+    purchase_payment.insert().submit()
+
+    assert frappe.db.count("Stock Ledger Entry", {
+        "voucher_type": "Delivery Note", "voucher_no": delivery.name, "is_cancelled": 0,
+    }) == 1
+    assert frappe.db.count("Stock Ledger Entry", {
+        "voucher_type": "Purchase Receipt", "voucher_no": receipt.name, "is_cancelled": 0,
+    }) == 1
+    accounting_vouchers = (sales_invoice.name, sales_payment.name,
+                           purchase_invoice.name, purchase_payment.name)
+    assert all(frappe.db.count("GL Entry", {"voucher_no": name, "is_cancelled": 0}) >= 2
+               for name in accounting_vouchers)
+    assert frappe.db.get_value("Sales Invoice", sales_invoice.name, "outstanding_amount") == 0
+    assert frappe.db.get_value("Purchase Invoice", purchase_invoice.name, "outstanding_amount") == 0
+
+    bank_transaction = frappe.get_doc({
+        "doctype": "Bank Transaction", "date": nowdate(), "deposit": sales_payment.paid_amount,
+        "currency": "CNY", "bank_account": bank_account,
+        "description": "虚构客户销售收款", "reference_number": sales_payment.reference_no,
+    }).insert()
+    bank_transaction.submit()
+    gl_before_reconcile = frappe.db.count("GL Entry")
+    reconcile_vouchers(bank_transaction.name, json.dumps([{
+        "payment_doctype": "Payment Entry", "payment_name": sales_payment.name,
+        "amount": bank_transaction.unallocated_amount,
+    }]))
+    bank_transaction.reload()
+    assert bank_transaction.status == "Reconciled" and bank_transaction.unallocated_amount == 0
+    assert frappe.db.count("GL Entry") == gl_before_reconcile
+
+    frappe.set_user(ledger_admin)
+    statement = (
+        "交易时间,交易金额,收支,对方户名,摘要,流水号\n"
+        f"{nowdate()} 12:00:00,{sales_payment.paid_amount:.2f},收入,虚构验收客户,"
+        f"销售收款,{sales_payment.reference_no}\n"
+    ).encode()
+    encoded = base64.b64encode(statement).decode("ascii")
+    preview = preview_import("bank", encoded, fixture.accounts["100201"], "g3-trade-bank.csv")
+    imported = confirm_import(
+        "bank", encoded, fixture.accounts["100201"], preview["file_hash"], "g3-trade-bank.csv"
+    )
+    repeated = confirm_import(
+        "bank", encoded, fixture.accounts["100201"], preview["file_hash"], "g3-trade-bank.csv"
+    )
+    assert imported["summary"]["manual"] == 1 and repeated["summary"]["duplicate"] == 1
+    assert frappe.db.count("GL Entry") == gl_before_reconcile
+
+    frappe.set_user(operator)
+    common = frappe._dict(company=fixture.company, from_date="2026-01-01", to_date="2026-12-31")
+    stock_rows = stock_ledger_report(frappe._dict(
+        **common, item_code=[fixture.stock_item], warehouse=fixture.warehouse,
+    ))[1]
+    ledger_rows = general_ledger_report(frappe._dict(
+        **common, group_by="Group by Voucher (Consolidated)", include_default_book_entries=1,
+    ))[1]
+    ageing = {"company": fixture.company, "report_date": nowdate(),
+              "range": "30, 60, 90, 120", "show_remarks": False}
+    receivable_rows = receivable_report(frappe._dict(
+        **ageing, party_type="Customer", party=[fixture.customer], based_on_payment_terms=0,
+    ))[1]
+    payable_rows = payable_report(frappe._dict(
+        **ageing, party_type="Supplier", party=[fixture.supplier], based_on_payment_terms=0,
+    ))[1]
+    assert {delivery.name, receipt.name}.issubset({row.get("voucher_no") for row in stock_rows})
+    assert set(accounting_vouchers).issubset({row.get("voucher_no") for row in ledger_rows})
+    assert not any(row.get("voucher_no") == sales_invoice.name and row.get("outstanding")
+                   for row in receivable_rows)
+    assert not any(row.get("voucher_no") == purchase_invoice.name and row.get("outstanding")
+                   for row in payable_rows)
+
+    for role in ("账务查看者", "只读审计"):
+        reader = business_user(role, (role,), fixture.company)
+        frappe.set_user(reader)
+        assert frappe.has_permission("GL Entry", "read")
+        assert not frappe.has_permission("Sales Invoice", "write", sales_invoice.name)
+        assert not frappe.has_permission("Purchase Invoice", "write", purchase_invoice.name)
+
+    frappe.set_user(operator)
+    bank_transaction.cancel()
+    for document in (sales_payment, sales_invoice, delivery, sales_order,
+                     purchase_payment, purchase_invoice, receipt, purchase_order):
+        document.reload()
+        document.cancel()
+    assert all(frappe.db.get_value(doc.doctype, doc.name, "docstatus") == 2 for doc in (
+        sales_payment, sales_invoice, delivery, sales_order,
+        purchase_payment, purchase_invoice, receipt, purchase_order,
+    ))
+    assert frappe.db.get_value(
+        "Bin", {"item_code": fixture.stock_item, "warehouse": fixture.warehouse}, "actual_qty"
+    ) == opening_qty
+    assert all(frappe.db.count("GL Entry", {"voucher_no": name, "is_cancelled": 0}) == 0
+               for name in accounting_vouchers)
+    print("G3 TRADE: named operator; sales+purchase+stock+GL+AR/AP; bank reconciled; "
+          "intelligent import adds 0 GL; standard reversals restore stock and ledger")
+
+
+def test_g3_service_projects_expenses_payroll_reports_and_reversals():
+    from frappe.permissions import add_user_permission
+    from erpnext.projects.report.timesheet_billing_summary.timesheet_billing_summary import (
+        execute as timesheet_billing_report,
+    )
+    from hrms.payroll.report.salary_register.salary_register import execute as salary_register_report
+    from internal_ledger.tests.test_business_workflows import service_fixture
+    from internal_ledger.tests.test_hr_payroll_permissions import _hr_fixture
+
+    fixture = service_fixture()
+    hr_fixture = _hr_fixture()
+    project_manager = business_user(
+        "project-manager", ("项目", "Projects User", "Projects Manager"), fixture.company
+    )
+    finance_manager = business_user(
+        "finance-manager", ("会计", "Accounts User", "Accounts Manager", "Expense Approver"),
+        fixture.company,
+    )
+    hr_manager = business_user(
+        "hr-manager", ("人事工资", "HR User", "HR Manager", "账套管理员"), fixture.company
+    )
+
+    frappe.set_user("Administrator")
+    employee_user = frappe.get_doc("User", fixture.employee_email)
+    if "Employee" not in frappe.get_roles(fixture.employee_email):
+        employee_user.append("roles", {"role": "Employee"})
+        employee_user.save(ignore_permissions=True)
+    add_user_permission("Company", fixture.company, fixture.employee_email)
+    project = frappe.get_doc("Project", fixture.project)
+    project.append("users", {"user": project_manager, "welcome_email_sent": 1})
+    project.save()
+
+    frappe.set_user(project_manager)
+    timesheet = frappe.get_doc({
+        "doctype": "Timesheet", "company": fixture.company, "employee": fixture.employee,
+        "currency": "CNY", "exchange_rate": 1,
+        "time_logs": [{
+            "activity_type": fixture.activity_type, "from_time": "2026-10-10 09:00:00",
+            "to_time": "2026-10-10 11:00:00", "project": fixture.project,
+            "task": fixture.task, "is_billable": 1, "costing_rate": 100,
+            "billing_rate": 200,
+        }],
+    }).insert()
+    timesheet.submit()
+
+    frappe.set_user(fixture.employee_email)
+    claim = frappe.get_doc({
+        "doctype": "Expense Claim", "employee": fixture.employee, "company": fixture.company,
+        "posting_date": "2026-10-10", "currency": "CNY", "exchange_rate": 1,
+        "payable_account": fixture.accounts["2202"], "cost_center": fixture.cost_center,
+        "expenses": [{
+            "expense_type": "差旅费", "default_account": fixture.accounts["560201"],
+            "amount": 300, "cost_center": fixture.cost_center,
+        }],
+    }).insert()
+
+    frappe.set_user(finance_manager)
+    claim.approval_status = "Approved"
+    claim.expenses[0].sanctioned_amount = 300
+    claim.save().submit()
+    sales = frappe.get_doc({
+        "doctype": "Sales Invoice", "company": fixture.company, "customer": fixture.customer,
+        "posting_date": "2026-10-12", "due_date": "2026-10-12", "set_posting_time": 1,
+        "currency": "CNY", "conversion_rate": 1, "debit_to": fixture.accounts["1122"],
+        "project": fixture.project,
+        "items": [{
+            "item_code": fixture.item, "qty": 1, "rate": 1000,
+            "project": fixture.project, "income_account": fixture.accounts["5001"],
+            "cost_center": fixture.cost_center,
+        }],
+    }).insert()
+    sales.submit()
+    purchase = frappe.get_doc({
+        "doctype": "Purchase Invoice", "company": fixture.company,
+        "supplier": fixture.supplier, "posting_date": "2026-10-13",
+        "due_date": "2026-10-13", "set_posting_time": 1, "currency": "CNY",
+        "conversion_rate": 1, "credit_to": fixture.accounts["2202"],
+        "items": [{
+            "item_code": fixture.item, "qty": 1, "rate": 200,
+            "project": fixture.project, "expense_account": fixture.accounts["560201"],
+            "cost_center": fixture.cost_center,
+        }],
+    }).insert()
+    purchase.submit()
+    assert all(frappe.db.count("GL Entry", {"voucher_no": name, "is_cancelled": 0}) >= 2
+               for name in (claim.name, sales.name, purchase.name))
+
+    frappe.set_user(hr_manager)
+    payroll = frappe.get_doc("Payroll Entry", hr_fixture.payroll)
+    payroll.submit()
+    salary_slips = frappe.get_all("Salary Slip", {"payroll_entry": payroll.name}, pluck="name")
+    assert len(salary_slips) == 1
+    payroll.submit_salary_slips()
+    salary_slip = salary_slips[0]
+    payroll_journal = frappe.db.get_value("Salary Slip", salary_slip, "journal_entry")
+    assert payroll_journal and frappe.db.count(
+        "GL Entry", {"voucher_no": payroll_journal, "is_cancelled": 0}
+    ) >= 2
+    salary_rows = salary_register_report(frappe._dict(
+        company=fixture.company, employee=hr_fixture.employees[0], docstatus="Submitted"
+    ))[1]
+    assert any(row.get("salary_slip_id") == salary_slip and row.get("net_pay") == 5000
+               for row in salary_rows)
+
+    frappe.set_user(project_manager)
+    timesheet_rows = timesheet_billing_report({
+        "company": fixture.company, "project": fixture.project,
+        "from_date": "2026-10-01", "to_date": "2026-10-31",
+    })[1]
+    assert any(row.get("timesheet") == timesheet.name and row.get("billing_amount") == 400
+               for row in timesheet_rows)
+    assert frappe.has_permission("Project", "read", fixture.project)
+    assert not frappe.has_permission("Sales Invoice", "write", sales.name)
+
+    for role in ("账务查看者", "只读审计"):
+        reader = business_user("service-" + role, (role,), fixture.company)
+        frappe.set_user(reader)
+        assert frappe.has_permission("GL Entry", "read")
+        assert not frappe.has_permission("Sales Invoice", "write", sales.name)
+        assert not frappe.has_permission("Purchase Invoice", "write", purchase.name)
+        assert not frappe.has_permission("Salary Slip", "read", salary_slip)
+
+    frappe.set_user(hr_manager)
+    payroll.reload()
+    payroll.cancel()
+    assert payroll.docstatus == 2
+    assert not frappe.db.exists("Salary Slip", salary_slip)
+    assert frappe.db.count("GL Entry", {"voucher_no": payroll_journal, "is_cancelled": 0}) == 0
+
+    frappe.set_user(finance_manager)
+    for document in (claim, sales, purchase):
+        document.reload()
+        document.cancel()
+    assert all(frappe.db.get_value(doc.doctype, doc.name, "docstatus") == 2
+               for doc in (claim, sales, purchase))
+    assert all(frappe.db.count("GL Entry", {"voucher_no": doc.name, "is_cancelled": 0}) == 0
+               for doc in (claim, sales, purchase))
+
+    frappe.set_user(project_manager)
+    timesheet.reload()
+    timesheet.cancel()
+    assert timesheet.docstatus == 2
+    print("G3 SERVICE: named employee, project, finance and HR roles; project+expense+payroll "
+          "reports verified; viewers read only; standard cancellations reverse ledger")
+
+
 def load_tests(loader, tests, pattern):
     def test_site_set_up():
         assert frappe.local.site == "test.localhost", "Synthetic accounting acceptance requires the isolated test site"
+        frappe.flags.g3_previous_ledger_settings = {
+            field: frappe.db.get_single_value("Internal Ledger Settings", field)
+            for field in ("company", "base_currency", "fiscal_year_start")
+        }
         set_up()
         frappe.flags.g2_package_files_before = set(frappe.get_all(
             "File", filters={"attached_to_doctype": "Tax Material Package"}, pluck="name"))
 
     def test_site_tear_down():
         frappe.set_user("Administrator")
+        company = getattr(frappe.flags, "classification_company", "_Test Internal Ledger Chart")
+        previous = frappe.flags.g3_previous_ledger_settings
         before = frappe.flags.g2_package_files_before or set()
         for name in set(frappe.get_all(
                 "File", filters={"attached_to_doctype": "Tax Material Package"}, pluck="name")) - before:
             Path(frappe.get_doc("File", name).get_full_path()).unlink(missing_ok=True)
-        tear_down()
+        try:
+            tear_down()
+        finally:
+            clean_committed_test_company(company)
+            for field, value in previous.items():
+                frappe.db.set_single_value("Internal Ledger Settings", field, value)
+            frappe.db.commit()
+            frappe.clear_cache()
 
     return unittest.TestSuite(PasswordSafeFunctionTestCase(test, setUp=test_site_set_up, tearDown=test_site_tear_down)
                               for name, test in sorted(globals().items()) if name.startswith("test_"))

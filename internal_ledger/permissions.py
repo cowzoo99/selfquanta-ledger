@@ -231,15 +231,24 @@ def protect_journal_write(doc, method=None):
 
 
 def _is_standard_payroll_journal_write(doc, company):
-    if not frappe.flags.get("via_payroll_entry"):
+    old = doc.get_doc_before_save()
+    payroll_cancellation = bool(
+        doc.docstatus == 2 and old and old.docstatus == 1
+    )
+    if not frappe.flags.get("via_payroll_entry") and not payroll_cancellation:
         return False
     references = {(row.reference_type, row.reference_name) for row in doc.get("accounts")
                   if row.reference_type or row.reference_name}
     if not references or any(reference_type != "Payroll Entry" or not reference_name
                              for reference_type, reference_name in references):
         return False
-    return all(frappe.db.get_value("Payroll Entry", reference_name, "company") == company
-               for _, reference_name in references)
+    payroll_rows = [
+        frappe.db.get_value("Payroll Entry", reference_name, ["company", "docstatus"], as_dict=True)
+        for _, reference_name in references
+    ]
+    if not all(row and row.company == company for row in payroll_rows):
+        return False
+    return not payroll_cancellation or all(row.docstatus == 2 for row in payroll_rows)
 
 
 def protect_source_file(doc, method=None):
