@@ -120,13 +120,18 @@ if ($Project -notmatch '^ledger-restore-[a-z0-9][a-z0-9-]{7,}$') {
 }
 $reportRoot = Resolve-SafeReportDirectory -Path $ReportDirectory -RepositoryRoot $repo
 $expected = Get-Content -Raw -LiteralPath $manifestPath | ConvertFrom-Json
-if ($expected.schema -ne 1 -or $expected.git_sha -notmatch '^[0-9a-f]{40}$') {
+if ($expected.schema -notin @(1, 2) -or $expected.git_sha -notmatch '^[0-9a-f]{40}$') {
     throw 'Backup manifest schema or Git SHA is invalid.'
 }
 if ($expected.encrypted_sha256 -notmatch '^[0-9a-f]{64}$') {
     throw 'Backup manifest encrypted archive checksum is invalid.'
 }
-foreach ($property in @('company', 'journal_entry', 'file')) {
+$countProperties = if ($expected.schema -eq 1) {
+    @('company', 'journal_entry', 'file')
+} else {
+    @('company', 'user', 'file', 'item', 'journal_entry', 'gl_entry', 'employee', 'salary_slip')
+}
+foreach ($property in $countProperties) {
     if ($expected.counts.$property -notmatch '^\d+$') { throw "Backup manifest count is invalid: $property" }
 }
 if ($env:INTERNAL_LEDGER_IMAGE -ne "internal-ledger:$($expected.git_sha)") {
@@ -243,22 +248,27 @@ try {
     )
     Invoke-Compose -Quiet -Arguments $restoreCommand
 
-    $sql = 'SELECT (SELECT COUNT(*) FROM `tabCompany`),(SELECT COUNT(*) FROM `tabJournal Entry`),(SELECT COUNT(*) FROM `tabFile`);'
+    $sql = if ($expected.schema -eq 1) {
+        'SELECT (SELECT COUNT(*) FROM `tabCompany`),(SELECT COUNT(*) FROM `tabJournal Entry`),(SELECT COUNT(*) FROM `tabFile`);'
+    } else {
+        'SELECT (SELECT COUNT(*) FROM `tabCompany`),(SELECT COUNT(*) FROM `tabUser`),(SELECT COUNT(*) FROM `tabFile`),(SELECT COUNT(*) FROM `tabItem`),(SELECT COUNT(*) FROM `tabJournal Entry`),(SELECT COUNT(*) FROM `tabGL Entry`),(SELECT COUNT(*) FROM `tabEmployee`),(SELECT COUNT(*) FROM `tabSalary Slip`);'
+    }
     $countsText = & $script:DockerExecutable @script:ComposePrefix exec -T backend bench --site $restoreSite mariadb --skip-column-names --batch -e $sql 2>$null
     if ($LASTEXITCODE -ne 0) { throw 'Unable to read restored verification counts.' }
     $actualValues = (($countsText | Out-String).Trim() -split '\s+')
-    if ($actualValues.Count -ne 3 -or ($actualValues | Where-Object { $_ -notmatch '^\d+$' })) {
+    if ($actualValues.Count -ne $countProperties.Count -or ($actualValues | Where-Object { $_ -notmatch '^\d+$' })) {
         throw 'Unexpected restored verification count output.'
     }
     $actual = [ordered]@{
         company = [int64]$actualValues[0]
-        journal_entry = [int64]$actualValues[1]
-        file = [int64]$actualValues[2]
     }
-    $success =
-        $actual.company -eq [int64]$expected.counts.company -and
-        $actual.journal_entry -eq [int64]$expected.counts.journal_entry -and
-        $actual.file -eq [int64]$expected.counts.file
+    for ($index = 1; $index -lt $countProperties.Count; $index++) {
+        $actual[$countProperties[$index]] = [int64]$actualValues[$index]
+    }
+    $success = $true
+    foreach ($property in $countProperties) {
+        if ($actual[$property] -ne [int64]$expected.counts.$property) { $success = $false }
+    }
     if (-not $success) { throw 'Restored verification counts do not match the manifest.' }
 
     [ordered]@{

@@ -84,6 +84,8 @@ $required = @(
     'build_image.ps1',
     'provision-site.ps1',
     'backup.ps1',
+    'backup-all-sites.ps1',
+    'health-check.ps1',
     'backup-and-upload.ps1',
     'systemd/selfquanta-ledger-backup.service',
     'systemd/selfquanta-ledger-backup.timer',
@@ -281,6 +283,8 @@ $appLayer = Get-Content -Raw -LiteralPath (Join-Path $InfraRoot 'Dockerfile.app-
 Assert-True ($appLayer -notmatch 'frappe:frappe' -and $appLayer -match 'frappe:root') 'App layer must use the runtime frappe group'
 
 $backup = Get-Content -Raw -LiteralPath (Join-Path $InfraRoot 'backup.ps1')
+$backupAll = Get-Content -Raw -LiteralPath (Join-Path $InfraRoot 'backup-all-sites.ps1')
+$healthCheck = Get-Content -Raw -LiteralPath (Join-Path $InfraRoot 'health-check.ps1')
 Assert-True ($backup -match 'Get-Item -LiteralPath \$encryptedTemp -Force') 'Linux hidden backup temp files must be inspected with -Force'
 $restoreCheck = Get-Content -Raw -LiteralPath (Join-Path $InfraRoot 'restore-check.ps1')
 Assert-True ($restoreCheck -match 'chown frappe:root') 'Restore must use the image runtime group for site_config.json'
@@ -290,6 +294,14 @@ Assert-True ($backup -match 'Get-FileHash') 'Backup must emit a checksum'
 Assert-True ($backup -notmatch 'Write-(Host|Output).*key') 'Backup must not log key material'
 Assert-True ($backup -match 'encryptedTemp') 'Backup encryption must target a unique temporary file'
 Assert-True ($backup -match '\[IO\.File\]::Move') 'Validated encrypted backup must be atomically renamed into place'
+Assert-True ($backup -match 'schema\s*=\s*2' -and $backup -match 'RetentionDailyDays' -and $backup -match 'RetentionMonthlyMonths') 'Backup must emit schema 2 and apply explicit daily/monthly retention'
+Assert-True ($backupAll -match 'SitesFile' -and $backupAll -match 'Site' -and $backupAll -match 'Project' -and $backupAll -match 'Destination' -and $backupAll -match 'KeyFile') 'Multisite backup must use one explicit per-Site configuration list'
+Assert-True ($backupAll -match 'shared backup key path' -and $backupAll -match '\*\.zip' -and $backupAll -match 'Unencrypted backup output') 'Multisite backup must reject shared keys and plaintext output'
+Assert-True ($backupAll -match 'continue' -and $backupAll -match 'ConvertTo-Json') 'Multisite backup must continue after one Site failure and emit a summary'
+Assert-True ($healthCheck -match 'SitesFile' -and $healthCheck -match 'CertificateWarningDays' -and $healthCheck -match 'MaxBackupAgeHours') 'Health check must have bounded certificate and backup freshness gates'
+Assert-True ($healthCheck -match 'unknown_host' -and $healthCheck -notmatch 'FRAPPE_SITE_NAME_HEADER') 'Unknown hosts must fail closed without a forced-Site fallback'
+Assert-True ($healthCheck -match 'No encrypted backup found' -and $healthCheck -match 'NotAfter') 'Health check must detect missing backups and certificate expiry'
+Assert-True ($healthCheck -match 'scheduler' -and $healthCheck -match 'queue-short' -and $healthCheck -match 'queue-long') 'Health check must cover scheduler and both worker queues'
 
 $restore = Get-Content -Raw -LiteralPath (Join-Path $InfraRoot 'restore-check.ps1')
 Assert-True ($restore -match 'INTERNAL_LEDGER_RESTORE_PROJECT') 'Restore must require an isolated project name'
@@ -299,6 +311,9 @@ Assert-True ($restore -match 'tabJournal Entry') 'Restore must verify Journal En
 Assert-True ($restore -match 'tabFile') 'Restore must verify attachment count'
 Assert-True ($restore -match "label=com\.docker\.compose\.project=") 'Restore must reject pre-existing project-labelled resources'
 Assert-True ($restore -match 'Merge-SiteConfig') 'Restore must merge the original encryption key into fresh site credentials'
+foreach ($table in @('tabCompany', 'tabUser', 'tabFile', 'tabItem', 'tabJournal Entry', 'tabGL Entry', 'tabEmployee', 'tabSalary Slip')) {
+    Assert-True ($restore -match [regex]::Escape($table)) "Restore schema 2 must verify $table count"
+}
 
 $deployDoc = Get-Content -Raw -LiteralPath (Join-Path $repositoryRoot 'docs/operations/deploy.md')
 Assert-True ($deployDoc -match 'cmd=login' -and $deployDoc -match 'LoginAttemptTracker' -and $deployDoc -match 'canonical endpoint only') 'Deploy documentation must distinguish native all-entrypoint IP/user lockout from canonical-only gateway throttling'
@@ -327,8 +342,12 @@ Assert-True ($backupDoc -match 'coscli ls' -and $backupDoc -match 'cos://selfqua
 Assert-True ($backupDoc -match 'encrypted' -and $backupDoc -match 'SHA-256' -and $backupDoc -match 'manifest') 'Backup documentation must explain encrypted-object verification'
 Assert-True ($backupDoc -match 'infra/restore-check\.ps1' -and $backupDoc -match 'ledger-restore-' -and $backupDoc -match 'status.*PASS' -and $backupDoc -match 'restore-reports') 'Backup documentation must require isolated restore evidence'
 Assert-True ($backupDoc -match "export INTERNAL_LEDGER_IMAGE='internal-ledger:<manifest-git-sha>'" -and $backupDoc -match 'Replace.*40-character.*selected manifest') 'Restore documentation must quote and explain the manifest SHA image placeholder'
+$incidentDocPath = Join-Path $repositoryRoot 'docs/operations/incident-response.md'
+Assert-True (Test-Path -LiteralPath $incidentDocPath -PathType Leaf) 'Missing incident response runbook'
+$incidentDoc = Get-Content -Raw -LiteralPath $incidentDocPath
+Assert-True ($incidentDoc -match 'RPO.*24' -and $incidentDoc -match 'RTO.*4' -and $incidentDoc -match 'P0' -and $incidentDoc -match 'P1' -and $incidentDoc -match '凭据轮换') 'Incident runbook must define RPO, RTO, severity and credential rotation'
 
-$scripts = @('test-config.ps1', 'build_image.ps1', 'provision-site.ps1', 'backup.ps1', 'backup-and-upload.ps1', 'restore-check.ps1')
+$scripts = @('test-config.ps1', 'build_image.ps1', 'provision-site.ps1', 'backup.ps1', 'backup-all-sites.ps1', 'health-check.ps1', 'backup-and-upload.ps1', 'restore-check.ps1')
 foreach ($name in $scripts) {
     $tokens = $null
     $errors = $null

@@ -108,3 +108,21 @@ docker compose --env-file /srv/selfquanta/ledger/infra/versions.env -f /srv/self
 ```
 
 Do not use `docker system prune` or `docker volume prune`. Run a full restore drill before launch, after backup-script changes, and before every production upgrade. This runbook update does not claim that a live backup or restore has been verified.
+
+## 多 Site 配置和批量执行
+
+每个企业使用独立 Site、Compose 项目、备份目录和备份密钥。配置文件不保存密钥内容，只保存 root 管理员可读的绝对路径：
+
+```json
+{"sites":[{"Site":"company-a.example.com","HostName":"company-a.example.com","Project":"ledger_company_a","Destination":"/var/backups/selfquanta/company-a","KeyFile":"/etc/selfquanta/ledger/company-a-backup.key","RetentionDailyDays":7,"RetentionMonthlyMonths":12}]}
+```
+
+先校验，再逐 Site 执行。任一 Site 失败不会阻止其他 Site 备份，但整体命令返回非零：
+
+```bash
+sudo pwsh -NoProfile -File /srv/selfquanta/ledger/infra/backup-all-sites.ps1 -SitesFile /etc/selfquanta/ledger/sites.json -ValidateOnly
+sudo pwsh -NoProfile -File /srv/selfquanta/ledger/infra/backup-all-sites.ps1 -SitesFile /etc/selfquanta/ledger/sites.json
+sudo pwsh -NoProfile -File /srv/selfquanta/ledger/infra/health-check.ps1 -SitesFile /etc/selfquanta/ledger/sites.json
+```
+
+schema 2 清单比较 Company、User、File、Item、Journal Entry、GL Entry、Employee 和 Salary Slip；恢复脚本仍兼容只含 Company、Journal Entry、File 的 schema 1 历史包。候选发布版中每一种实际存在的 schema 都要选一包完成隔离恢复。RPO 为 24 小时，试运营 RTO 为 4 小时；真实备份和恢复结果必须以生成的清单及 PASS 报告为准。

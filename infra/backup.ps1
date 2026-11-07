@@ -4,6 +4,8 @@ param(
     [string]$KeyFile = $env:BACKUP_KEY_FILE,
     [string]$Site = $env:SITE_NAME,
     [string]$Project = $env:COMPOSE_PROJECT_NAME,
+    [ValidateRange(1, 90)][int]$RetentionDailyDays = 7,
+    [ValidateRange(1, 120)][int]$RetentionMonthlyMonths = 12,
     [switch]$ValidateOnly
 )
 
@@ -59,7 +61,7 @@ Assert-Command openssl
 
 if ($ValidateOnly) {
     Write-Host 'Backup inputs validated.'
-    exit 0
+    return
 }
 
 Assert-Command docker
@@ -90,11 +92,11 @@ try {
     [void](New-Item -ItemType Directory -Path (Join-Path $staging 'payload') -Force)
     Invoke-Compose -Quiet -Arguments @('exec', '-T', 'backend', 'mkdir', '-p', $containerDir)
 
-    $sql = 'SELECT (SELECT COUNT(*) FROM `tabCompany`),(SELECT COUNT(*) FROM `tabJournal Entry`),(SELECT COUNT(*) FROM `tabFile`);'
+    $sql = 'SELECT (SELECT COUNT(*) FROM `tabCompany`),(SELECT COUNT(*) FROM `tabUser`),(SELECT COUNT(*) FROM `tabFile`),(SELECT COUNT(*) FROM `tabItem`),(SELECT COUNT(*) FROM `tabJournal Entry`),(SELECT COUNT(*) FROM `tabGL Entry`),(SELECT COUNT(*) FROM `tabEmployee`),(SELECT COUNT(*) FROM `tabSalary Slip`);'
     $countsText = & docker @script:ComposePrefix exec -T backend bench --site $Site mariadb --skip-column-names --batch -e $sql 2>$null
     if ($LASTEXITCODE -ne 0) { throw 'Unable to read pre-backup verification counts.' }
     $counts = (($countsText | Out-String).Trim() -split '\s+')
-    if ($counts.Count -ne 3 -or ($counts | Where-Object { $_ -notmatch '^\d+$' })) {
+    if ($counts.Count -ne 8 -or ($counts | Where-Object { $_ -notmatch '^\d+$' })) {
         throw 'Unexpected pre-backup verification count output.'
     }
 
@@ -109,15 +111,20 @@ try {
     Invoke-Compose -Quiet -Arguments @('cp', "backend:$containerDir/.", (Join-Path $staging 'payload'))
 
     $manifest = [ordered]@{
-        schema = 1
+        schema = 2
         created_utc = [DateTime]::UtcNow.ToString('o')
         site = $Site
         git_sha = $imageSha
         site_config_file = 'site-config.json'
         counts = [ordered]@{
             company = [int64]$counts[0]
-            journal_entry = [int64]$counts[1]
+            user = [int64]$counts[1]
             file = [int64]$counts[2]
+            item = [int64]$counts[3]
+            journal_entry = [int64]$counts[4]
+            gl_entry = [int64]$counts[5]
+            employee = [int64]$counts[6]
+            salary_slip = [int64]$counts[7]
         }
     }
     $manifest | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $staging 'manifest.json') -Encoding utf8NoBOM
@@ -144,12 +151,19 @@ try {
         Sort-Object Name -Descending)
     for ($index = 0; $index -lt $dailyGroups.Count; $index++) {
         $archives = @($dailyGroups[$index].Group | Sort-Object LastWriteTimeUtc -Descending)
-        $remove = if ($index -lt 7) { @($archives | Select-Object -Skip 1) } else { $archives }
+        $remove = if ($index -lt $RetentionDailyDays) { @($archives | Select-Object -Skip 1) } else { $archives }
         foreach ($archive in $remove) {
             $sidecar = [IO.Path]::ChangeExtension([IO.Path]::ChangeExtension($archive.FullName, $null), '.manifest.json')
             Remove-Item -LiteralPath $archive.FullName -Force
             if (Test-Path -LiteralPath $sidecar) { Remove-Item -LiteralPath $sidecar -Force }
         }
+    }
+    $monthlyGroups = @(Get-ChildItem -LiteralPath $monthly -Filter "internal-ledger-$safeSite-*.zip.enc" -File |
+        Sort-Object Name -Descending)
+    foreach ($archive in @($monthlyGroups | Select-Object -Skip $RetentionMonthlyMonths)) {
+        $sidecar = [IO.Path]::ChangeExtension([IO.Path]::ChangeExtension($archive.FullName, $null), '.manifest.json')
+        Remove-Item -LiteralPath $archive.FullName -Force
+        if (Test-Path -LiteralPath $sidecar) { Remove-Item -LiteralPath $sidecar -Force }
     }
 
     Write-Host "Backup completed: $stamp"
