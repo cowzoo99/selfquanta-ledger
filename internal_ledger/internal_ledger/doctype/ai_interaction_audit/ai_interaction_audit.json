@@ -1,0 +1,30 @@
+{
+ "doctype": "DocType",
+ "name": "AI Interaction Audit",
+ "module": "Internal Ledger",
+ "autoname": "hash",
+ "engine": "InnoDB",
+ "field_order": [
+  "feature", "actor", "company", "context_type", "context_name", "provider", "model",
+  "latency_ms", "result_status", "input_hash", "output_hash", "created_at"
+ ],
+ "fields": [
+  {"fieldname": "feature", "label": "功能", "fieldtype": "Data", "reqd": 1, "read_only": 1},
+  {"fieldname": "actor", "label": "操作人", "fieldtype": "Link", "options": "User", "reqd": 1, "read_only": 1},
+  {"fieldname": "company", "label": "公司", "fieldtype": "Link", "options": "Company", "reqd": 1, "read_only": 1},
+  {"fieldname": "context_type", "label": "内容类型", "fieldtype": "Data", "reqd": 1, "read_only": 1},
+  {"fieldname": "context_name", "label": "内容名称", "fieldtype": "Data", "reqd": 1, "read_only": 1},
+  {"fieldname": "provider", "label": "提供商", "fieldtype": "Data", "reqd": 1, "read_only": 1},
+  {"fieldname": "model", "label": "模型", "fieldtype": "Data", "read_only": 1},
+  {"fieldname": "latency_ms", "label": "耗时毫秒", "fieldtype": "Int", "reqd": 1, "read_only": 1},
+  {"fieldname": "result_status", "label": "结果", "fieldtype": "Select", "options": "success\nfailed", "reqd": 1, "read_only": 1},
+  {"fieldname": "input_hash", "label": "输入摘要", "fieldtype": "Data", "reqd": 1, "read_only": 1},
+  {"fieldname": "output_hash", "label": "输出摘要", "fieldtype": "Data", "reqd": 1, "read_only": 1},
+  {"fieldname": "created_at", "label": "发生时间", "fieldtype": "Datetime", "reqd": 1, "read_only": 1}
+ ],
+ "permissions": [
+  {"role": "账套管理员", "read": 1, "report": 1},
+  {"role": "企业负责人", "read": 1, "report": 1},
+  {"role": "只读审计", "read": 1, "report": 1}
+ ]
+}
