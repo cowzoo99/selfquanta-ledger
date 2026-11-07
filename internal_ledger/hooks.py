@@ -16,9 +16,11 @@ _ledger_doctypes = ("Import Batch", "Imported Transaction", "Classification Rule
                     "Internal Ledger Source File", "Ledger Evidence", "Month End Run", "Tax Material Package")
 has_permission = {doctype: "internal_ledger.permissions.has_ledger_permission" for doctype in _ledger_doctypes}
 has_permission["File"] = "internal_ledger.permissions.file_permission"
+has_permission["Customer Exit Export"] = "internal_ledger.permissions.has_customer_exit_permission"
 permission_query_conditions = {doctype: "internal_ledger.permissions.company_query"
                               for doctype in _ledger_doctypes if doctype != "Internal Ledger Settings"}
 permission_query_conditions["File"] = "internal_ledger.permissions.file_query"
+permission_query_conditions["Customer Exit Export"] = "internal_ledger.permissions.customer_exit_query"
 for _doctype in ("Journal Entry", "Account", "GL Entry"):
     has_permission[_doctype] = "internal_ledger.permissions.has_reporting_permission"
     permission_query_conditions[_doctype] = "internal_ledger.permissions.company_query"
@@ -27,6 +29,10 @@ doc_events = {doctype: {"before_validate": "internal_ledger.permissions.protect_
               for doctype in _ledger_doctypes if doctype != "Internal Ledger Audit Event"}
 doc_events["File"] = {"before_validate": "internal_ledger.permissions.protect_source_file",
                       "on_trash": "internal_ledger.permissions.protect_source_file"}
+doc_events["Customer Exit Export"] = {
+    "before_validate": "internal_ledger.permissions.protect_customer_exit_write",
+    "on_trash": "internal_ledger.permissions.protect_customer_exit_write",
+}
 for _doctype in ("Import Batch", "Imported Transaction"):
     doc_events[_doctype] = {"before_validate": "internal_ledger.permissions.protect_import_write",
                            "on_trash": "internal_ledger.permissions.protect_import_write"}

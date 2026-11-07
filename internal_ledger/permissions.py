@@ -20,6 +20,7 @@ _EVIDENCE_WRITE = object()
 _EVIDENCE_FILE_WRITE = object()
 _NATIVE_FILE_DEDUP = object()
 _ZIP_READ_BYTES = object()
+_CUSTOMER_EXIT_WRITE = object()
 _PROTECTED_FILES = ("Ledger Evidence", "Internal Ledger Source File", "Tax Material Package")
 LEDGER_MANAGER_ROLES = {"账套管理员", "企业负责人", "财务主管"}
 LEDGER_WRITE_ROLES = LEDGER_MANAGER_ROLES | {"会计", "出纳"}
@@ -93,6 +94,35 @@ def require_ledger_admin() -> None:
 def require_member_manager() -> None:
     if frappe.session.user != "Administrator" and not set(frappe.get_roles()) & MEMBER_MANAGER_ROLES:
         frappe.throw("需要企业成员管理权限", frappe.PermissionError)
+
+
+def _has_explicit_role(user: str, role: str) -> bool:
+    return bool(frappe.db.exists("Has Role", {
+        "parent": user, "parenttype": "User", "role": role,
+    }))
+
+
+def require_enterprise_owner(user: str | None = None) -> str:
+    user = user or frappe.session.user
+    if user == "Guest" or not _has_explicit_role(user, "企业负责人"):
+        frappe.throw("需要企业负责人权限", frappe.PermissionError)
+    return user
+
+
+def has_customer_exit_permission(doc, ptype, user=None, **kwargs):
+    user = user or frappe.session.user
+    return ptype in ("read", "report", "select") and _has_explicit_role(user, "企业负责人")
+
+
+def customer_exit_query(user=None, doctype=None):
+    user = user or frappe.session.user
+    return "" if _has_explicit_role(user, "企业负责人") else "1=0"
+
+
+def protect_customer_exit_write(doc, method=None):
+    require_enterprise_owner()
+    if doc.flags.customer_exit_write is not _CUSTOMER_EXIT_WRITE:
+        frappe.throw("企业数据导出记录只能由导出服务写入", frappe.PermissionError)
 
 
 def document_company(doc):

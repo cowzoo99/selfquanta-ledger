@@ -1,0 +1,29 @@
+{
+ "doctype": "DocType",
+ "name": "Customer Exit Export",
+ "module": "Internal Ledger",
+ "autoname": "hash",
+ "engine": "InnoDB",
+ "field_order": [
+  "status", "requested_by", "requested_at", "completed_at", "downloaded_at",
+  "file", "row_count", "attachment_count", "package_size", "package_sha256",
+  "manifest_json", "failure_code"
+ ],
+ "fields": [
+  {"fieldname": "status", "label": "Status", "fieldtype": "Select", "options": "Generating\nReady\nFailed\nDeleted", "reqd": 1, "read_only": 1},
+  {"fieldname": "requested_by", "label": "Requested By", "fieldtype": "Link", "options": "User", "reqd": 1, "read_only": 1},
+  {"fieldname": "requested_at", "label": "Requested At", "fieldtype": "Datetime", "reqd": 1, "read_only": 1},
+  {"fieldname": "completed_at", "label": "Completed At", "fieldtype": "Datetime", "read_only": 1},
+  {"fieldname": "downloaded_at", "label": "Downloaded At", "fieldtype": "Datetime", "read_only": 1},
+  {"fieldname": "file", "label": "Private Package", "fieldtype": "Attach", "read_only": 1},
+  {"fieldname": "row_count", "label": "Row Count", "fieldtype": "Int", "read_only": 1},
+  {"fieldname": "attachment_count", "label": "Attachment Count", "fieldtype": "Int", "read_only": 1},
+  {"fieldname": "package_size", "label": "Package Size", "fieldtype": "Int", "read_only": 1},
+  {"fieldname": "package_sha256", "label": "Package SHA-256", "fieldtype": "Data", "read_only": 1},
+  {"fieldname": "manifest_json", "label": "Manifest JSON", "fieldtype": "Long Text", "read_only": 1},
+  {"fieldname": "failure_code", "label": "Failure Code", "fieldtype": "Data", "read_only": 1}
+ ],
+ "permissions": [
+  {"role": "企业负责人", "read": 1, "report": 1}
+ ]
+}
