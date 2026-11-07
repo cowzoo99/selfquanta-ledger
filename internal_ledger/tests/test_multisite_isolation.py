@@ -7,10 +7,14 @@ The evidence function intentionally returns only counts, booleans and hashes.
 
 from __future__ import annotations
 
+import csv
 import hashlib
+import io
+import json
 import os
 import unittest
 from pathlib import Path
+from zipfile import ZipFile
 
 import frappe
 from frappe.utils import getdate, nowdate
@@ -49,9 +53,13 @@ def _peer(site: str) -> str:
 
 
 def _company() -> str:
-    companies = frappe.get_all("Company", pluck="name", order_by="creation asc", limit=2)
+    fixture_company = frappe.db.get_value("Journal Entry", {"user_remark": _marker(_site())}, "company")
+    if fixture_company:
+        return fixture_company
+    companies = [name for name in frappe.get_all("Company", pluck="name", order_by="creation asc")
+                 if not name.startswith("_Test")]
     if len(companies) != 1:
-        raise AssertionError("Acceptance Site must contain exactly one Company")
+        raise AssertionError("Acceptance Site must contain exactly one non-test Company")
     return companies[0]
 
 
@@ -145,6 +153,92 @@ def isolation_evidence() -> dict:
     }
 
 
+def _enterprise_owner() -> str:
+    email = f"g1-owner-{_digest(_site())[:12]}@example.invalid"
+    if not frappe.db.exists("User", email):
+        frappe.get_doc({
+            "doctype": "User",
+            "email": email,
+            "first_name": "G1 acceptance owner",
+            "send_welcome_email": 0,
+            "roles": [{"role": "企业负责人"}],
+        }).insert(ignore_permissions=True)
+    elif not frappe.db.exists("Has Role", {
+        "parent": email, "parenttype": "User", "role": "企业负责人",
+    }):
+        frappe.get_doc({
+            "doctype": "Has Role",
+            "parent": email,
+            "parenttype": "User",
+            "parentfield": "roles",
+            "role": "企业负责人",
+        }).insert(ignore_permissions=True)
+    return email
+
+
+def customer_exit_evidence() -> dict:
+    """Open a real package and return only non-secret isolation evidence."""
+    from internal_ledger.api.export_api import request_customer_exit_export
+
+    previous_user = frappe.session.user
+    previous_in_test = frappe.flags.in_test
+    try:
+        frappe.flags.in_test = True
+        frappe.db.set_single_value("Internal Ledger Settings", "company", _company())
+        frappe.set_user(_enterprise_owner())
+        result = request_customer_exit_export()
+        if result["status"] != "Ready":
+            raise AssertionError(
+                f"Customer exit package is {result['status']}: {result['failure_code']}"
+            )
+        file_name = frappe.db.get_value("File", {
+            "attached_to_doctype": "Customer Exit Export",
+            "attached_to_name": result["name"],
+            "file_url": result["file"],
+        }, "name")
+        package = Path(frappe.get_doc("File", file_name).get_full_path())
+        with ZipFile(package) as archive:
+            names = archive.namelist()
+            manifest = json.loads(archive.read("manifest.json"))
+            required = {
+                "master-data/customer.csv", "transactions/journal-entry.csv",
+                "attachments/index.csv", "audit/internal-ledger-audit-event.csv",
+            }
+            if not required.issubset(names):
+                raise AssertionError("Customer exit package is missing a required readable member")
+            for member in required:
+                archive.read(member)
+            attachment_member = next((member for member in names if member.startswith("attachments/files/")), None)
+            if not attachment_member:
+                raise AssertionError("Customer exit package has no readable attachment")
+            archive.read(attachment_member)
+            attachment_rows = list(csv.reader(io.StringIO(
+                archive.read("attachments/index.csv").decode("utf-8-sig")
+            )))[1:]
+            if (manifest["row_count"] != int(result["row_count"])
+                    or manifest["attachment_count"] != int(result["attachment_count"])
+                    or len(attachment_rows) != int(result["attachment_count"])):
+                raise AssertionError("Customer exit package counts do not match the stored request")
+            searchable = b"\n".join(
+                archive.read(member)
+                for member in names
+                if member.endswith((".csv", ".txt")) or member.startswith("attachments/files/")
+            )
+        own_marker = _marker(_site()).encode("utf-8")
+        peer_marker = _marker(_peer(_site())).encode("utf-8")
+        return {
+            "package_sha256": result["package_sha256"],
+            "row_count": int(result["row_count"]),
+            "attachment_count": int(result["attachment_count"]),
+            "audit_count": int(manifest["audit_count"]),
+            "own_marker_present": own_marker in searchable,
+            "peer_marker_present": peer_marker in searchable,
+        }
+    finally:
+        frappe.flags.in_test = previous_in_test
+        frappe.set_user(previous_user)
+
+
 def test_site_data_files_and_documents_are_isolated():
     evidence = isolation_evidence()
     assert evidence["own_fixture_complete"]
@@ -168,11 +262,21 @@ def test_site_config_and_storage_evidence_contains_hashes_only():
     assert str(frappe.conf.encryption_key) not in serialized
 
 
+def test_customer_exit_package_contains_own_fixture_and_not_peer_fixture():
+    evidence = customer_exit_evidence()
+    assert evidence["package_sha256"]
+    assert evidence["own_marker_present"]
+    assert not evidence["peer_marker_present"]
+    assert evidence["attachment_count"] >= 1
+    assert evidence["audit_count"] >= 1
+
+
 def load_tests(loader, tests, pattern):
     return unittest.TestSuite(
         unittest.FunctionTestCase(test)
         for test in (
             test_site_data_files_and_documents_are_isolated,
             test_site_config_and_storage_evidence_contains_hashes_only,
+            test_customer_exit_package_contains_own_fixture_and_not_peer_fixture,
         )
     )
