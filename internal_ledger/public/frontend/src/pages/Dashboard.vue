@@ -1,6 +1,6 @@
 <script setup>
 import {computed} from 'vue';
-const props = defineProps({items: Array, counts: Object, business: Object, month: String, canWrite: Boolean, loading: Boolean});
+const props = defineProps({items: Array, counts: Object, business: Object, aiStatus: Object, month: String, canWrite: Boolean, loading: Boolean});
 const monthly = computed(() => props.items?.filter(item => String(item.transaction.occurred_at).startsWith(props.month)));
 const pendingDuplicates = computed(() => monthly.value?.filter(item => item.transaction.status === 'Duplicate' && item.transaction.duplicate_review_status === 'Pending').length ?? '—');
 const pendingPosting = computed(() => monthly.value?.filter(item => item.transaction.status === 'Imported' && !['Pending', 'Confirmed'].includes(item.transaction.duplicate_review_status) && item.draft?.status === 'Approved').length ?? '—');
@@ -62,5 +62,11 @@ const cards = computed(() => [
       </details>
     </template>
     <p v-else>经营数据尚未载入。</p>
+    <h3>AI 辅助</h3>
+    <a v-if="aiStatus?.status === 'success' && aiStatus.data?.available" class="ledger-card ledger-module-card" href="/app/ledger-workbench/assistant">
+      <strong>打开 AI 助手</strong><span>报表解读、分类建议、经营摘要和使用帮助</span>
+    </a>
+    <p v-else-if="aiStatus?.status === 'error'" role="status">AI 助手暂时不可用，现有 ERP 功能不受影响。</p>
+    <p v-else-if="aiStatus?.status === 'success'">AI 助手未启用，现有 ERP 功能不受影响。</p>
   </section>
 </template>

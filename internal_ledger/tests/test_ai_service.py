@@ -140,6 +140,30 @@ def test_success_audit_contains_only_metadata_and_hashes():
     assert private_question not in serialized and "13800138000" not in serialized
 
 
+def test_assistant_status_exposes_capability_without_provider_configuration():
+    from internal_ledger.api.ai_api import get_assistant_status
+
+    settings = frappe.get_single("AI Provider Settings")
+    settings.enabled = 0
+    settings.save(ignore_permissions=True)
+    disabled = get_assistant_status()
+    assert disabled == {
+        "enabled": False, "available": False, "state": "disabled", "allowed_features": [],
+    }
+
+    configure_ai()
+    ready = get_assistant_status()
+    assert ready == {
+        "enabled": True, "available": True, "state": "ready",
+        "allowed_features": [
+            "explain_report", "suggest_classification", "draft_summary", "answer_help",
+        ],
+    }
+    serialized = str(ready)
+    assert "synthetic-service-secret" not in serialized
+    assert "model.example.com" not in serialized
+
+
 def ai_set_up():
     set_up()
     configure_ai()

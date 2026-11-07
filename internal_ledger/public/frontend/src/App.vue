@@ -10,15 +10,17 @@ import AccountingCenter from './pages/AccountingCenter.vue';
 import MonthEndCenter from './pages/MonthEndCenter.vue';
 import TaxMaterials from './pages/TaxMaterials.vue';
 import ModuleHub from './pages/ModuleHub.vue';
+import AIAssistant from './pages/AIAssistant.vue';
 import WorkflowNavigation from './components/WorkflowNavigation.vue';
 import {MODULES} from './moduleCatalog';
-import {call, businessCall, errorMessage, setLanguage} from './api';
+import {call, businessCall, aiCall, errorMessage, setLanguage} from './api';
 const props = defineProps({view: {type: String, default: 'dashboard'}, filter: {type: String, default: ''}, batch: {type: String, default: ''}, transaction: {type: String, default: ''}});
 const month = ref(frappe.datetime.get_today().slice(0, 7));
 const counts = reactive({status: 'idle', data: null, error: ''});
 const list = reactive({status: 'idle', data: null, error: ''});
 const classificationRun = reactive({status: 'idle', summary: null, error: ''});
 const business = reactive({status: 'idle', data: null, error: ''});
+const aiStatus = reactive({status: 'idle', data: null, error: ''});
 const loading = computed(() => classificationRun.status === 'loading' || counts.status === 'loading' || list.status === 'loading' || business.status === 'loading');
 const currentCounts = computed(() => counts.status === 'success' && counts.data?.month === month.value ? counts.data : null);
 const language = ref((frappe.boot?.lang || '').startsWith('zh') ? 'zh' : 'en');
@@ -34,12 +36,13 @@ const canWrite = hasAllowedRole(financeWriteRoles);
 const canClosePeriod = hasAllowedRole(['账套管理员', '财务主管']);
 const canManageMembers = hasAllowedRole(['账套管理员', '企业负责人']);
 const allowedModules = MODULES.filter(module => hasAllowedRole(module.allowedRoles));
-const navigation = [['dashboard', '企业首页'],
+const navigation = computed(() => [['dashboard', '企业首页'],
   ...(canReadLedger ? [['import', '文件智能导入'], ['review', '待办中心'], ['accounting', '会计中心']] : []),
   ...allowedModules.map(module => [module.key, module.label]),
-  ...(canManageMembers ? [['members', '企业成员']] : []), ['account', '我的账号']];
-const page = computed(() => navigation.some(entry => entry[0] === props.view) ||
-  ['duplicates', 'classification', 'month-end', 'tax-materials'].includes(props.view) ? props.view : 'dashboard');
+  ...(aiStatus.status === 'success' && aiStatus.data?.available ? [['assistant', 'AI 助手']] : []),
+  ...(canManageMembers ? [['members', '企业成员']] : []), ['account', '我的账号']]);
+const page = computed(() => navigation.value.some(entry => entry[0] === props.view) ||
+  ['assistant', 'duplicates', 'classification', 'month-end', 'tax-materials'].includes(props.view) ? props.view : 'dashboard');
 const taskPage = computed(() => ['duplicates', 'classification'].includes(page.value) ? 'review' :
   ['month-end', 'tax-materials'].includes(page.value) ? 'accounting' : page.value);
 const modulePage = computed(() => allowedModules.find(module => module.key === page.value));
@@ -88,6 +91,7 @@ function refresh() {
   const requests = [load(business, businessCall('get_business_dashboard', {
     company, from_date: `${month.value}-01`, to_date: end,
   }), generation)];
+  if (canReadLedger) requests.push(load(aiStatus, aiCall('get_assistant_status'), generation));
   if (canReadLedger) requests.push(
     load(counts, call('get_dashboard_counts', {month: month.value}), generation),
     load(list, call('list_review_items'), generation),
@@ -133,7 +137,7 @@ onMounted(refreshPage);
   <div class="ledger-app">
     <main>
       <header>
-      <h2>{{ navigation.find(entry => entry[0] === taskPage)?.[1] }}</h2>
+      <h2>{{ navigation.find(entry => entry[0] === taskPage)?.[1] || (page === 'assistant' ? 'AI 助手' : '') }}</h2>
       <div class="ledger-tabs" role="group" aria-label="智能内账视图">
         <a v-for="entry in navigation" :key="entry[0]" :href="`/app/ledger-workbench/${entry[0]}`" :aria-current="taskPage === entry[0] ? 'page' : undefined">{{ entry[1] }}</a>
       </div>
@@ -147,7 +151,7 @@ onMounted(refreshPage);
       </header>
       <p v-if="error" role="alert">{{ error }}</p>
       <WorkflowNavigation v-if="workflowStage" :current-stage="workflowStage" :batch="batch" :counts="workflowCounts" />
-      <Dashboard v-if="page === 'dashboard'" :items="list.data" :counts="currentCounts" :business="business" :month="month" :can-write="canWrite" :loading="counts.status === 'loading'" />
+      <Dashboard v-if="page === 'dashboard'" :items="list.data" :counts="currentCounts" :business="business" :ai-status="aiStatus" :month="month" :can-write="canWrite" :loading="counts.status === 'loading'" />
       <ImportPreview v-else-if="page === 'import'" :can-write="canWrite" @imported="refresh" />
       <DuplicateReview v-else-if="page === 'duplicates'" :can-write="canWrite" :batch="batch" :transaction="transaction" @refresh="refresh" />
       <EnterpriseMembers v-else-if="page === 'members' && canWrite" :active="page === 'members'" />
@@ -155,6 +159,7 @@ onMounted(refreshPage);
       <AccountingCenter v-else-if="page === 'accounting'" :items="workflowItems" :can-write="canWrite" @refresh="refresh" />
       <MonthEndCenter v-else-if="page === 'month-end'" :can-write="canWrite" :can-close="canClosePeriod" />
       <TaxMaterials v-else-if="page === 'tax-materials'" :can-write="canWrite" />
+      <AIAssistant v-else-if="page === 'assistant'" :status="aiStatus" />
       <ModuleHub v-else-if="modulePage" :module-key="page" />
       <ReviewCenter v-else :list="list" :classification-run="classificationRun" :can-write="canWrite" :initial-filter="reviewFilter" :initial-batch="batch" :initial-transaction="transaction" @refresh="refresh" @filter-change="changeFilter" />
     </main>

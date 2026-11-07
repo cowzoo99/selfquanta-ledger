@@ -71,6 +71,26 @@ def get_provider(feature):
     return AIProvider(feature)
 
 
+def get_assistant_status():
+    _require_actor()
+    settings = frappe.get_single("AI Provider Settings")
+    enabled = bool(settings.enabled)
+    allowed = [
+        value.strip() for value in (settings.allowed_features or "").splitlines()
+        if value.strip() in FEATURE_CONTEXTS
+    ]
+    configured = bool(
+        enabled and settings.base_url and settings.model
+        and settings.get_password("api_key", raise_exception=False)
+    )
+    return {
+        "enabled": enabled,
+        "available": configured,
+        "state": "ready" if configured else ("configuration_required" if enabled else "disabled"),
+        "allowed_features": allowed if enabled else [],
+    }
+
+
 def _redact(value):
     if isinstance(value, dict):
         return {key: _redact(item) for key, item in value.items()}

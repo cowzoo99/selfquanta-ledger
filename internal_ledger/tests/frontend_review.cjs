@@ -41,8 +41,8 @@ function compile(file, realChildren = false) {
     if (name === 'vue') return Vue;
     if (name.endsWith('labels')) return labels;
     if (name.endsWith('api')) return new Function(fs.readFileSync(path.join(src, 'api.js'), 'utf8').replaceAll('export ', '') +
-      '; return {call, evidenceCall: typeof evidenceCall === "function" ? evidenceCall : undefined, financeCall: typeof financeCall === "function" ? financeCall : undefined, businessCall: typeof businessCall === "function" ? businessCall : undefined, errorMessage};')();
-    if (realChildren && /\/(Dashboard|ReviewCenter|DuplicateReview|AccountingCenter|MonthEndCenter|TaxMaterials|ModuleHub|DraftLines|TransactionEvidence|PostedEntryEditor)\.vue$/.test(name)) {
+      '; return {call, evidenceCall: typeof evidenceCall === "function" ? evidenceCall : undefined, financeCall: typeof financeCall === "function" ? financeCall : undefined, businessCall: typeof businessCall === "function" ? businessCall : undefined, aiCall: typeof aiCall === "function" ? aiCall : undefined, errorMessage};')();
+    if (realChildren && /\/(Dashboard|AIAssistant|ReviewCenter|DuplicateReview|AccountingCenter|MonthEndCenter|TaxMaterials|ModuleHub|DraftLines|TransactionEvidence|PostedEntryEditor)\.vue$/.test(name)) {
       return compile(path.posix.normalize(path.posix.join(path.posix.dirname(file), name)), true);
     }
     if (name.endsWith('moduleCatalog')) return new Function(fs.readFileSync(path.join(src, 'moduleCatalog.js'), 'utf8')
@@ -138,6 +138,54 @@ async function run(name) {
     assert.equal(link.props.href, '/app/sales-order'); assert.equal(link.props.title, metric.tooltip);
     page.props.business = {status: 'error', error: '合成错误'}; await Vue.nextTick();
     assert.match(text(page.root), /经营数据读取失败：合成错误/); page.app.unmount();
+  } else if (name === 'ai_assistant_disabled') {
+    frappe.session.user = 'viewer@example.invalid'; frappe.user_roles = ['账务查看者'];
+    frappe.call = async args => {calls.push(args);
+      if (args.method.endsWith('get_assistant_status')) return {message: {enabled: false, available: false,
+        state: 'disabled', allowed_features: []}};
+      if (args.method.endsWith('get_business_dashboard')) return {message: {partial: false, sections: {}}};
+      if (args.method.endsWith('get_dashboard_counts')) return {message: {month: '2026-10'}};
+      if (args.method.endsWith('list_review_items')) return {message: []};
+      return {message: []};
+    };
+    const page = mount('App.vue', {view: 'dashboard'}, true); await settle();
+    const links = descendants(page.root).filter(el => el.type === 'a');
+    assert.equal(links.find(el => text(el).includes('AI 助手')), undefined, 'disabled AI is not added to primary navigation');
+    assert.match(text(page.root), /AI 助手未启用.*现有 ERP 功能不受影响/s);
+    assert.ok(links.find(el => el.props.href === '/app/ledger-workbench/accounting'), 'ledger navigation remains available');
+    page.app.unmount();
+  } else if (name === 'ai_assistant_failure_isolated') {
+    frappe.session.user = 'viewer@example.invalid'; frappe.user_roles = ['账务查看者'];
+    const pending = deferred(); let assistantCalls = 0;
+    frappe.call = async args => {calls.push(args);
+      if (args.method.endsWith('get_assistant_status')) return {message: {enabled: true, available: true,
+        state: 'ready', allowed_features: ['explain_report', 'suggest_classification', 'draft_summary', 'answer_help']}};
+      if (args.method.endsWith('ask_assistant')) {assistantCalls++; return pending.promise;}
+      if (args.method.endsWith('get_business_dashboard')) return {message: {partial: false, sections: {}}};
+      if (args.method.endsWith('get_dashboard_counts')) return {message: {month: '2026-10'}};
+      if (args.method.endsWith('list_review_items')) return {message: []};
+      return {message: []};
+    };
+    const page = mount('App.vue', {view: 'assistant'}, true); await settle();
+    const assistant = child(page.root._vnode, 'AIAssistant').setupState;
+    assert.match(text(page.root), /报表解读.*分类建议.*经营摘要.*使用帮助/s);
+    const first = assistant.submit(); const duplicate = assistant.submit(); await Vue.nextTick();
+    assert.equal(assistantCalls, 1, 'double submission is blocked while a request is pending');
+    assistant.cancel(); pending.reject(new Error('合成模型不可用')); await Promise.all([first, duplicate]); await settle();
+    assert.doesNotMatch(text(page.root), /合成模型不可用/, 'cancelled responses do not replace the page state');
+    assert.match(text(page.root), /请求已取消/);
+    const links = descendants(page.root).filter(el => el.type === 'a');
+    assert.ok(links.find(el => el.props.href === '/app/ledger-workbench/accounting'), 'ERP navigation survives AI cancellation');
+    page.app.unmount();
+
+    const failedPage = mount('App.vue', {view: 'assistant'}, true); await settle();
+    const failedAssistant = child(failedPage.root._vnode, 'AIAssistant').setupState;
+    frappe.call = async args => {calls.push(args); throw new Error('合成模型不可用');};
+    await failedAssistant.submit(); await settle();
+    assert.match(text(failedPage.root), /合成模型不可用/);
+    const failedLinks = descendants(failedPage.root).filter(el => el.type === 'a');
+    assert.ok(failedLinks.find(el => el.props.href === '/app/ledger-workbench/accounting'));
+    failedPage.app.unmount();
   } else if (!name || name === 'unified_shell') {
     frappe.session.user = 'sales@example.invalid'; frappe.user_roles = ['销售'];
     const page = mount('App.vue', {view: 'sales'}, true); await settle();
@@ -512,7 +560,7 @@ async function run(name) {
     const viewer = mount('App.vue', {view: 'review', filter: '待分类'}, true); await settle();
     await viewer.state.refreshPage(); await settle();
     assert.equal(writes(), 0, 'viewers never run a write sweep');
-    assert.ok(calls.every(row => /list_review_items|get_dashboard_counts|get_latest_classification_run/.test(row.method)));
+    assert.ok(calls.every(row => /list_review_items|get_dashboard_counts|get_business_dashboard|get_assistant_status|get_latest_classification_run/.test(row.method)));
     viewer.app.unmount();
   } else if (name === 'classification_detail') {
     const rows = Array.from({length: 12}, (_, index) => ({...item(`abcde${index}`, 'fdtn-batch'),
@@ -1207,7 +1255,8 @@ async function run(name) {
       assert.equal(button('审核并过账选中项'), undefined);
       review.selected = ['A']; review.confirmPosting(); assert.equal(review.confirmation, '');
       review.confirmation = review.confirmationVersion(); await review.postBatch();
-      assert.equal(calls.length, 2, 'only the two mounted read RPCs may run for a viewer');
+      assert.ok(calls.every(row => !row.method.endsWith('approve_and_post')),
+        'mounted read RPCs may run for a viewer, but posting may not');
     } else {
       review.selected = ['A']; review.confirmPosting(); const oldConfirmation = review.confirmation;
       assert.ok(oldConfirmation);

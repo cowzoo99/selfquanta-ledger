@@ -408,6 +408,14 @@ def test_review_batch_scope_matches_list_selection_and_confirmation():
     _run_review_component_case("batch_scope")
 
 
+def test_disabled_ai_does_not_replace_erp_navigation():
+    _run_review_component_case("ai_assistant_disabled")
+
+
+def test_ai_failure_and_cancellation_leave_erp_navigation_usable():
+    _run_review_component_case("ai_assistant_failure_isolated")
+
+
 def test_auto_classification_frontend():
     _run_review_component_case("auto_classification")
 

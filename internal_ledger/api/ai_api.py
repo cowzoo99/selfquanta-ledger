@@ -1,6 +1,12 @@
 import frappe
 
 from internal_ledger.ai.service import ask_assistant as _ask_assistant
+from internal_ledger.ai.service import get_assistant_status as _get_assistant_status
+
+
+@frappe.whitelist(methods=["GET"])
+def get_assistant_status():
+    return _get_assistant_status()
 
 
 @frappe.whitelist(methods=["POST"])

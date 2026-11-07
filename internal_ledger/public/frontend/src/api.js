@@ -28,6 +28,12 @@ export async function businessCall(method, args = {}) {
   return response.message;
 }
 
+export async function aiCall(method, args = {}) {
+  const response = await frappe.call({method: `internal_ledger.api.ai_api.${method}`, args,
+    type: method === 'get_assistant_status' ? 'GET' : 'POST'});
+  return response.message;
+}
+
 export async function setLanguage(language) {
   const response = await frappe.call({method: 'internal_ledger.api.language_api.set_language',
     args: {language}, type: 'POST'});
