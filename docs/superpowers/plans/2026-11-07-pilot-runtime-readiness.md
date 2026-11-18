@@ -15,7 +15,7 @@
 - 当前 `main` 基线和标签 `public-erp-mvp-baseline-2026-11-07` 已推送；本计划只在 `release/pilot-readiness` 执行。
 - 现有 WireGuard 地址、生产 Compose 项目、生产数据库、生产卷、生产证书和生产 systemd 服务一律不读取、不停止、不重启、不迁移。
 - 本机 E 盘当前可用空间约 2.3 GB，不满足镜像构建和恢复演练要求；不得把 Docker 构建缓存、镜像层或恢复卷放到 E 盘。
-- 候选构建主机的 `/srv/selfquanta/pilot-readiness` 所在文件系统必须至少有 60 GB 可用空间，以同时保留 baseline/candidate 两套 App/OCR 镜像和隔离恢复卷；不满足时停止，不自动清理其他项目或 Docker 全局资源。
+- 候选构建主机的 `/srv/selfquanta/pilot-readiness` 所在文件系统必须至少有 30 GB 可用空间，并在构建后按真实镜像、缓存和恢复卷大小再次校验；不满足时停止，不自动清理其他项目或 Docker 全局资源。
 - 本阶段关闭的是内部可执行门禁。真实 ICP、DNS、公网 TLS、云防火墙、真实客户授权和签字仍是外部 `PENDING`，不得伪造或用合成证据替代。
 - 如命令输出可能含密码、密钥、银行内容、完整客户数据或 Site 配置，证据只记录退出码、SHA、镜像 ID、计数和脱敏结论。
 
@@ -36,7 +36,7 @@
 - Verify: `infra/test-config.ps1`
 
 **Interfaces:**
-- 候选标签固定为 `selfledger-pilot-rc1-20261107`。
+- 候选标签固定为 `selfledger-pilot-rc1-20261118`。
 - 验收记录只保存 Git SHA、版本、测试计数、镜像 ID/摘要、项目名、时间和状态，不保存密钥或业务正文。
 
 - [ ] 在 `release/pilot-readiness` 提交本计划后，运行一次集中基线：
@@ -70,8 +70,8 @@ $repo = 'E:\杭州逆熵云\记账\.worktrees\pilot-readiness'
 git -C $repo add docs/acceptance/2026-11-07-pilot-runtime-readiness.md
 git -C $repo commit -m "docs: start pilot runtime readiness evidence"
 git -C $repo push -u origin release/pilot-readiness
-git -C $repo tag -a selfledger-pilot-rc1-20261107 -m "SelfLedger pilot runtime candidate"
-git -C $repo push --atomic origin release/pilot-readiness selfledger-pilot-rc1-20261107
+git -C $repo tag -a selfledger-pilot-rc1-20261118 -m "SelfLedger pilot runtime candidate"
+git -C $repo push --atomic origin release/pilot-readiness selfledger-pilot-rc1-20261118
 ```
 
 Expected: 远端标签解析出的 peeled SHA 与本地 `HEAD` 完全相同。
@@ -92,14 +92,14 @@ Expected: 远端标签解析出的 peeled SHA 与本地 `HEAD` 完全相同。
 
 ```bash
 set -euo pipefail
-test "$(df --output=avail -B1 /srv | tail -1)" -ge 64424509440
+test "$(df --output=avail -B1 /srv | tail -1)" -ge 32212254720
 docker version
 docker compose version
-git ls-remote https://github.com/cowzoo99/selfquanta-ledger.git refs/tags/selfledger-pilot-rc1-20261107
+git ls-remote https://github.com/cowzoo99/selfquanta-ledger.git refs/tags/selfledger-pilot-rc1-20261118
 git ls-remote https://github.com/frappe/frappe_docker.git refs/tags/v4.1.1
 ```
 
-Expected: `/srv` 可用空间至少 60 GB，Docker/Compose 可用，两个远端标签可读取。失败即停止；不得运行 `docker system prune` 或删除其他项目。
+Expected: `/srv` 可用空间至少 30 GB，Docker/Compose 可用，两个远端标签可读取；构建后必须按真实占用再次判断是否足以执行恢复演练。失败即停止；不得运行 `docker system prune` 或删除其他项目。
 
 - [ ] 获取固定源码；已有目录必须是干净、同源目录，否则停止，不覆盖：
 
@@ -111,7 +111,7 @@ git clone https://github.com/cowzoo99/selfquanta-ledger.git /srv/selfquanta/pilo
 git clone --branch v4.1.1 --single-branch https://github.com/frappe/frappe_docker.git /srv/selfquanta/pilot-readiness/frappe_docker
 git -C /srv/selfquanta/pilot-readiness/frappe_docker checkout --detach d84154ae23ab7ae756dfe942e3f24dcd70d1fbda
 git -C /srv/selfquanta/pilot-readiness/ledger fetch --tags origin
-git -C /srv/selfquanta/pilot-readiness/ledger checkout --detach selfledger-pilot-rc1-20261107
+git -C /srv/selfquanta/pilot-readiness/ledger checkout --detach selfledger-pilot-rc1-20261118
 test -z "$(git -C /srv/selfquanta/pilot-readiness/ledger status --porcelain)"
 test -z "$(git -C /srv/selfquanta/pilot-readiness/frappe_docker status --porcelain)"
 ```
@@ -137,9 +137,9 @@ docker image inspect "internal-ledger:$RELEASE_COMMIT" "internal-ledger-ocr:$REL
 ```bash
 set -euo pipefail
 cd /srv/selfquanta/pilot-readiness/ledger
-git checkout --detach selfledger-pilot-rc1-20261107
+git checkout --detach selfledger-pilot-rc1-20261118
 export RELEASE_COMMIT="$(git rev-parse HEAD)"
-export INTERNAL_LEDGER_APP_REF=selfledger-pilot-rc1-20261107
+export INTERNAL_LEDGER_APP_REF=selfledger-pilot-rc1-20261118
 export FRAPPE_DOCKER_DIR=/srv/selfquanta/pilot-readiness/frappe_docker
 export INTERNAL_LEDGER_BUILD_TEMP=/srv/selfquanta/pilot-readiness/build
 pwsh -NoProfile -File infra/build_image.ps1 -ValidateOnly
