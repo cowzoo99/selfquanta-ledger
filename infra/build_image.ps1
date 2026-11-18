@@ -117,8 +117,10 @@ try {
     $image = "internal-ledger:$sha"
     $arguments = @(
         'build',
+        '--build-arg=BUILDKIT_SYNTAX=dockerfile.v0',
         "--build-arg=FRAPPE_PATH=https://github.com/frappe/frappe",
         "--build-arg=FRAPPE_BRANCH=$($versions.FRAPPE_REF)",
+        '--build-arg=FRAPPE_IMAGE_PREFIX=ghcr.io/frappe',
         "--build-arg=CACHE_BUST=$sha",
         "--secret=id=apps_json,src=$appsPath",
         "--tag=$image",

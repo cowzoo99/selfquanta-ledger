@@ -262,6 +262,8 @@ Assert-True ($build -match 'remote get-url origin') 'Build must require the orig
 Assert-True ($build -match "'rev-parse', 'HEAD'") 'Build must derive the exact Git SHA'
 Assert-True ($build -match '--secret=id=apps_json,src=') 'Build must pass apps.json as a BuildKit secret'
 Assert-True ($build -match 'images/layered/Containerfile') 'Build must use the official layered Containerfile'
+Assert-True ($build -match '--build-arg=BUILDKIT_SYNTAX=dockerfile\.v0') 'Build must use the bundled Dockerfile frontend when Docker Hub is unavailable'
+Assert-True ($build -match '--build-arg=FRAPPE_IMAGE_PREFIX=ghcr\.io/frappe') 'Build must use the official Frappe GHCR base images'
 Assert-True ($build -notmatch 'APPS_JSON_BASE64') 'apps.json must not be passed as a build argument'
 Assert-True ($build -match "origin -notmatch '\^https://'") 'Build must reject unsupported SSH origins before Docker'
 $hrmsBuildMatches = [regex]::Matches($build, "url = 'https://github\.com/frappe/hrms'")
